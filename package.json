@@ -1,21 +1,28 @@
 {
-  "name": "Wellspring",
-  "version": "1.0.0",
-  "description": "",
-  "main": "src/index.ts",
-  "scripts": {
-    "start": "node src/index.ts"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "MIT",
-  "type": "module",
-  "devDependencies": {
-    "@types/node": "^26.6.5",
-    "oxfmt": "^0.73.0",
-    "typescript": "^7.0.2"
-  },
-  "dependencies": {
-    "pino": "^10.4.0"
-  }
+    "name": "wellspring",
+    "version": "1.0.0",
+    "description": "",
+    "keywords": [],
+    "license": "MIT",
+    "author": "",
+    "type": "module",
+    "main": "src/index.ts",
+    "scripts": {
+        "start": "node src/index.ts",
+        "test": "node --test",
+        "typecheck": "tsc --noEmit",
+        "format": "oxfmt",
+        "format:check": "oxfmt --check"
+    },
+    "dependencies": {
+        "pino": "^10.4.0"
+    },
+    "devDependencies": {
+        "@types/node": "^26.6.5",
+        "oxfmt": "^0.73.0",
+        "typescript": "^7.0.2"
+    },
+    "engines": {
+        "node": ">=24"
+    }
 }
