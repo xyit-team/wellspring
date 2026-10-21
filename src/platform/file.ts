@@ -5,7 +5,8 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { chmod, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises"
+import { closeSync, mkdirSync, openSync, type Stats } from "node:fs"
+import { chmod, mkdir, open, readFile, rename, rm, stat, unlink } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 
@@ -29,6 +30,13 @@ export async function ensureDir(dir: string, mode = DIR_MODE): Promise<void> {
     await mkdir(dir, { recursive: true, mode })
 }
 
+/** 同步验证文件可写：创建父目录并打开目标，失败时抛出。用于需要提前确认的调用方 */
+export function assertWritableFile(file: string, mode = FILE_MODE): void {
+    mkdirSync(dirname(file), { recursive: true, mode: DIR_MODE })
+    const fd = openSync(file, "a", mode)
+    closeSync(fd)
+}
+
 /** 读取文本文件，不存在时返回 null */
 export async function readTextIfExists(file: string): Promise<string | null> {
     try {
@@ -39,6 +47,35 @@ export async function readTextIfExists(file: string): Promise<string | null> {
         }
         throw error
     }
+}
+
+/** 读取二进制文件，不存在时返回 null */
+export async function readBytesIfExists(file: string): Promise<Buffer | null> {
+    try {
+        return await readFile(file)
+    } catch (error) {
+        if (isNotFound(error)) {
+            return null
+        }
+        throw error
+    }
+}
+
+/** stat，文件不存在时返回 null */
+export async function statIfExists(file: string): Promise<Stats | null> {
+    try {
+        return await stat(file)
+    } catch (error) {
+        if (isNotFound(error)) {
+            return null
+        }
+        throw error
+    }
+}
+
+/** 删除文件或目录，不存在时忽略 */
+export async function removePath(file: string): Promise<void> {
+    await rm(file, { recursive: true, force: true })
 }
 
 /** 读取 JSON 文件，不存在时返回 null。解析失败向上抛出 */
@@ -60,6 +97,15 @@ export async function writeTextAtomic(
     text: string,
     options: WriteFileOptions = {},
 ): Promise<void> {
+    await writeBytesAtomic(file, Buffer.from(text, "utf8"), options)
+}
+
+/** 原子写二进制（会话的 zstd 段用） */
+export async function writeBytesAtomic(
+    file: string,
+    data: Uint8Array,
+    options: WriteFileOptions = {},
+): Promise<void> {
     const dir = dirname(file)
     const mode = options.mode ?? FILE_MODE
     await ensureDir(dir)
@@ -67,7 +113,7 @@ export async function writeTextAtomic(
     const tmp = join(dir, `.${basename(file)}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`)
     const handle = await open(tmp, "w", mode)
     try {
-        await handle.writeFile(text, "utf8")
+        await handle.writeFile(data)
         // 内容先落盘
         await handle.sync()
     } catch (error) {

@@ -1,0 +1,18 @@
+{
+    "logger": {
+        "level": "info"
+    },
+    "openai": {
+        "baseUrl": null,
+        "model": "gpt-4o-mini",
+        "timeoutMs": 60000,
+        "maxRetries": 2
+    },
+    "network": {
+        "proxy": {
+            "type": "http",
+            "url": "http://127.0.0.1:7890",
+            "noProxy": ["localhost", "127.0.0.1"]
+        }
+    }
+}

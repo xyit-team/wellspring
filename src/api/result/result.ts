@@ -4,7 +4,7 @@ export class Result<T = unknown> {
     private readonly code: string | null
 
     private constructor(data: T | null, success: boolean, code: string | null) {
-        if (!success && code == null) throw new Error('当 success === false 时，code 不允许为 null')
+        if (!success && code == null) throw new Error("当 success === false 时，code 不允许为 null")
         this.data = data
         this.success = success
         this.code = code
