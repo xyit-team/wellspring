@@ -32,7 +32,7 @@ export async function withConsoleGuard<T>(
     const originals = new Map<string, (...args: unknown[]) => void>()
 
     const emit = (level: "info" | "debug" | "warn" | "error" | "trace", args: unknown[]): void => {
-        logger.error(`插件 ${pluginName} 使用了不推荐的 console logger ！`)
+        logger.error(`插件 [${pluginName}] 使用了不推荐的 console logger ！`)
         const text = `${pluginName} ${format(...args)}`
         logger[level](text)
     }

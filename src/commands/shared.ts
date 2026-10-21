@@ -72,6 +72,7 @@ const MESSAGES: Readonly<Record<string, string>> = {
     "session.locked": "会话正在被其他进程写入",
     "plugin.command-failed": "插件命令执行失败",
     "plugin.load-failed": "插件加载失败",
+    "plugin.install-failed": "插件安装失败",
     "runtime.unknown-status": "未知运行状态",
 }
 

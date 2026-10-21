@@ -29,8 +29,8 @@ test("插件输出带插件名与标签", () => {
     const { elog, out, err } = create()
     elog.plugin("info", "wellspring-web", "started")
     elog.plugin("error", "wellspring-web", "failed")
-    assert.equal(out.text, "[INFO ] wellspring-web started\n")
-    assert.equal(err.text, "[ERROR] wellspring-web failed\n")
+    assert.equal(out.text, "[INFO ] [wellspring-web] started\n")
+    assert.equal(err.text, "[ERROR] [wellspring-web] failed\n")
 })
 
 test("stream 与 line 不额外加标签", () => {
@@ -39,6 +39,16 @@ test("stream 与 line 不额外加标签", () => {
     elog.stream("Bus")
     elog.line()
     assert.equal(out.text, "EventBus\n")
+})
+
+test("标签着色，stderr 也着色", () => {
+    const out = new Capture()
+    const err = new Capture()
+    const elog = new Elog({ stdout: out, stderr: err, color: true, json: false })
+    elog.info("ok")
+    elog.error("boom")
+    assert.match(out.text, /\x1b\[32m\[INFO \]\x1b\[0m ok/)
+    assert.match(err.text, /\x1b\[31m\[ERROR\]\x1b\[0m boom/)
 })
 
 test("--json 模式静默", () => {

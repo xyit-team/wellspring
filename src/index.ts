@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /*
  * Wellspring CLI 入口。
  * 解析全局参数 → 应用目录/日志覆盖 → 加载配置与插件 → 分发命令。
@@ -6,6 +7,7 @@
 import { resolve } from "node:path"
 
 import type { HostOutput, PluginCommandContext } from "./api/host/plugin.ts"
+import { setHookErrorHandler, setHookGuard } from "./api/host/hooks.ts"
 import { runConfigCommand } from "./commands/config.ts"
 import { runConversationCommand } from "./commands/conversation.ts"
 import { runDoctorCommand } from "./commands/doctor.ts"
@@ -19,6 +21,7 @@ import {
     type CommandOutcome,
 } from "./commands/shared.ts"
 import { runSessionCommand } from "./commands/session.ts"
+import { runStartCommand } from "./commands/start.ts"
 import { runVersionCommand } from "./commands/version.ts"
 import { DEFAULT_SETTINGS } from "./config/defaults.ts"
 import { loadSettings, SETTING_FILE_NAME } from "./config/loader.ts"
@@ -135,6 +138,16 @@ async function main(argv: readonly string[]): Promise<void> {
         elog.warn(`配置加载失败，使用默认配置：${errorMessage(configCode)}`)
     }
 
+    setHookGuard(async (owner, task) => {
+        await withConsoleGuard(owner, logger.child({ plugin: owner }), task)
+    })
+
+    setHookErrorHandler(({ hook, owner, error }) => {
+        const message = error instanceof Error ? error.message : String(error)
+        logger.warn({ hook, owner, message }, "插件钩子执行失败")
+        elog.warn(`插件钩子执行失败：${hook}（${owner ?? "-"}）：${message}`)
+    })
+
     let openai: OpenAIClient | null = null
     let proxyFetch: ReturnType<typeof createProxyFetch>
     try {
@@ -196,12 +209,8 @@ async function main(argv: readonly string[]): Promise<void> {
     }
 
     try {
-        const needsPlugins =
-            commandName === "help" ||
-            commandName === "plugin" ||
-            commandName === "doctor" ||
-            !BUILTIN_NAMES.has(commandName)
-        if (needsPlugins) {
+        // 钩子与插件命令都可能在任意命令里用到；只有 version 不需要插件
+        if (commandName !== "version") {
             await ensurePlugins()
         }
 
@@ -212,6 +221,9 @@ async function main(argv: readonly string[]): Promise<void> {
                 break
             case "run":
                 outcome = await runConversationCommand(ctx, commandArgv, "run")
+                break
+            case "start":
+                outcome = await runStartCommand(ctx)
                 break
             case "session":
                 outcome = await runSessionCommand(ctx, commandArgv)

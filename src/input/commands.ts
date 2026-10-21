@@ -19,6 +19,11 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandSpec[] = [
         usage: "wellspring run [--session-id <id>] [--new] [--agent <name>] [--model <name>] <context...>",
     },
     {
+        name: "start",
+        summary: "以服务进程启动，加载插件并触发 onInit",
+        usage: "wellspring start",
+    },
+    {
         name: "session",
         summary: "查看、切换与删除会话",
         usage: "wellspring session <list|show|delete> [args]",
@@ -30,8 +35,8 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandSpec[] = [
     },
     {
         name: "plugin",
-        summary: "插件列表、链接与删除",
-        usage: "wellspring plugin <list|link|remove> [args]",
+        summary: "插件列表、安装与删除",
+        usage: "wellspring plugin <list|new|install|link|remove> [args]",
     },
     {
         name: "doctor",

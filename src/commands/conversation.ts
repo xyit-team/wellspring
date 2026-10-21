@@ -9,6 +9,12 @@ import { createInterface } from "node:readline"
 
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 
+import {
+    emitAfterMessage,
+    emitAfterStep,
+    emitAfterTurn,
+    emitBeforeMessage,
+} from "../api/host/hooks.ts"
 import { Result } from "../api/result/result.ts"
 import { USAGE_CODES } from "../input/codes.ts"
 import { booleanValue, parseCommandArgs, stringValue } from "../input/parse-options.ts"
@@ -206,9 +212,20 @@ export async function executeTurn(params: {
         },
     ]
 
-    const messages: ChatCompletionMessageParam[] = []
+    // 钩子可以往 prompt 里追加系统提示
+    const prompt: string[] = []
     if (system !== undefined && system.trim() !== "") {
-        messages.push({ role: "system", content: system })
+        prompt.push(system)
+    }
+    await emitBeforeMessage({ input, context: session.meta.cwd, prompt })
+
+    const messages: ChatCompletionMessageParam[] = []
+    const systemText = prompt
+        .map((item) => item.trim())
+        .filter((item) => item !== "")
+        .join("\n\n")
+    if (systemText !== "") {
+        messages.push({ role: "system", content: systemText })
     }
     messages.push(...toChatMessages(session.events), { role: "user", content: input })
 
@@ -231,6 +248,13 @@ export async function executeTurn(params: {
             data: { turn, reason: { kind: "failed", code } },
         })
         await store.appendTurn(session, events)
+        await emitAfterTurn({
+            sessionId: session.meta.id,
+            mode,
+            turn,
+            reason: "failed",
+            code,
+        })
         if (streamed) {
             ctx.elog.line()
         }
@@ -266,6 +290,31 @@ export async function executeTurn(params: {
         data: { turn, reason: { kind: "completed" } },
     })
     await store.appendTurn(session, events)
+
+    await emitAfterStep({
+        sessionId: session.meta.id,
+        mode,
+        turn,
+        step: 1,
+        reply: data.reply.text,
+        model: data.reply.model,
+    })
+    await emitAfterMessage({
+        sessionId: session.meta.id,
+        mode,
+        input,
+        reply: data.reply.text,
+        model: data.reply.model,
+        inputTokens: data.reply.inputTokens,
+        outputTokens: data.reply.outputTokens,
+    })
+    await emitAfterTurn({
+        sessionId: session.meta.id,
+        mode,
+        turn,
+        reason: "completed",
+        code: null,
+    })
 
     if (streamed) {
         ctx.elog.line()

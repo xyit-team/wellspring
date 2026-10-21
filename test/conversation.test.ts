@@ -6,6 +6,7 @@ import { after, before, test } from "node:test"
 
 import pino from "pino"
 
+import { afterMessage, afterStep, afterTurn, beforeMessage } from "../src/api/host/hooks.ts"
 import { DEFAULT_SETTINGS } from "../src/config/defaults.ts"
 import type { CommandContext } from "../src/commands/shared.ts"
 import { executeTurn } from "../src/commands/conversation.ts"
@@ -182,6 +183,61 @@ test("executeTurn 写入会话与流式 chunk", async () => {
         secondRequest.messages?.map((message) => message.role),
         ["user", "assistant", "user"],
     )
+})
+
+test("对话生命周期触发 before/after 钩子", async () => {
+    const requests: unknown[] = []
+    const client = createClient(successFetch(requests))
+    const ctx = context(client)
+    const store = new SessionStore(join(root, "sessions"))
+    const session = await store.create({ cwd, model: "test-model", id: "conv-hooks" })
+
+    const calls: string[] = []
+    const unregisters = [
+        beforeMessage(({ prompt }) => {
+            calls.push("beforeMessage")
+            prompt.push("hook-rule")
+        }),
+        afterStep(() => {
+            calls.push("afterStep")
+        }),
+        afterMessage(() => {
+            calls.push("afterMessage")
+        }),
+        afterTurn((payload) => {
+            calls.push(`afterTurn:${payload.reason}`)
+        }),
+    ]
+
+    try {
+        const result = await executeTurn({
+            ctx,
+            client,
+            store,
+            session,
+            mode: "chat",
+            input: "hi",
+            model: "test-model",
+            stream: false,
+            display: false,
+        })
+        assert.equal(result.isSuccess(), true)
+
+        const request = requests[0] as {
+            messages?: Array<{ role: string; content: string }>
+        }
+        assert.deepEqual(request.messages?.[0], { role: "system", content: "hook-rule" })
+        assert.deepEqual(calls, [
+            "beforeMessage",
+            "afterStep",
+            "afterMessage",
+            "afterTurn:completed",
+        ])
+    } finally {
+        for (const unregister of unregisters) {
+            unregister()
+        }
+    }
 })
 
 test("executeTurn 失败时记录 failed 轮次", async () => {

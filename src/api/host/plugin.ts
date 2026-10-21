@@ -1,6 +1,6 @@
 /*
  * 宿主契约：平台暴露给插件与外部调用方的稳定接口。
- * 实现放在各模块，api/host 只放类型与版本，不反向依赖实现。
+ * 实现放在各模块，api/host 只放类型、版本与钩子注册入口。
  */
 
 import type { Logger } from "pino"
@@ -40,14 +40,31 @@ export interface PluginCommand {
     readonly run: (context: PluginCommandContext) => number | void | Promise<number | void>
 }
 
+export interface WellspringPluginInfo {
+    readonly id: string
+    readonly name: string
+    readonly version: string
+}
+
+/** setup() 返回的插件描述与扩展 */
+export interface WellspringPlugin extends WellspringPluginInfo {
+    readonly description?: string
+    /** 依赖的插件 id，仅用于元信息与展示 */
+    readonly deps?: readonly string[]
+    /** 插件注册的命令；也可以在 init(api) 里调用 api.registerCommand */
+    readonly commands?: readonly PluginCommand[]
+    /** 可选初始化：拿到宿主能力后再注册命令或做启动检查 */
+    readonly init?: (api: PluginApi) => void | Promise<void>
+}
+
+export type PluginSetup = () => WellspringPlugin | Promise<WellspringPlugin>
+
 export interface PluginApi {
     readonly apiVersion: typeof HOST_API_VERSION
-    readonly pluginName: string
+    readonly plugin: WellspringPluginInfo
     readonly paths: ResolvedPaths
     readonly config: AppSetting
     readonly logger: Logger
     readonly output: HostOutput
     registerCommand(command: PluginCommand): void
 }
-
-export type PluginRegister = (api: PluginApi) => void | Promise<void>

@@ -49,13 +49,17 @@ function detectColor(stream: ElogStream | undefined): boolean {
     if (process.env["NO_COLOR"] !== undefined) {
         return false
     }
-    return process.stdout.isTTY === true && stream === process.stdout
+    if (process.env["TERM"] === "dumb") {
+        return false
+    }
+    return (stream as { isTTY?: boolean } | undefined)?.isTTY === true
 }
 
 export class Elog {
     #stdout: ElogStream
     #stderr: ElogStream
-    #color: boolean
+    #colorStdout: boolean
+    #colorStderr: boolean
     #json: boolean
     #sessionName = ""
     #streaming = false
@@ -63,7 +67,8 @@ export class Elog {
     constructor(options: ElogOptions = {}) {
         this.#stdout = options.stdout ?? process.stdout
         this.#stderr = options.stderr ?? process.stderr
-        this.#color = options.color ?? detectColor(options.stdout ?? process.stdout)
+        this.#colorStdout = options.color ?? detectColor(this.#stdout)
+        this.#colorStderr = options.color ?? detectColor(this.#stderr)
         this.#json = options.json ?? false
     }
 
@@ -84,7 +89,8 @@ export class Elog {
     }
 
     setColor(color: boolean): void {
-        this.#color = color
+        this.#colorStdout = color
+        this.#colorStderr = color
     }
 
     /** 普通信息，stdout */
@@ -115,10 +121,10 @@ export class Elog {
         this.#line(level, text, stream)
     }
 
-    /** 插件输出：`[LEVEL] plugin message` */
+    /** 插件输出：`[LEVEL] [plugin] message` */
     plugin(level: ElogLevel, pluginName: string, message: string): void {
         const stream = level === "error" || level === "warn" ? this.#stderr : this.#stdout
-        this.#line(level, `${pluginName} ${message}`, stream)
+        this.#line(level, `[${pluginName}] ${message}`, stream)
     }
 
     /** 流式写正文，不加换行与标签 */
@@ -167,8 +173,8 @@ export class Elog {
         if (this.#json) {
             return
         }
-        const coloredTag =
-            this.#color && stream === this.#stdout ? `${COLORS[level]}${tag}${RESET}` : tag
+        const color = stream === this.#stdout ? this.#colorStdout : this.#colorStderr
+        const coloredTag = color ? `${COLORS[level]}${tag}${RESET}` : tag
         stream.write(`${coloredTag} ${text}\n`)
     }
 }

@@ -1,7 +1,7 @@
 /*
  * 插件加载。
- * 扫描 <dataDir>/plugins/*，动态 import 入口，把 PluginApi 传给默认导出。
- * 插件在进程内运行，console.* 通过 withConsoleGuard 拦截并转进 Pino child logger。
+ * 扫描 <dataDir>/plugins/*，import 入口后调用 setup() 拿到 WellspringPlugin，
+ * 注册 commands、执行可选 init(api)；插件内 console.* 会被拦截并转进 Pino child logger。
  */
 
 import { cp, readdir, rm, stat, symlink } from "node:fs/promises"
@@ -10,16 +10,17 @@ import { pathToFileURL } from "node:url"
 
 import type { Logger } from "pino"
 
-import type { HostOutput, PluginApi, PluginCommand } from "../api/host/plugin.ts"
+import { removeHooksByOwner, withHookOwner } from "../api/host/hooks.ts"
+import type { HostOutput, PluginApi, PluginCommand, WellspringPlugin } from "../api/host/plugin.ts"
 import { HOST_API_VERSION } from "../api/host/version.ts"
 import type { AppSetting } from "../config/types.ts"
 import { getElog } from "../logger/elog4js.ts"
 import { ensureDir, readJsonIfExists } from "../platform/file.ts"
 import { getPaths, type ResolvedPaths } from "../platform/path.ts"
 import { withConsoleGuard } from "./console-guard.ts"
+import { ensureHostAlias } from "./host-alias.ts"
+import { PLUGIN_NAME, pluginsRoot } from "./paths.ts"
 import { PluginRegistry } from "./registry.ts"
-
-const PLUGIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 
 interface PluginPackageJson {
     readonly name?: string
@@ -32,9 +33,10 @@ interface PluginPackageJson {
 }
 
 export interface LoadedPlugin {
+    readonly id: string
     readonly name: string
-    readonly version: string | null
-    readonly apiVersion: number | null
+    readonly version: string
+    readonly deps: readonly string[]
     readonly dir: string
     readonly status: "ok" | "failed"
     readonly commands: readonly string[]
@@ -48,10 +50,7 @@ export interface LoadPluginsOptions {
     readonly registry: PluginRegistry
 }
 
-/** 插件根目录 */
-export function pluginsRoot(paths: ResolvedPaths = getPaths()): string {
-    return join(paths.dataDir, "plugins")
-}
+const ENTRY_CANDIDATES = ["index.ts", "index.js", "index.mjs", "index.mts"]
 
 function createHostOutput(pluginName: string): HostOutput {
     return {
@@ -70,7 +69,7 @@ async function resolveEntry(dir: string, pkg: PluginPackageJson | null): Promise
     if (pkg?.main !== undefined) {
         candidates.push(pkg.main)
     }
-    candidates.push("index.ts", "index.js", "index.mjs")
+    candidates.push(...ENTRY_CANDIDATES)
 
     for (const candidate of candidates) {
         const file = resolve(dir, candidate)
@@ -94,15 +93,57 @@ function errorText(error: unknown): string {
     return String(error)
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function validatePlugin(value: unknown): WellspringPlugin {
+    if (!isObject(value)) {
+        throw new Error("setup() 必须返回 WellspringPlugin 对象")
+    }
+    const id = value["id"]
+    const name = value["name"]
+    const version = value["version"]
+    if (typeof id !== "string" || !PLUGIN_NAME.test(id)) {
+        throw new Error(`插件 id 不合法：${String(id)}`)
+    }
+    if (typeof name !== "string" || name.trim() === "") {
+        throw new Error(`插件 name 不合法：${String(name)}`)
+    }
+    if (typeof version !== "string" || version.trim() === "") {
+        throw new Error(`插件 version 不合法：${String(version)}`)
+    }
+    const deps = value["deps"]
+    if (deps !== undefined) {
+        if (!Array.isArray(deps) || deps.some((item) => typeof item !== "string")) {
+            throw new Error("插件 deps 必须是字符串数组")
+        }
+    }
+    const commands = value["commands"]
+    if (commands !== undefined && !Array.isArray(commands)) {
+        throw new Error("插件 commands 必须是数组")
+    }
+    const init = value["init"]
+    if (init !== undefined && typeof init !== "function") {
+        throw new Error("插件 init 必须是函数")
+    }
+    return value as unknown as WellspringPlugin
+}
+
 async function loadOne(
     entryDir: string,
-    name: string,
+    owner: string,
     options: LoadPluginsOptions,
     pkg: PluginPackageJson | null,
 ): Promise<LoadedPlugin> {
     const apiVersion = pkg?.wellspring?.apiVersion ?? HOST_API_VERSION
-    const version = pkg?.version ?? null
-    const base = { name, version, apiVersion, dir: entryDir }
+    const base = {
+        id: owner,
+        name: typeof pkg?.name === "string" ? pkg.name : owner,
+        version: typeof pkg?.version === "string" ? pkg.version : "0.0.0",
+        deps: [] as readonly string[],
+        dir: entryDir,
+    }
 
     if (apiVersion !== HOST_API_VERSION) {
         return {
@@ -118,45 +159,83 @@ async function loadOne(
         return { ...base, status: "failed", commands: [], error: "找不到插件入口" }
     }
 
-    const pluginLogger = options.logger.child({ plugin: name })
-    const output = createHostOutput(name)
+    const pluginLogger = options.logger.child({ plugin: owner })
+    const output = createHostOutput(owner)
+    const state: { plugin: WellspringPlugin | null } = { plugin: null }
 
     const api: PluginApi = {
         apiVersion: HOST_API_VERSION,
-        pluginName: name,
+        plugin: { id: owner, name: owner, version: base.version },
         paths: options.paths ?? getPaths(),
         config: options.config,
         logger: pluginLogger,
         output,
         registerCommand: (command: PluginCommand): void => {
-            options.registry.register(name, command)
+            options.registry.register(state.plugin?.id ?? owner, command)
         },
     }
 
     try {
-        await withConsoleGuard(name, pluginLogger, async () => {
-            const module = (await import(pathToFileURL(entry).href)) as { default?: unknown }
-            const register = module.default
-            if (typeof register !== "function") {
-                throw new Error("入口需要 default 导出 register(api) 函数")
-            }
-            await (register as (value: PluginApi) => void | Promise<void>)(api)
+        await withHookOwner(owner, async () => {
+            await withConsoleGuard(owner, pluginLogger, async () => {
+                const module = (await import(pathToFileURL(entry).href)) as { setup?: unknown }
+                if (typeof module.setup !== "function") {
+                    throw new Error("入口需要导出 setup() 函数")
+                }
+                const created = await (module.setup as () => unknown)()
+                const registered = validatePlugin(created)
+                state.plugin = registered
+
+                for (const command of registered.commands ?? []) {
+                    options.registry.register(registered.id, command)
+                }
+
+                if (registered.init !== undefined) {
+                    const initApi: PluginApi = {
+                        ...api,
+                        plugin: {
+                            id: registered.id,
+                            name: registered.name,
+                            version: registered.version,
+                        },
+                        logger: options.logger.child({ plugin: registered.id }),
+                    }
+                    await registered.init(initApi)
+                }
+            })
         })
     } catch (error) {
-        options.registry.removePlugin(name)
+        options.registry.removePlugin(state.plugin?.id ?? owner)
+        options.registry.removePlugin(owner)
+        removeHooksByOwner(owner)
         return { ...base, status: "failed", commands: [], error: errorText(error) }
+    }
+
+    const plugin = state.plugin
+    if (plugin === null) {
+        return { ...base, status: "failed", commands: [], error: "setup() 未返回插件" }
     }
 
     const commands = options.registry
         .list()
-        .filter((record) => record.pluginName === name)
+        .filter((record) => record.pluginName === plugin.id)
         .map((record) => record.command.name)
 
-    return { ...base, status: "ok", commands, error: null }
+    return {
+        id: plugin.id,
+        name: plugin.name,
+        version: plugin.version,
+        deps: plugin.deps ?? [],
+        dir: entryDir,
+        status: "ok",
+        commands,
+        error: null,
+    }
 }
 
 /** 加载全部插件。坏插件记录失败状态，不影响其他插件 */
 export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly LoadedPlugin[]> {
+    ensureHostAlias()
     const root = pluginsRoot(options.paths)
     await ensureDir(root)
 
@@ -168,11 +247,11 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
     }
 
     const loaded: LoadedPlugin[] = []
-    for (const name of names) {
-        if (!PLUGIN_NAME.test(name)) {
+    for (const dirName of names) {
+        if (!PLUGIN_NAME.test(dirName) || dirName.startsWith(".")) {
             continue
         }
-        const dir = join(root, name)
+        const dir = join(root, dirName)
         try {
             const info = await stat(dir)
             if (!info.isDirectory()) {
@@ -187,9 +266,10 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
             pkg = await readJsonIfExists<PluginPackageJson>(join(dir, "package.json"))
         } catch (error) {
             loaded.push({
-                name,
-                version: null,
-                apiVersion: null,
+                id: dirName,
+                name: dirName,
+                version: "0.0.0",
+                deps: [],
                 dir,
                 status: "failed",
                 commands: [],
@@ -198,7 +278,9 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
             continue
         }
 
-        loaded.push(await loadOne(dir, name, options, pkg))
+        const owner =
+            typeof pkg?.name === "string" && PLUGIN_NAME.test(pkg.name) ? pkg.name : dirName
+        loaded.push(await loadOne(dir, owner, options, pkg))
     }
     return loaded
 }
@@ -216,13 +298,10 @@ export async function linkPlugin(
     const root = pluginsRoot(paths)
     await ensureDir(root)
     const target = join(root, name)
-    try {
-        await stat(target)
+
+    const existing = await stat(target).catch(() => null)
+    if (existing !== null) {
         throw new Error(`插件已存在：${name}`)
-    } catch (error) {
-        if (error instanceof Error && error.message.startsWith("插件已存在")) {
-            throw error
-        }
     }
 
     try {
