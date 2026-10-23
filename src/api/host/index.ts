@@ -3,6 +3,7 @@
  * 插件可以 import { onMessage, getHost, ... } from "wellspring/api/host/index.ts"。
  */
 
+export * from "./agent.ts"
 export * from "./events.ts"
 export * from "./fs.ts"
 export * from "./http.ts"

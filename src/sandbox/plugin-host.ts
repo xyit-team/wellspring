@@ -10,6 +10,7 @@ import type { Logger } from "pino"
 
 import type { Host, HostOSInfo, HostPluginStatus, HostStatus } from "../api/host/host.ts"
 import type { HostFileApi, HostFileEntry, HostFileStat } from "../api/host/fs.ts"
+import type { HostAgentApi, HostAgentChatInput } from "../api/host/agent.ts"
 import type {
     HostHttpApi,
     HttpHandler,
@@ -201,6 +202,17 @@ const httpHandlers = new Map<string, HttpHandler>()
 const websocketHandlers = new Map<string, WebSocketHandler>()
 const wsMessages = new Map<string, Array<(data: string) => void>>()
 const wsCloses = new Map<string, Array<(code: number, reason: string) => void>>()
+
+function remoteAgent(): HostAgentApi {
+    return {
+        async chat(input: HostAgentChatInput) {
+            return await bridgeRequest(
+                "host.agent.chat",
+                input as unknown as Record<string, unknown>,
+            )
+        },
+    } as HostAgentApi
+}
 
 function remoteHttp(): HostHttpApi {
     return {
@@ -509,6 +521,7 @@ async function bootstrap(params: ConfigurePayload): Promise<{
             },
         } as never,
         http: remoteHttp(),
+        agent: remoteAgent(),
     }
 
     const module = (await withHookOwner(pluginId, async () => {

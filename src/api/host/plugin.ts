@@ -79,6 +79,7 @@ export interface AgentCallToolResult {
     readonly data: Record<string, unknown>
 }
 
+import type { HostAgentApi } from "./agent.ts"
 import type { HostCapabilities } from "../../plugin/capabilities.ts"
 import type { HostHttpApi } from "./http.ts"
 
@@ -134,4 +135,6 @@ export interface PluginApi {
     capabilities: HostCapabilities
     /** 宿主 HTTP 服务 */
     http: HostHttpApi
+    /** 与 Agent 会话交互 */
+    agent: HostAgentApi
 }

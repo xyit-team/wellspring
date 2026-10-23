@@ -40,6 +40,7 @@ import { ensureAccessGuard } from "./access-guard.ts"
 import { ensureHostAlias } from "./host-alias.ts"
 import { PLUGIN_NAME, pluginsRoot } from "./paths.ts"
 import { PluginRegistry } from "./registry.ts"
+import { createHostAgentService, type HostAgentService } from "./agent-service.ts"
 import { loadPluginConfig } from "./runtime.ts"
 import { readPluginState } from "./state.ts"
 
@@ -79,6 +80,8 @@ export interface LoadPluginsOptions {
     readonly dataAccess?: PluginDataService
     /** 测试注入；生产根据 sandbox.mode 探测 */
     readonly sandboxBackend?: SandboxBackend
+    /** 测试注入；默认按 settings 构造 */
+    readonly agent?: HostAgentService
 }
 
 const ENTRY_CANDIDATES = ["index.ts", "index.js", "index.mjs", "index.mts"]
@@ -198,7 +201,7 @@ function sandboxPermissions(pkg: PluginPackageJson | null): PluginSandboxPermiss
     const rawHostApi = manifest["hostApi"]
     const hostApi = Array.isArray(rawHostApi)
         ? rawHostApi.filter((item): item is string => typeof item === "string")
-        : ["logger", "fs", "event", "getHost", "shutdown", "http"]
+        : ["logger", "fs", "event", "getHost", "shutdown", "http", "agent"]
     const rawFs = manifest["fs"]
     const fs =
         typeof rawFs === "object" && rawFs !== null && !Array.isArray(rawFs)
@@ -226,6 +229,7 @@ async function loadEntry(
     sandboxBackend: SandboxBackend | null,
     dataAccess: PluginDataService,
     sandboxSetting: SandboxSetting,
+    agentService: HostAgentService,
 ): Promise<PluginEntry> {
     let pkg: PluginPackageJson | null = null
     try {
@@ -309,6 +313,7 @@ async function loadEntry(
                     paths,
                     logger: options.logger,
                 }),
+                agent: agentService,
             })
             const ready = await client.start({ deferInit: true })
             entry.sandboxClient = client
@@ -447,6 +452,15 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
         }
     }
 
+    const agentService =
+        options.agent ??
+        createHostAgentService({
+            settings: options.config,
+            paths: resolvedPaths,
+            logger: options.logger,
+            registry: options.registry,
+            agentTools: options.agentTools ?? new AgentToolRegistry(),
+        })
     const disabled = await readPluginState(options.paths ?? getPaths())
     const entries: PluginEntry[] = []
     let index = 0
@@ -473,6 +487,7 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
                 sandboxBackend,
                 dataAccess,
                 sandboxSetting,
+                agentService,
             ),
         )
         index += 1

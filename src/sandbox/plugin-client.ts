@@ -34,6 +34,8 @@ import type {
 } from "../api/host/plugin.ts"
 import type { HostFileApi, HostFileEntry, HostFileStat } from "../api/host/fs.ts"
 import type { HttpRequest, HttpResponse } from "../api/host/http.ts"
+import type { HostAgentChatInput } from "../api/host/agent.ts"
+import type { HostAgentService } from "../plugin/agent-service.ts"
 import { HTTP_MAX_BODY_BYTES } from "../api/host/http.ts"
 import {
     FrameDecoder,
@@ -126,6 +128,7 @@ export interface PluginSandboxClientOptions {
     readonly permissions: PluginSandboxPermissions
     readonly dataAccess?: PluginDataService
     readonly capabilities?: HostCapabilities
+    readonly agent?: HostAgentService
 }
 
 export class PluginSandboxError extends Error {
@@ -487,7 +490,13 @@ export class PluginSandboxClient {
         try {
             const params = (request.params ?? {}) as Record<string, unknown>
             let result: unknown
-            if (request.method === "host.http.createServer") {
+            if (request.method === "host.agent.chat") {
+                this.#requireHostApi("agent")
+                if (this.#options.agent === undefined) {
+                    throw new PluginSandboxError("宿主没有 Agent 服务")
+                }
+                result = await this.#options.agent.chat(params as unknown as HostAgentChatInput)
+            } else if (request.method === "host.http.createServer") {
                 this.#requireHostApi("http")
                 const serverId = String(params["serverId"] ?? "")
                 const host = String(params["host"] ?? "127.0.0.1")
@@ -543,7 +552,7 @@ export class PluginSandboxClient {
                         const response = (await this.#request(
                             "plugin.http",
                             { serverId, requestId, request: httpRequest },
-                            60_000,
+                            180_000,
                         )) as HttpResponse
                         res.statusCode = response.status ?? 200
                         for (const [key, value] of Object.entries(response.headers ?? {})) {

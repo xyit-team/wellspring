@@ -847,3 +847,81 @@ test("sandbox 插件通过 host http 提供 WebSocket", { timeout: 20_000 }, asy
         await shutdownAllSandboxPlugins()
     }
 })
+
+test("sandbox 插件通过 host agent 与 Agent 交互", { timeout: 20_000 }, async () => {
+    const resolved = paths()
+    const pluginDir = join(resolved.dataDir, "plugins", "agent-plugin")
+    await mkdir(pluginDir, { recursive: true })
+    const source = [
+        "let api",
+        "export function setup() {",
+        "    return {",
+        '        id: "agent-plugin",',
+        '        name: "Agent Plugin",',
+        '        version: "1.0.0",',
+        '        status: "ok",',
+        "        init: (value) => { api = value },",
+        "        commands: [{",
+        '            name: "chat",',
+        '            summary: "chat",',
+        "            run: async (ctx) => {",
+        "                const result = await api.agent.chat({ message: ctx.argv.join(' ') })",
+        "                ctx.output.print(result.reply)",
+        "                return 0",
+        "            },",
+        "        }],",
+        "    }",
+        "}",
+    ].join("\n")
+    await writeFile(
+        join(pluginDir, "package.json"),
+        JSON.stringify({
+            name: "agent-plugin",
+            version: "1.0.0",
+            type: "module",
+            main: "index.ts",
+            wellspring: {
+                apiVersion: 1,
+                sandbox: { profile: "plugin", hostApi: ["logger", "agent"] },
+            },
+        }),
+    )
+    await writeFile(join(pluginDir, "index.ts"), source)
+    configureHost({ paths: resolved })
+    const output = { text: "" } as ElogStream & { text: string }
+    output.write = (text: string) => {
+        output.text += text
+    }
+    initElog({ stdout: output, stderr: output, color: false, json: false })
+    const client = new PluginSandboxClient({
+        pluginId: "agent-plugin",
+        pluginName: "Agent Plugin",
+        pluginVersion: "1.0.0",
+        pluginDir,
+        pluginEntry: join(pluginDir, "index.ts"),
+        paths: resolved,
+        config: DEFAULT_SETTINGS,
+        pluginConfig: {},
+        backend: new DirectBackend(),
+        limits: { timeoutMs: 10_000, memoryMB: 256, pids: 32, outputLimitBytes: 4096 },
+        logger: pino({ level: "silent" }),
+        permissions: { hostApi: ["logger", "agent"], workspaceRead: false, workspaceWrite: false },
+        agent: {
+            async chat(input) {
+                return {
+                    sessionId: "session-1",
+                    reply: `agent:${input.message}`,
+                    model: "test",
+                    usage: null,
+                }
+            },
+        },
+    })
+    try {
+        await client.start()
+        assert.equal(await client.runCommand("chat", ["hello"], root, true), 0)
+        assert.match(output.text, /agent:hello/)
+    } finally {
+        await shutdownAllSandboxPlugins()
+    }
+})
