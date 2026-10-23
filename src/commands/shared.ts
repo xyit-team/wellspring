@@ -12,6 +12,7 @@ import type { Elog } from "../logger/elog4js.ts"
 import type { OpenAIClient } from "../network/openai.ts"
 import type { ResolvedPaths } from "../platform/path.ts"
 import type { LoadedPlugin } from "../plugin/loader.ts"
+import type { AgentToolRegistry } from "../plugin/agent-tools.ts"
 import type { PluginRegistry } from "../plugin/registry.ts"
 
 export interface CommandContext {
@@ -23,6 +24,7 @@ export interface CommandContext {
     readonly logger: Logger
     readonly elog: Elog
     readonly registry: PluginRegistry
+    readonly agentTools: AgentToolRegistry
     readonly openai: OpenAIClient | null
     loadPlugins(): Promise<readonly LoadedPlugin[]>
 }
@@ -73,6 +75,12 @@ const MESSAGES: Readonly<Record<string, string>> = {
     "plugin.command-failed": "插件命令执行失败",
     "plugin.load-failed": "插件加载失败",
     "plugin.install-failed": "插件安装失败",
+    "plugin.not-found": "插件不存在",
+    "service.already-running": "服务已在运行",
+    "service.not-running": "没有正在运行的服务",
+    "service.stop-timeout": "等待服务退出超时",
+    "service.stop-failed": "停止服务失败",
+    "service.record-failed": "服务状态记录失败",
     "runtime.unknown-status": "未知运行状态",
 }
 

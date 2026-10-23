@@ -2,7 +2,7 @@
  * 插件侧模块别名。
  * 插件不在 wellspring 包的解析路径内，用 Node 的 resolve hook 把
  * "wellspring" / "wellspring/..." 映射到本仓库的 src 目录，
- * 这样插件可以 import { beforeMessage } from "wellspring/api/host/index.ts"。
+ * 这样插件可以 import { onMessage, getHost } from "wellspring/api/host/index.ts"。
  */
 
 import { statSync } from "node:fs"

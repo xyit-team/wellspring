@@ -1,12 +1,12 @@
 /*
- * Event / EventBus
+ * EventEntity / EventBus
  *
- * Event 的负载只读，取消状态可变：监听器对事件实例调 cancel 后
+ * EventEntity 的负载只读，取消状态可变：监听器对事件实例调 cancel 后
  * isCancelled 立即为 true，EventBus 据此终止后续传播
  * 取消不回滚已完成的投递
  */
 
-export class Event<T> {
+export class EventEntity<T> {
     private readonly data: T
     private cancelled: boolean
     private cancelReason: string
@@ -17,8 +17,8 @@ export class Event<T> {
         this.cancelReason = cancelReason
     }
 
-    public static create<T>(data: T, cancelled = false, cancelReason = ""): Event<T> {
-        return new Event(data, cancelled, cancelReason)
+    public static create<T>(data: T, cancelled = false, cancelReason = ""): EventEntity<T> {
+        return new EventEntity(data, cancelled, cancelReason)
     }
 
     public cancel(reason = ""): this {
@@ -38,7 +38,9 @@ export class Event<T> {
     }
 }
 
-export type EventListener<T = unknown> = (event: Event<T>) => void
+import { getHostBridge } from "../sandbox/bridge-state.ts"
+
+export type EventListener<T = unknown> = (event: EventEntity<T>) => void
 
 // 存储层擦除负载类型：同一总线容纳各事件名的监听器
 type ListenerRecord = {
@@ -48,12 +50,18 @@ type ListenerRecord = {
 
 export class EventBus {
     private readonly listeners = new Map<string, ListenerRecord[]>()
+    private readonly bridgeSubscriptions = new Set<string>()
 
     subscribe<T>(eventName: string, listener: EventListener<T>): () => void {
         if (typeof listener !== "function") {
             throw new TypeError(`监听器不是函数：${eventName}`)
         }
         const record: ListenerRecord = { fn: listener, active: true }
+        const bridge = getHostBridge()
+        if (bridge !== null && !this.bridgeSubscriptions.has(eventName)) {
+            this.bridgeSubscriptions.add(eventName)
+            void bridge.request("host.event.subscribe", { name: eventName }).catch(() => undefined)
+        }
         const handlers = this.listeners.get(eventName)
         if (handlers) {
             handlers.push(record)
@@ -64,7 +72,21 @@ export class EventBus {
         return () => this.remove(eventName, record)
     }
 
-    publish<T>(eventName: string, event: Event<T>): void {
+    publish<T>(eventName: string, event: EventEntity<T>): void {
+        const bridge = getHostBridge()
+        if (bridge !== null) {
+            bridge.notify("host.event.publish", { name: eventName, data: event.getData() })
+            return
+        }
+        this.deliverLocal(eventName, event)
+    }
+
+    /** sandbox bridge 收到宿主事件后在本进程投递 */
+    receive<T>(eventName: string, data: T): void {
+        this.deliverLocal(eventName, EventEntity.create(data))
+    }
+
+    private deliverLocal<T>(eventName: string, event: EventEntity<T>): void {
         const handlers = this.listeners.get(eventName)
         if (!handlers || handlers.length === 0) {
             return
@@ -101,6 +123,7 @@ export class EventBus {
     }
 
     clear(eventName: string): void {
+        this.unsubscribeBridge(eventName)
         const handlers = this.listeners.get(eventName)
         if (!handlers) return
         for (const record of handlers) {
@@ -110,6 +133,9 @@ export class EventBus {
     }
 
     clearAll(): void {
+        for (const eventName of [...this.bridgeSubscriptions]) {
+            this.unsubscribeBridge(eventName)
+        }
         for (const handlers of this.listeners.values()) {
             for (const record of handlers) {
                 record.active = false
@@ -129,7 +155,16 @@ export class EventBus {
         }
         if (handlers.length === 0) {
             this.listeners.delete(eventName)
+            this.unsubscribeBridge(eventName)
         }
+    }
+
+    private unsubscribeBridge(eventName: string): void {
+        if (!this.bridgeSubscriptions.delete(eventName)) {
+            return
+        }
+        const bridge = getHostBridge()
+        bridge?.notify("host.event.unsubscribe", { name: eventName })
     }
 }
 

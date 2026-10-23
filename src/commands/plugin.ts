@@ -2,12 +2,17 @@
  * plugin 命令：list / install / link / remove。
  */
 
+import { basename, join } from "node:path"
+
 import { Result } from "../api/result/result.ts"
 import { USAGE_CODES } from "../input/codes.ts"
 import { booleanValue, parseCommandArgs } from "../input/parse-options.ts"
+import { statIfExists } from "../platform/file.ts"
 import { installPlugin } from "../plugin/install.ts"
 import { linkPlugin, removePlugin } from "../plugin/loader.ts"
+import { PLUGIN_NAME, pluginsRoot } from "../plugin/paths.ts"
 import { scaffoldPlugin } from "../plugin/scaffold.ts"
+import { setPluginEnabled } from "../plugin/state.ts"
 import { failure, success, type CommandContext, type CommandOutcome } from "./shared.ts"
 
 export async function runPluginCommand(
@@ -60,7 +65,31 @@ export async function runPluginCommand(
                 ctx.elog.print(`  wellspring plugin link ${created.dir}`)
                 ctx.elog.print(`  wellspring plugin list`)
                 ctx.elog.print(`  wellspring ${created.commandName}`)
+                ctx.elog.print("类型检查：先把 Wellspring 链接进插件（见插件 README）")
                 return success(created)
+            }
+            case "enable":
+            case "disable": {
+                const name = line.positionals[0]
+                if (name === undefined) {
+                    return failure(`${USAGE_CODES.missingValue}:name`)
+                }
+                if (!PLUGIN_NAME.test(name)) {
+                    return failure(`${USAGE_CODES.invalidValue}:name`)
+                }
+                const plugins = await ctx.loadPlugins()
+                const match = plugins.find(
+                    (plugin) => plugin.id === name || basename(plugin.dir) === name,
+                )
+                const dirName = match === undefined ? name : basename(match.dir)
+                const dir = join(pluginsRoot(ctx.paths), dirName)
+                if ((await statIfExists(dir)) === null) {
+                    return failure(`plugin.not-found:${name}`)
+                }
+                const enabled = subcommand === "enable"
+                await setPluginEnabled(dirName, enabled, ctx.paths)
+                ctx.elog.info(`${enabled ? "已启用" : "已禁用"}插件 ${dirName}（下次运行生效）`)
+                return success({ id: dirName, enabled })
             }
             case "install": {
                 const source = line.positionals[0]

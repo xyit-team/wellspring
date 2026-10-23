@@ -38,6 +38,65 @@ const COLORS: Readonly<Record<ElogLevel, string>> = {
 
 const RESET = "\x1b[0m"
 
+// 字符显示宽度
+function charWidth(codePoint: number): number {
+    if (codePoint === 0x200b) {
+        return 0
+    }
+    return codePoint >= 0x1100 &&
+        (codePoint <= 0x115f ||
+            codePoint === 0x2329 ||
+            codePoint === 0x232a ||
+            (codePoint >= 0x2e80 && codePoint <= 0xa4cf) ||
+            (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+            (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+            (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+            (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+            (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+            (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+            (codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
+            (codePoint >= 0x1f900 && codePoint <= 0x1f9ff))
+        ? 2
+        : 1
+}
+
+function displayWidth(text: string): number {
+    let width = 0
+    for (const char of text) {
+        width += charWidth(char.codePointAt(0) ?? 0)
+    }
+    return width
+}
+
+function wrapLine(text: string, width: number): string[] {
+    if (displayWidth(text) <= width) {
+        return [text]
+    }
+    const chunks: string[] = []
+    let rest = text
+    while (displayWidth(rest) > width) {
+        let taken = 0
+        let current = 0
+        let lastSpace = -1
+        for (const char of rest) {
+            const next = charWidth(char.codePointAt(0) ?? 0)
+            if (current + next > width) {
+                break
+            }
+            current += next
+            taken += char.length
+            if (char === " ") {
+                lastSpace = taken
+            }
+        }
+        const cut = lastSpace > 0 ? lastSpace : taken
+        chunks.push(rest.slice(0, cut))
+        rest = rest.slice(cut)
+    }
+    chunks.push(rest)
+    return chunks
+}
+
 function detectColor(stream: ElogStream | undefined): boolean {
     const force = process.env["FORCE_COLOR"]
     if (force === "0") {
@@ -113,6 +172,91 @@ export class Elog {
 
     error(text: string): void {
         this.#line("error", text, this.#stderr)
+    }
+
+    /** Agent 输出前缀 */
+    agentStart(): void {
+        if (this.#json) {
+            return
+        }
+        const color = this.#colorStdout
+        const prefix = color ? `\x1b[36m[Agent]\x1b[0m` : "[Agent]"
+        this.#stdout.write(`\n${prefix}\n`)
+    }
+
+    /** Agent 输出行 */
+    agent(text: string): void {
+        if (this.#json) {
+            return
+        }
+        this.agentStart()
+        this.#stdout.write(`${text}\n`)
+    }
+
+    /** 步骤分隔行 */
+    step(step: number, total?: number): void {
+        if (this.#json) {
+            return
+        }
+        const color = this.#colorStdout
+        const text = total === undefined ? `── step ${step} ──` : `── step ${step}/${total} ──`
+        this.#stdout.write(`\n${color ? `\x1b[36m${text}\x1b[0m` : text}\n`)
+    }
+
+    /** 代码块 */
+    #codeBlock(label: string, code: string): void {
+        const columns = process.stdout.columns ?? 80
+        const width = Math.max(40, columns - 2)
+        const inner = width - 4
+        const color = this.#colorStdout
+        const border = (text: string): string => (color ? `\x1b[90m${text}\x1b[0m` : text)
+        const header = `┌ [${label}]`
+        this.#stdout.write(
+            `${border(`${header}${"─".repeat(Math.max(1, width - header.length - 1))}┐`)}\n`,
+        )
+        for (const source of code.split("\n")) {
+            const text = source.replace(/\t/g, "    ")
+            for (let index = 0; index < Math.max(1, text.length); index += inner) {
+                const chunk = text.slice(index, index + inner)
+                this.#stdout.write(`${border("│")} ${chunk.padEnd(inner)} ${border("│")}\n`)
+            }
+        }
+        this.#stdout.write(`${border(`└${"─".repeat(width - 2)}┘`)}\n`)
+    }
+
+    /** 操作请求块 */
+    action(
+        title: string,
+        rows: readonly {
+            readonly label: string
+            readonly value: string
+            readonly code?: boolean
+        }[],
+    ): void {
+        if (this.#json) {
+            return
+        }
+        const color = this.#colorStdout
+        const label = color ? `\x1b[33m${title}\x1b[0m` : title
+        this.#stdout.write(`\n${label}\n`)
+        for (const row of rows) {
+            if (row.code === true) {
+                this.#stdout.write(`  ${row.label}\n`)
+                this.#codeBlock("bash", row.value)
+                continue
+            }
+            this.#stdout.write(`  ${row.label} ${row.value}\n`)
+        }
+    }
+
+    /** 操作结果行 */
+    actionStatus(name: string, status: string): void {
+        if (this.#json) {
+            return
+        }
+        const color = this.#colorStdout
+        const label = color ? `\x1b[90m[操作]\x1b[0m` : "[操作]"
+        this.#stdout.write(`${label} ${name} ${status}\n`)
     }
 
     /** 只带级别标签，不再拼插件名 */

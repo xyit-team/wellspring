@@ -7,7 +7,8 @@
 import { resolve } from "node:path"
 
 import type { HostOutput, PluginCommandContext } from "./api/host/plugin.ts"
-import { setHookErrorHandler, setHookGuard } from "./api/host/hooks.ts"
+import { configureHost, setHostStatus } from "./api/host/host.ts"
+import { setHookErrorHandler, setHookGuard, withHookOwner } from "./api/host/hooks.ts"
 import { runConfigCommand } from "./commands/config.ts"
 import { runConversationCommand } from "./commands/conversation.ts"
 import { runDoctorCommand } from "./commands/doctor.ts"
@@ -22,6 +23,7 @@ import {
 } from "./commands/shared.ts"
 import { runSessionCommand } from "./commands/session.ts"
 import { runStartCommand } from "./commands/start.ts"
+import { runStopCommand } from "./commands/stop.ts"
 import { runVersionCommand } from "./commands/version.ts"
 import { DEFAULT_SETTINGS } from "./config/defaults.ts"
 import { loadSettings, SETTING_FILE_NAME } from "./config/loader.ts"
@@ -36,6 +38,10 @@ import { createProxyFetch } from "./network/proxy.ts"
 import { getPaths } from "./platform/path.ts"
 import { withConsoleGuard } from "./plugin/console-guard.ts"
 import { loadPlugins, type LoadedPlugin } from "./plugin/loader.ts"
+import { createPluginFileApi } from "./plugin/fs.ts"
+import { ensurePluginDataDir, loadPluginConfig } from "./plugin/runtime.ts"
+import { shutdownAllSandboxPlugins } from "./sandbox/plugin-client.ts"
+import { AgentToolRegistry } from "./plugin/agent-tools.ts"
 import { PluginRegistry } from "./plugin/registry.ts"
 
 function printParseError(code: string): void {
@@ -118,6 +124,8 @@ async function main(argv: readonly string[]): Promise<void> {
         process.env["WELLSPRING_HOME"] = globalOptions.home
     }
     const paths = getPaths()
+    configureHost({ paths })
+    setHostStatus("starting")
     const settingsFile = resolve(globalOptions.config ?? `${paths.configDir}/${SETTING_FILE_NAME}`)
 
     const loaded = await loadSettings(settingsFile)
@@ -139,7 +147,9 @@ async function main(argv: readonly string[]): Promise<void> {
     }
 
     setHookGuard(async (owner, task) => {
-        await withConsoleGuard(owner, logger.child({ plugin: owner }), task)
+        await withHookOwner(owner, async () => {
+            await withConsoleGuard(owner, logger.child({ plugin: owner }), task)
+        })
     })
 
     setHookErrorHandler(({ hook, owner, error }) => {
@@ -170,12 +180,21 @@ async function main(argv: readonly string[]): Promise<void> {
     }
 
     const registry = new PluginRegistry()
+    const agentTools = new AgentToolRegistry()
     let pluginsCache: readonly LoadedPlugin[] | null = null
     const ensurePlugins = async (): Promise<readonly LoadedPlugin[]> => {
         if (pluginsCache !== null) {
             return pluginsCache
         }
-        pluginsCache = await loadPlugins({ paths, config: settings, logger, registry })
+        pluginsCache = await loadPlugins({
+            paths,
+            config: settings,
+            logger,
+            registry,
+            agentTools,
+            sandbox: settings.sandbox,
+        })
+        setHostStatus("running")
         for (const plugin of pluginsCache) {
             if (plugin.status === "failed") {
                 logger.warn({ plugin: plugin.name, error: plugin.error }, "插件加载失败")
@@ -204,6 +223,7 @@ async function main(argv: readonly string[]): Promise<void> {
         logger,
         elog,
         registry,
+        agentTools,
         openai,
         loadPlugins: ensurePlugins,
     }
@@ -213,6 +233,7 @@ async function main(argv: readonly string[]): Promise<void> {
         if (commandName !== "version") {
             await ensurePlugins()
         }
+        setHostStatus("running")
 
         let outcome: CommandOutcome
         switch (commandName) {
@@ -224,6 +245,9 @@ async function main(argv: readonly string[]): Promise<void> {
                 break
             case "start":
                 outcome = await runStartCommand(ctx)
+                break
+            case "stop":
+                outcome = await runStopCommand(ctx)
                 break
             case "session":
                 outcome = await runSessionCommand(ctx, commandArgv)
@@ -251,6 +275,10 @@ async function main(argv: readonly string[]): Promise<void> {
                 }
                 const pluginLogger = logger.child({ plugin: record.pluginName })
                 try {
+                    const pluginDataDir = await ensurePluginDataDir(record.pluginName, paths)
+                    const pluginConfig = await loadPluginConfig(record.pluginName, paths)
+                    const pluginFs = createPluginFileApi(pluginDataDir)
+                    const workspaceFs = createPluginFileApi(process.cwd())
                     const pluginContext: PluginCommandContext = {
                         argv: commandArgv,
                         env: process.env,
@@ -258,14 +286,20 @@ async function main(argv: readonly string[]): Promise<void> {
                         config: settings,
                         logger: pluginLogger,
                         output: createPluginOutput(record.pluginName),
+                        pluginDataDir,
+                        pluginConfig,
+                        fs: pluginFs,
+                        workspaceFs,
                         cwd: process.cwd(),
                         json: jsonMode,
                         stdin: process.stdin,
                         stdout: process.stdout,
                         stderr: process.stderr,
                     }
-                    const code = await withConsoleGuard(record.pluginName, pluginLogger, async () =>
-                        record.command.run(pluginContext),
+                    const code = await withHookOwner(record.pluginName, async () =>
+                        withConsoleGuard(record.pluginName, pluginLogger, async () =>
+                            record.command.run(pluginContext),
+                        ),
                     )
                     process.exitCode = typeof code === "number" ? code : 0
                     return
@@ -278,6 +312,8 @@ async function main(argv: readonly string[]): Promise<void> {
         }
         emitOutcome(outcome, jsonMode)
     } finally {
+        setHostStatus("stopped")
+        await shutdownAllSandboxPlugins()
         await closeLogger()
     }
 }

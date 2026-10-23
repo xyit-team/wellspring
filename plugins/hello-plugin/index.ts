@@ -4,7 +4,7 @@
  */
 
 import {
-    beforeMessage,
+    onMessage,
     onInit,
     onShutdown,
     type PluginApi,
@@ -12,7 +12,8 @@ import {
 } from "wellspring/api/host/index.ts"
 
 // 钩子可以放在模块顶层；平台 import 时会归属到当前插件
-beforeMessage(({ prompt }) => {
+onMessage(({ phase, prompt }) => {
+    if (phase !== "before") return
     prompt.push("你是一个运行在 Wellspring 里的助手")
 })
 
@@ -29,6 +30,7 @@ export function setup(): WellspringPlugin {
         name: "Hello Plugin",
         version: "0.1.0",
         deps: [],
+        status: "ok" as const,
         commands: [
             {
                 name: "hello",

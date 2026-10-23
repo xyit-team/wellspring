@@ -12,6 +12,8 @@ import type { CommandContext } from "../src/commands/shared.ts"
 import { DEFAULT_SETTINGS } from "../src/config/defaults.ts"
 import { Elog } from "../src/logger/elog4js.ts"
 import type { ResolvedPaths } from "../src/platform/path.ts"
+import { readServiceRecord } from "../src/service/control.ts"
+import { AgentToolRegistry } from "../src/plugin/agent-tools.ts"
 import { PluginRegistry } from "../src/plugin/registry.ts"
 
 let root = ""
@@ -51,6 +53,7 @@ function context(): CommandContext {
         logger: pino({ level: "silent" }),
         elog,
         registry: new PluginRegistry(),
+        agentTools: new AgentToolRegistry(),
         openai: null,
         loadPlugins: async () => [],
     }
@@ -59,6 +62,8 @@ function context(): CommandContext {
 test("start 按顺序触发 onInit / onShutdown，并支持 shutdown()", async () => {
     const calls: string[] = []
     const guardOwners: string[] = []
+    const ctx = context()
+    let servicePid: number | null = null
     setHookGuard(async (owner, task) => {
         guardOwners.push(owner)
         await task()
@@ -66,8 +71,9 @@ test("start 按顺序触发 onInit / onShutdown，并支持 shutdown()", async (
 
     // 插件注册的钩子带 owner，平台会套上 console 拦截
     const offInit = await withHookOwner("demo-plugin", async () =>
-        onInit(() => {
+        onInit(async () => {
             calls.push("init")
+            servicePid = (await readServiceRecord(ctx.paths))?.pid ?? null
             shutdown()
         }),
     )
@@ -78,10 +84,12 @@ test("start 按顺序触发 onInit / onShutdown，并支持 shutdown()", async (
     )
 
     try {
-        const outcome = await runStartCommand(context())
+        const outcome = await runStartCommand(ctx)
         assert.equal(outcome.result.isSuccess(), true)
         assert.deepEqual(calls, ["init", "shutdown"])
         assert.deepEqual(guardOwners, ["demo-plugin", "demo-plugin"])
+        assert.equal(servicePid, process.pid)
+        assert.equal(await readServiceRecord(ctx.paths), null)
         assert.equal(process.listenerCount("SIGINT"), 0)
     } finally {
         setHookGuard(null)

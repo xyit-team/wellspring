@@ -6,10 +6,10 @@ Wellspring 官方示例插件：演示顶层钩子、`setup()` 元信息、插�
 
 ```bash
 # 直接链接仓库里的示例（开发用）
-wellspring plugin link ./examples/hello-plugin
+wellspring plugin link ./plugins/hello-plugin
 
 # 或者复制/安装
-wellspring plugin install ./examples/hello-plugin
+wellspring plugin install ./plugins/hello-plugin
 ```
 
 ## 使用

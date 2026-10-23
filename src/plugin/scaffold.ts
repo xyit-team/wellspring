@@ -40,11 +40,12 @@ export function commandNameOf(pluginName: string): string {
 
 function template(pluginName: string, commandName: string): string {
     return [
-        'import { beforeMessage, onInit, onShutdown } from "wellspring/api/host/index.ts"',
+        'import { onMessage, onInit, onShutdown } from "wellspring/api/host/index.ts"',
+        'import type { WellspringPlugin } from "wellspring/api/host/index.ts"',
         "",
         "// 钩子可以放在模块顶层；平台在 import 时会把它们归属到当前插件",
-        "beforeMessage(({ prompt }) => {",
-        '    prompt.push("你是一个运行在 Wellspring 里的助手")',
+        "onMessage(({ phase, prompt }) => {",
+        '    if (phase === "before") prompt.push("你是一个运行在 Wellspring 里的助手")',
         "})",
         "",
         "export function setup() {",
@@ -55,10 +56,11 @@ function template(pluginName: string, commandName: string): string {
         "        // wellspring start 关闭时触发",
         "    })",
         "",
-        "    return {",
+        "    const plugin = {",
         `        id: ${JSON.stringify(pluginName)},`,
         `        name: ${JSON.stringify(pluginName)},`,
         '        version: "0.1.0",',
+        '        status: "ok",',
         "        deps: [],",
         "        commands: [",
         "            {",
@@ -70,8 +72,37 @@ function template(pluginName: string, commandName: string): string {
         "                },",
         "            },",
         "        ],",
-        "    }",
+        "    } satisfies WellspringPlugin",
+        "",
+        "    return plugin",
         "}",
+        "",
+    ].join("\n")
+}
+
+function readmeTemplate(pluginName: string, commandName: string): string {
+    return [
+        `# ${pluginName}`,
+        "",
+        "## 开发",
+        "",
+        "编辑器 / tsc 解析 `wellspring/api/host/index.ts` 需要先把 Wellspring 链接进来：",
+        "",
+        "```bash",
+        "pnpm link /path/to/Wellspring",
+        "pnpm add -D typescript @types/node   # 如果还没有",
+        "pnpm exec tsc --noEmit",
+        "```",
+        "",
+        "运行时不需要链接：通过 `wellspring plugin link <this-dir>` 加载时，平台会解析宿主 API。",
+        "",
+        "## 加载",
+        "",
+        "```bash",
+        `wellspring plugin link \"$PWD\"`,
+        "wellspring plugin list",
+        `wellspring ${commandName}`,
+        "```",
         "",
     ].join("\n")
 }
@@ -103,5 +134,19 @@ export async function scaffoldPlugin(
         wellspring: { apiVersion: 1 },
     })
     await writeTextAtomic(join(dir, "index.ts"), template(name, commandName))
+    await writeJsonAtomic(join(dir, "tsconfig.json"), {
+        compilerOptions: {
+            target: "ES2024",
+            module: "NodeNext",
+            moduleResolution: "NodeNext",
+            strict: true,
+            noEmit: true,
+            allowImportingTsExtensions: true,
+            skipLibCheck: true,
+            types: ["node"],
+        },
+        include: ["index.ts"],
+    })
+    await writeTextAtomic(join(dir, "README.md"), readmeTemplate(name, commandName))
     return { dir, commandName }
 }
