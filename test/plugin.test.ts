@@ -654,6 +654,37 @@ test("禁用插件不加载，重新启用后恢复", async () => {
     assert.deepEqual(enabled[0]?.commands, ["hello"])
 })
 
+test("插件可以 import wellspring/api/host 目录入口", async () => {
+    const dataDir = join(root, "host-entry-data")
+    await writeCustomPlugin(
+        dataDir,
+        "host-entry-plugin",
+        [
+            'import { onMessage } from "wellspring/api/host"',
+            "",
+            "export function setup() {",
+            "    onMessage(() => {}",
+            "    )",
+            "    return {",
+            '        id: "host-entry-plugin",',
+            '        name: "Host Entry Plugin",',
+            '        version: "1.0.0",',
+            '        status: "ok",',
+            "    }",
+            "}",
+        ].join("\n"),
+    )
+    const registry = new PluginRegistry()
+    const { logger } = fakeLogger()
+    const plugins = await loadPlugins({
+        paths: tempPaths(dataDir),
+        config: DEFAULT_SETTINGS,
+        logger,
+        registry,
+    })
+    assert.equal(plugins[0]?.status, "ok")
+})
+
 test("禁止插件直接 import node:fs", async () => {
     const dataDir = join(root, "guard-data")
     await writeCustomPlugin(

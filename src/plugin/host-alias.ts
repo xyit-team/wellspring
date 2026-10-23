@@ -36,7 +36,11 @@ function resolveHostTarget(specifier: string): string | null {
     if (rest === "" || rest.startsWith("..") || rest.startsWith("/") || rest.includes("\\")) {
         return null
     }
-    return existingFile(join(SOURCE_ROOT, rest))
+    const direct = existingFile(join(SOURCE_ROOT, rest))
+    if (direct !== null) {
+        return direct
+    }
+    return existingFile(join(SOURCE_ROOT, rest, "index.ts"))
 }
 
 /** 注册一次即可；在加载插件前调用 */

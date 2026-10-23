@@ -1,3 +1,7 @@
+import type { PluginApi } from "wellspring/api/host"
+
+export let api: PluginApi
+
 export function setup() {
     return {
         id: "wellspring-web",
