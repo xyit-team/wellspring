@@ -2,12 +2,20 @@
 
 export type SessionMode = "chat" | "run"
 
+export interface SessionHeader {
+    readonly type: string
+    readonly metadata: Record<string, unknown>
+    readonly workspace: string
+}
+
 export interface SessionMeta {
-    readonly type: "session"
+    readonly type: string
     readonly version: 1
     readonly id: string
     readonly createdAt: number
     readonly cwd: string
+    readonly workspace: string
+    readonly metadata: Record<string, unknown>
     readonly app: string
     readonly appVersion: string
     readonly model: string
@@ -24,7 +32,7 @@ export type ContentPart =
           readonly arguments: string
       }
 
-export interface SessionMessage {
+export interface SessionMessageRecord {
     readonly role: "user" | "assistant" | "system" | "tool"
     readonly content: readonly ContentPart[]
     readonly source?: Record<string, unknown>

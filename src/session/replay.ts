@@ -7,7 +7,7 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat/completio
 import type {
     ContentPart,
     SessionEvent,
-    SessionMessage,
+    SessionMessageRecord,
     SessionMode,
     SessionTurn,
 } from "./types.ts"
@@ -25,12 +25,12 @@ export function contentText(parts: readonly ContentPart[] | undefined): string {
     return text
 }
 
-function messageOf(event: SessionEvent): SessionMessage | null {
+function messageOf(event: SessionEvent): SessionMessageRecord | null {
     const message = event.data["message"]
     if (typeof message !== "object" || message === null) {
         return null
     }
-    return message as SessionMessage
+    return message as SessionMessageRecord
 }
 
 /** 按 turn/start 分组；没有 turn 边界的事件归到当前组 */
@@ -80,22 +80,48 @@ export function lastSeq(events: readonly SessionEvent[]): number {
     return max
 }
 
-/** 历史事件 → 模型消息。只取 user/assistant 的 text 段 */
+/** 历史事件 → 模型消息；保留 assistant tool_calls 与 tool 结果 */
 export function toChatMessages(events: readonly SessionEvent[]): ChatCompletionMessageParam[] {
     const messages: ChatCompletionMessageParam[] = []
     for (const event of events) {
+        if (event.type === "tool/result") {
+            const callId = event.data["callId"]
+            const content = event.data["content"]
+            if (typeof callId === "string" && typeof content === "string") {
+                messages.push({ role: "tool", tool_call_id: callId, content })
+            }
+            continue
+        }
+
         const message = messageOf(event)
         if (message === null) {
             continue
         }
         const text = contentText(message.content)
-        if (text === "") {
+        if (event.type === "user/message" && message.role === "user") {
+            if (text !== "") {
+                messages.push({ role: "user", content: text })
+            }
             continue
         }
-        if (event.type === "user/message" && message.role === "user") {
-            messages.push({ role: "user", content: text })
-        } else if (event.type === "assistant/message" && message.role === "assistant") {
-            messages.push({ role: "assistant", content: text })
+        if (event.type === "assistant/message" && message.role === "assistant") {
+            const toolCalls = message.content.filter(
+                (part): part is Extract<ContentPart, { type: "tool-call" }> =>
+                    part.type === "tool-call",
+            )
+            if (toolCalls.length > 0) {
+                messages.push({
+                    role: "assistant",
+                    content: text === "" ? null : text,
+                    tool_calls: toolCalls.map((call) => ({
+                        id: call.id,
+                        type: "function" as const,
+                        function: { name: call.name, arguments: call.arguments },
+                    })),
+                })
+            } else if (text !== "") {
+                messages.push({ role: "assistant", content: text })
+            }
         }
     }
     return messages

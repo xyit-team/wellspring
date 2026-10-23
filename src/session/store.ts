@@ -24,7 +24,7 @@ import {
 import { getPaths } from "../platform/path.ts"
 import { decodeEvents, encodeEvents } from "./compress.ts"
 import { groupTurns } from "./replay.ts"
-import type { SessionEvent, SessionMeta, SessionTurn } from "./types.ts"
+import type { SessionEvent, SessionHeader, SessionMeta, SessionTurn } from "./types.ts"
 
 const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const SEGMENT = /^(\d+)\.jsonl\.zstd$/
@@ -55,6 +55,7 @@ export class SessionLockedError extends Error {
 
 export interface SessionData {
     readonly meta: SessionMeta
+    readonly header: SessionHeader
     readonly dir: string
     events: SessionEvent[]
     turns: SessionTurn[]
@@ -71,8 +72,11 @@ export interface SessionSummary {
 
 export interface CreateSessionOptions {
     readonly cwd: string
+    readonly workspace?: string
     readonly model: string
     readonly id?: string
+    readonly type?: string
+    readonly metadata?: Record<string, unknown>
 }
 
 export interface ListSessionsOptions {
@@ -154,31 +158,60 @@ export class SessionStore {
             return existing
         }
 
+        const workspace = resolve(options.workspace ?? options.cwd)
+        const type = options.type ?? "session"
+        const metadata = options.metadata ?? {}
         const meta: SessionMeta = {
-            type: "session",
+            type,
             version: 1,
             id,
             createdAt: Date.now(),
             cwd: options.cwd,
+            workspace,
+            metadata,
             app: APP_NAME,
             appVersion: APP_VERSION,
             model: options.model,
         }
+        const header: SessionHeader = { type, metadata, workspace }
         await ensureDir(join(dir, "turns"))
+        await writeBytesAtomic(
+            join(dir, "turns", "0000.jsonl.zstd"),
+            encodeEvents([
+                {
+                    type: "session/header",
+                    seq: 0,
+                    time: meta.createdAt,
+                    data: { ...header },
+                },
+            ]),
+        )
         await writeJsonAtomic(join(dir, "session.json"), meta)
         await this.#writeLast(options.cwd, id)
-        return { meta, dir, events: [], turns: [] }
+        return { meta, header, dir, events: [], turns: [] }
     }
 
     /** 打开当前 cwd 桶优先，其次其他桶；不存在抛 SessionNotFoundError */
     async open(id: string, cwd?: string): Promise<SessionData> {
         const dir = await this.#findDir(id, cwd)
-        const meta = await readJsonIfExists<SessionMeta>(join(dir, "session.json"))
-        if (meta === null || meta.type !== "session" || meta.version !== 1) {
+        const stored = await readJsonIfExists<SessionMeta>(join(dir, "session.json"))
+        if (stored === null || typeof stored.type !== "string" || stored.version !== 1) {
             throw new Error(`会话元信息损坏：${id}`)
         }
+        const header = (await this.#readHeader(dir)) ?? {
+            type: stored.type,
+            metadata: stored.metadata ?? {},
+            workspace: stored.workspace ?? stored.cwd,
+        }
+        const meta: SessionMeta = {
+            ...stored,
+            type: header.type,
+            metadata: header.metadata,
+            workspace:
+                header.workspace === "" ? (stored.workspace ?? stored.cwd) : header.workspace,
+        }
         const events = await this.#readEvents(dir)
-        return { meta, dir, events, turns: groupTurns(events) }
+        return { meta, header, dir, events, turns: groupTurns(events) }
     }
 
     /** 取最近一次会话；没有则创建 */
@@ -348,13 +381,35 @@ export class SessionStore {
         try {
             const names = await readdir(join(dir, "turns"))
             return names
-                .filter((name) => SEGMENT.test(name))
+                .filter((name) => SEGMENT.test(name) && name !== "0000.jsonl.zstd")
                 .sort(
                     (left, right) =>
                         Number(SEGMENT.exec(left)?.[1]) - Number(SEGMENT.exec(right)?.[1]),
                 )
         } catch {
             return []
+        }
+    }
+
+    async #readHeader(dir: string): Promise<SessionHeader | null> {
+        const data = await readBytesIfExists(join(dir, "turns", "0000.jsonl.zstd"))
+        if (data === null) {
+            return null
+        }
+        const event = decodeEvents(data).find((item) => item.type === "session/header")
+        if (event === undefined) {
+            return null
+        }
+        const type = event.data["type"]
+        const metadata = event.data["metadata"]
+        const workspace = event.data["workspace"]
+        return {
+            type: typeof type === "string" ? type : "session",
+            metadata:
+                typeof metadata === "object" && metadata !== null && !Array.isArray(metadata)
+                    ? (metadata as Record<string, unknown>)
+                    : {},
+            workspace: typeof workspace === "string" ? workspace : "",
         }
     }
 
