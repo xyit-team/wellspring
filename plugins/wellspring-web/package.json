@@ -1,5 +1,5 @@
 {
-    "name": "wellspring-core",
+    "name": "wellspring-web",
     "version": "1.0.0",
     "type": "module",
     "main": "index.ts",
@@ -19,8 +19,12 @@
             "hostApi": [
                 "logger",
                 "fs",
-                "capabilities"
+                "capabilities",
+                "http"
             ]
         }
+    },
+    "dependencies": {
+        "wellspring": "link:../.."
     }
 }

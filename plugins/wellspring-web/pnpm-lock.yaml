@@ -1,0 +1,16 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+overrides:
+  wellspring: link:../..
+
+importers:
+
+  .:
+    dependencies:
+      wellspring:
+        specifier: link:../..
+        version: link:../..
