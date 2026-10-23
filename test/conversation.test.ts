@@ -1,12 +1,23 @@
 import assert from "node:assert/strict"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { after, before, test } from "node:test"
 
 import pino from "pino"
 
-import { afterMessage, afterStep, afterTurn, beforeMessage } from "../src/api/host/hooks.ts"
+import {
+    afterStep,
+    afterTurn,
+    beforeStep,
+    beforeTurn,
+    onAgentAsyncTaskComplete,
+    onAgentCallTool,
+    onAgentRunAsync,
+    onAgentRunSync,
+    onMessage,
+} from "../src/api/host/hooks.ts"
+import { Result } from "../src/api/result/result.ts"
 import { DEFAULT_SETTINGS } from "../src/config/defaults.ts"
 import type { CommandContext } from "../src/commands/shared.ts"
 import { executeTurn } from "../src/commands/conversation.ts"
@@ -14,7 +25,10 @@ import { Elog } from "../src/logger/elog4js.ts"
 import { createProxyFetch } from "../src/network/proxy.ts"
 import { OpenAIClient, type CreateOpenAIClientOptions } from "../src/network/openai.ts"
 import type { ResolvedPaths } from "../src/platform/path.ts"
+import { AgentToolRegistry } from "../src/plugin/agent-tools.ts"
 import { PluginRegistry } from "../src/plugin/registry.ts"
+import { registerSession } from "../src/session/registry.ts"
+import { Session } from "../src/session/session.ts"
 import { SessionStore } from "../src/session/store.ts"
 
 let root = ""
@@ -79,7 +93,7 @@ function successFetch(requests: unknown[]): NonNullable<CreateOpenAIClientOption
     }
 }
 
-function context(client: OpenAIClient): CommandContext {
+function context(client: OpenAIClient, settings = DEFAULT_SETTINGS): CommandContext {
     const paths: ResolvedPaths = {
         configDir: join(root, "config"),
         dataDir: join(root, "data"),
@@ -99,13 +113,14 @@ function context(client: OpenAIClient): CommandContext {
     })
     return {
         global: { json: true, quiet: true, help: false, version: false },
-        settings: DEFAULT_SETTINGS,
+        settings,
         settingsFile: join(paths.configDir, "app-setting.json"),
         configCode: null,
         paths,
         logger: pino({ level: "silent" }),
         elog,
         registry: new PluginRegistry(),
+        agentTools: new AgentToolRegistry(),
         openai: client,
         loadPlugins: async () => [],
     }
@@ -194,15 +209,22 @@ test("对话生命周期触发 before/after 钩子", async () => {
 
     const calls: string[] = []
     const unregisters = [
-        beforeMessage(({ prompt }) => {
-            calls.push("beforeMessage")
-            prompt.push("hook-rule")
+        beforeTurn(() => {
+            calls.push("beforeTurn")
+        }),
+        onMessage(({ phase, prompt }) => {
+            if (phase === "before") {
+                calls.push("onMessage:before")
+                prompt.push("hook-rule")
+            } else {
+                calls.push("onMessage:after")
+            }
+        }),
+        beforeStep(() => {
+            calls.push("beforeStep")
         }),
         afterStep(() => {
             calls.push("afterStep")
-        }),
-        afterMessage(() => {
-            calls.push("afterMessage")
         }),
         afterTurn((payload) => {
             calls.push(`afterTurn:${payload.reason}`)
@@ -228,15 +250,497 @@ test("对话生命周期触发 before/after 钩子", async () => {
         }
         assert.deepEqual(request.messages?.[0], { role: "system", content: "hook-rule" })
         assert.deepEqual(calls, [
-            "beforeMessage",
+            "beforeTurn",
+            "onMessage:before",
+            "beforeStep",
+            "onMessage:after",
             "afterStep",
-            "afterMessage",
             "afterTurn:completed",
         ])
     } finally {
         for (const unregister of unregisters) {
             unregister()
         }
+    }
+})
+
+test("run 模式触发 onAgentRunSync；onAgentRunAsync 等异步任务钩子暂不触发", async () => {
+    const requests: unknown[] = []
+    const client = createClient(successFetch(requests))
+    const ctx = context(client)
+    const store = new SessionStore(join(root, "sessions"))
+    const session = await store.create({ cwd, model: "test-model", id: "conv-agent-run" })
+
+    const syncCalls: Array<{ sessionId: string; turn: number; input: string; cwd: string }> = []
+    const asyncCalls: unknown[] = []
+    const completeCalls: unknown[] = []
+    const offSync = onAgentRunSync((payload) => {
+        syncCalls.push({ ...payload })
+    })
+    const offAsync = onAgentRunAsync((payload) => {
+        asyncCalls.push(payload)
+    })
+    const offComplete = onAgentAsyncTaskComplete((payload) => {
+        completeCalls.push(payload)
+    })
+
+    try {
+        const result = await executeTurn({
+            ctx,
+            client,
+            store,
+            session,
+            mode: "run",
+            input: "do it",
+            model: "test-model",
+            stream: false,
+            display: false,
+        })
+        assert.equal(result.isSuccess(), true)
+        const expected = [{ sessionId: "conv-agent-run", turn: 1, input: "do it", cwd }]
+        assert.deepEqual(syncCalls, expected)
+        assert.deepEqual(asyncCalls, [])
+        assert.deepEqual(completeCalls, [])
+    } finally {
+        offSync()
+        offAsync()
+        offComplete()
+    }
+})
+
+test("Agent 循环执行 execute_code 并回填 tool result", { timeout: 20_000 }, async () => {
+    const requests: unknown[] = []
+    let callCount = 0
+    const toolCallArgs = JSON.stringify({
+        command: process.execPath,
+        argv: ["-e", "console.log('sandboxed-output')"],
+    })
+    const fetchImpl: NonNullable<CreateOpenAIClientOptions["fetch"]> = async (_input, init) => {
+        requests.push(JSON.parse(String(init?.body)))
+        callCount += 1
+        if (callCount === 1) {
+            return sse([
+                chunk({ role: "assistant" }),
+                {
+                    id: "chatcmpl_1",
+                    object: "chat.completion.chunk",
+                    created: 0,
+                    model: "test-model",
+                    choices: [
+                        {
+                            index: 0,
+                            delta: {
+                                tool_calls: [
+                                    {
+                                        index: 0,
+                                        id: "call_1",
+                                        type: "function",
+                                        function: {
+                                            name: "execute_code",
+                                            arguments: toolCallArgs,
+                                        },
+                                    },
+                                ],
+                            },
+                            finish_reason: null,
+                        },
+                    ],
+                },
+                chunk({}, "tool_calls"),
+                usageChunk(),
+            ])
+        }
+        return sse([
+            chunk({ role: "assistant" }),
+            chunk({ content: "最终回答" }),
+            chunk({}, "stop"),
+            usageChunk(),
+        ])
+    }
+
+    const client = createClient(fetchImpl)
+    const settings = {
+        ...DEFAULT_SETTINGS,
+        sandbox: { ...DEFAULT_SETTINGS.sandbox, mode: "best-effort" as const },
+    }
+    const ctx = context(client, settings)
+    const store = new SessionStore(join(root, "sessions"))
+    const session = await store.create({ cwd, model: "test-model", id: "conv-agent-code" })
+    ctx.agentTools.register("test", {
+        name: "execute_code",
+        introduction: { params: { command: "命令" }, content: "执行" },
+        call: async () => ({
+            success: true,
+            data: { content: "exitCode: 0\nstdout:\nsandboxed-output" },
+        }),
+    })
+
+    const toolCalls: string[] = []
+    let approvals = 0
+    const off = onAgentCallTool((payload) => {
+        toolCalls.push(`${payload.name}:${payload.arguments}`)
+    })
+
+    try {
+        const result = await executeTurn({
+            ctx,
+            client,
+            store,
+            session,
+            mode: "run",
+            input: "执行代码",
+            model: "test-model",
+            stream: false,
+            display: false,
+            approveExec: async () => {
+                approvals += 1
+                return false
+            },
+        })
+        assert.equal(result.isSuccess(), true)
+        assert.equal(result.getData()?.reply, "最终回答")
+        assert.equal(approvals, 0)
+        assert.equal(requests.length, 2)
+
+        const first = requests[0] as { tools?: unknown[] }
+        assert.ok(Array.isArray(first.tools))
+        const second = requests[1] as {
+            messages?: Array<{ role: string; tool_call_id?: string }>
+        }
+        assert.equal(
+            second.messages?.some((message) => message.role === "tool"),
+            true,
+        )
+        assert.equal(
+            second.messages?.some((message) => message.role === "assistant"),
+            true,
+        )
+        assert.equal(toolCalls.length, 1)
+        assert.match(toolCalls[0] ?? "", /execute_code/)
+
+        const reopened = await store.open("conv-agent-code", cwd)
+        const types = reopened.events.map((event) => event.type)
+        assert.ok(types.includes("tool/call"))
+        assert.ok(types.includes("tool/result"))
+        const toolResult = reopened.events.find((event) => event.type === "tool/result")
+        assert.match(String(toolResult?.data["content"] ?? ""), /sandboxed-output/)
+    } finally {
+        off()
+    }
+})
+
+test("Agent 循环调用 web_search 并回填结果", { timeout: 20_000 }, async () => {
+    const requests: unknown[] = []
+    let callCount = 0
+    const fetchImpl: NonNullable<CreateOpenAIClientOptions["fetch"]> = async (_input, init) => {
+        requests.push(JSON.parse(String(init?.body)))
+        callCount += 1
+        if (callCount === 1) {
+            return sse([
+                chunk({ role: "assistant" }),
+                {
+                    id: "chatcmpl_1",
+                    object: "chat.completion.chunk",
+                    created: 0,
+                    model: "test-model",
+                    choices: [
+                        {
+                            index: 0,
+                            delta: {
+                                tool_calls: [
+                                    {
+                                        index: 0,
+                                        id: "call_web",
+                                        type: "function",
+                                        function: {
+                                            name: "web_search",
+                                            arguments: JSON.stringify({ query: "DeepSeek V4" }),
+                                        },
+                                    },
+                                ],
+                            },
+                            finish_reason: null,
+                        },
+                    ],
+                },
+                chunk({}, "tool_calls"),
+                usageChunk(),
+            ])
+        }
+        return sse([
+            chunk({ role: "assistant" }),
+            chunk({ content: "搜索结果已找到" }),
+            chunk({}, "stop"),
+        ])
+    }
+
+    const client = createClient(fetchImpl)
+    const ctx = context(client)
+    ctx.agentTools.register("test", {
+        name: "web_search",
+        introduction: { params: { query: "查询" }, content: "搜索" },
+        call: async () => ({
+            success: true,
+            data: { content: "1. DeepSeek V4 发布\n   https://example.com/v4\n   长摘要" },
+        }),
+    })
+    const store = new SessionStore(join(root, "sessions"))
+    const session = await store.create({ cwd, model: "test-model", id: "conv-agent-web" })
+
+    const result = await executeTurn({
+        ctx,
+        client,
+        store,
+        session,
+        mode: "run",
+        input: "搜一下",
+        model: "test-model",
+        stream: false,
+        display: false,
+    })
+    assert.equal(result.isSuccess(), true)
+    assert.equal(result.getData()?.reply, "搜索结果已找到")
+    assert.equal(requests.length, 2)
+    const second = requests[1] as { messages?: Array<{ role: string; content?: unknown }> }
+    assert.equal(
+        second.messages?.some((message) => message.role === "tool"),
+        true,
+    )
+
+    const reopened = await store.open("conv-agent-web", cwd)
+    const toolResult = reopened.events.find((event) => event.type === "tool/result")
+    assert.match(String(toolResult?.data["content"] ?? ""), /DeepSeek V4 发布/)
+    assert.match(String(toolResult?.data["content"] ?? ""), /https:\/\/example\.com\/v4/)
+})
+
+test("Agent 循环调用插件工具", { timeout: 20_000 }, async () => {
+    const requests: unknown[] = []
+    let callCount = 0
+    const fetchImpl: NonNullable<CreateOpenAIClientOptions["fetch"]> = async (_input, init) => {
+        requests.push(JSON.parse(String(init?.body)))
+        callCount += 1
+        if (callCount === 1) {
+            return sse([
+                chunk({ role: "assistant" }),
+                {
+                    id: "chatcmpl_1",
+                    object: "chat.completion.chunk",
+                    created: 0,
+                    model: "test-model",
+                    choices: [
+                        {
+                            index: 0,
+                            delta: {
+                                tool_calls: [
+                                    {
+                                        index: 0,
+                                        id: "call_plugin",
+                                        type: "function",
+                                        function: {
+                                            name: "hello_tool",
+                                            arguments: JSON.stringify({ name: "wellspring" }),
+                                        },
+                                    },
+                                ],
+                            },
+                            finish_reason: null,
+                        },
+                    ],
+                },
+                chunk({}, "tool_calls"),
+            ])
+        }
+        return sse([
+            chunk({ role: "assistant" }),
+            chunk({ content: "插件工具完成" }),
+            chunk({}, "stop"),
+        ])
+    }
+    const client = createClient(fetchImpl)
+    const ctx = context(client)
+    ctx.agentTools.register("demo", {
+        name: "hello_tool",
+        introduction: { params: { name: "名称" }, content: "示例插件工具" },
+        call: async (args) => ({ success: true, data: { echoed: args } }),
+    })
+    const store = new SessionStore(join(root, "sessions"))
+    const session = await store.create({ cwd, model: "test-model", id: "conv-agent-plugin" })
+
+    const result = await executeTurn({
+        ctx,
+        client,
+        store,
+        session,
+        mode: "run",
+        input: "调用插件工具",
+        model: "test-model",
+        stream: false,
+        display: false,
+    })
+    assert.equal(result.isSuccess(), true)
+    assert.equal(result.getData()?.reply, "插件工具完成")
+    const first = requests[0] as { tools?: Array<{ function?: { name?: string } }> }
+    assert.equal(
+        first.tools?.some((tool) => tool.function?.name === "hello_tool"),
+        true,
+    )
+    const reopened = await store.open("conv-agent-plugin", cwd)
+    const toolResult = reopened.events.find((event) => event.type === "tool/result")
+    assert.match(String(toolResult?.data["content"] ?? ""), /wellspring/)
+})
+
+test("Agent 循环调用 read 并回填行号内容", { timeout: 20_000 }, async () => {
+    await writeFile(join(cwd, "read-target.txt"), "alpha\nbeta\n")
+    let callCount = 0
+    const fetchImpl: NonNullable<CreateOpenAIClientOptions["fetch"]> = async () => {
+        callCount += 1
+        if (callCount === 1) {
+            return sse([
+                chunk({ role: "assistant" }),
+                {
+                    id: "chatcmpl_1",
+                    object: "chat.completion.chunk",
+                    created: 0,
+                    model: "test-model",
+                    choices: [
+                        {
+                            index: 0,
+                            delta: {
+                                tool_calls: [
+                                    {
+                                        index: 0,
+                                        id: "call_read",
+                                        type: "function",
+                                        function: {
+                                            name: "read",
+                                            arguments: JSON.stringify({
+                                                file_path: "read-target.txt",
+                                            }),
+                                        },
+                                    },
+                                ],
+                            },
+                            finish_reason: null,
+                        },
+                    ],
+                },
+                chunk({}, "tool_calls"),
+            ])
+        }
+        return sse([chunk({ role: "assistant" }), chunk({ content: "读到了" }), chunk({}, "stop")])
+    }
+    const client = createClient(fetchImpl)
+    const ctx = context(client)
+    const store = new SessionStore(join(root, "sessions"))
+    const session = await store.create({ cwd, model: "test-model", id: "conv-agent-read" })
+    ctx.agentTools.register("test", {
+        name: "read",
+        introduction: { params: { file_path: "路径" }, content: "读取" },
+        call: async () => ({
+            success: true,
+            data: { content: "1│ alpha\n2│ beta\n\n[lines 1-2 of 2]" },
+        }),
+    })
+
+    const result = await executeTurn({
+        ctx,
+        client,
+        store,
+        session,
+        mode: "run",
+        input: "读文件",
+        model: "test-model",
+        stream: false,
+        display: false,
+    })
+    assert.equal(result.isSuccess(), true)
+    assert.equal(result.getData()?.reply, "读到了")
+    const reopened = await store.open("conv-agent-read", cwd)
+    const toolResult = reopened.events.find((event) => event.type === "tool/result")
+    assert.match(String(toolResult?.data["content"] ?? ""), /1│ alpha/)
+    assert.match(String(toolResult?.data["content"] ?? ""), /2│ beta/)
+})
+
+test("Session.message 注入当前 Agent step", { timeout: 20_000 }, async () => {
+    const requests: unknown[] = []
+    let callCount = 0
+    const fetchImpl: NonNullable<CreateOpenAIClientOptions["fetch"]> = async (_input, init) => {
+        requests.push(JSON.parse(String(init?.body)))
+        callCount += 1
+        if (callCount === 1) {
+            return sse([
+                chunk({ role: "assistant" }),
+                {
+                    id: "chatcmpl_1",
+                    object: "chat.completion.chunk",
+                    created: 0,
+                    model: "test-model",
+                    choices: [
+                        {
+                            index: 0,
+                            delta: {
+                                tool_calls: [
+                                    {
+                                        index: 0,
+                                        id: "call_plugin_inject",
+                                        type: "function",
+                                        function: {
+                                            name: "hello_tool",
+                                            arguments: "{}",
+                                        },
+                                    },
+                                ],
+                            },
+                            finish_reason: null,
+                        },
+                    ],
+                },
+                chunk({}, "tool_calls"),
+            ])
+        }
+        return sse([chunk({ role: "assistant" }), chunk({ content: "完成" }), chunk({}, "stop")])
+    }
+    const client = createClient(fetchImpl)
+    const ctx = context(client)
+    ctx.agentTools.register("demo", {
+        name: "hello_tool",
+        introduction: { params: {}, content: "示例" },
+        call: () => ({ success: true, data: {} }),
+    })
+    const store = new SessionStore(join(root, "sessions"))
+    const data = await store.create({ cwd, model: "test-model", id: "conv-agent-inject" })
+    const session = new Session(data, store)
+    registerSession(session)
+    const off = beforeStep(async () => {
+        if (
+            session.take.length === 0 &&
+            !session.data.events.some((event) => event.type === "assistant/message")
+        ) {
+            await session.message("injected")
+        }
+    })
+    try {
+        const result = await executeTurn({
+            ctx,
+            client,
+            store,
+            session: data,
+            mode: "run",
+            input: "开始",
+            model: "test-model",
+            stream: false,
+            display: false,
+        })
+        assert.equal(result.isSuccess(), true)
+        const first = requests[0] as { messages?: Array<{ role: string; content: unknown }> }
+        assert.equal(
+            first.messages?.some(
+                (message) => message.role === "user" && message.content === "injected",
+            ),
+            true,
+        )
+    } finally {
+        off()
     }
 })
 

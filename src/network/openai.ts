@@ -17,7 +17,10 @@ import OpenAI, {
     RateLimitError,
     type ClientOptions,
 } from "openai"
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
+import type {
+    ChatCompletionMessageParam,
+    ChatCompletionTool,
+} from "openai/resources/chat/completions"
 import type { Logger } from "pino"
 
 import { Result } from "../api/result/result.ts"
@@ -70,13 +73,22 @@ export interface OpenAISessionChunk {
     readonly chunk: Record<string, unknown>
 }
 
+export interface ToolCall {
+    readonly id: string
+    readonly name: string
+    readonly arguments: string
+}
+
 export interface StreamReply {
     readonly reply: OpenAIReply
     readonly chunks: readonly OpenAISessionChunk[]
+    readonly toolCalls: readonly ToolCall[]
 }
 
 export interface ChatStreamOptions extends ChatOptions {
     readonly onText?: (text: string) => void
+    readonly tools?: readonly ChatCompletionTool[]
+    readonly toolChoice?: "auto" | "none" | "required"
 }
 
 export interface CreateOpenAIClientOptions {
@@ -236,6 +248,12 @@ export class OpenAIClient {
                 ...(options.maxTokens === undefined
                     ? {}
                     : { max_completion_tokens: options.maxTokens }),
+                ...(options.tools === undefined || options.tools.length === 0
+                    ? {}
+                    : {
+                          tools: [...options.tools],
+                          tool_choice: options.toolChoice ?? "auto",
+                      }),
             })
 
             const chunks: OpenAISessionChunk[] = []
@@ -246,6 +264,7 @@ export class OpenAIClient {
             let outputTokens: number | null = null
             let finishReason: string | null = null
             let blockStarted = false
+            const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>()
             const push = (chunk: Record<string, unknown>): void => {
                 chunks.push({ type: "chunk", time: Date.now(), chunk })
             }
@@ -276,6 +295,31 @@ export class OpenAIClient {
                 if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
                     finishReason = choice.finish_reason
                 }
+                for (const toolCallDelta of choice.delta.tool_calls ?? []) {
+                    const index = toolCallDelta.index ?? toolCallMap.size
+                    const entry = toolCallMap.get(index) ?? {
+                        id: "",
+                        name: "",
+                        arguments: "",
+                    }
+                    if (typeof toolCallDelta.id === "string") {
+                        entry.id = toolCallDelta.id
+                    }
+                    if (typeof toolCallDelta.function?.name === "string") {
+                        entry.name += toolCallDelta.function.name
+                    }
+                    if (typeof toolCallDelta.function?.arguments === "string") {
+                        entry.arguments += toolCallDelta.function.arguments
+                    }
+                    toolCallMap.set(index, entry)
+                    push({
+                        type: "tool-call-delta",
+                        index,
+                        id: toolCallDelta.id ?? null,
+                        name: toolCallDelta.function?.name ?? null,
+                        argumentsDelta: toolCallDelta.function?.arguments ?? null,
+                    })
+                }
                 const delta = choice.delta.content
                 if (typeof delta === "string" && delta !== "") {
                     if (!blockStarted) {
@@ -294,15 +338,26 @@ export class OpenAIClient {
             } else {
                 push({ type: "block-end", index: 0, block: { type: "text", text } })
             }
+            const toolCalls: ToolCall[] = [...toolCallMap.entries()]
+                .sort(([left], [right]) => left - right)
+                .map(([index, entry]) => ({
+                    id: entry.id === "" ? `call_${index}` : entry.id,
+                    name: entry.name,
+                    arguments: entry.arguments,
+                }))
+            for (const toolCall of toolCalls) {
+                push({ type: "tool-call", ...toolCall })
+            }
             push({ type: "finish", reason: { kind: finishReason ?? "stop" } })
 
-            if (text === "") {
+            if (text === "" && toolCalls.length === 0) {
                 return Result.error<StreamReply>(OPENAI_CODES.emptyOutput)
             }
             this.#logger?.debug({ model: responseModel, id }, "OpenAI Chat 流式调用")
             return Result.successWithData<StreamReply>({
                 reply: { text, model: responseModel, id, inputTokens, outputTokens },
                 chunks,
+                toolCalls,
             })
         } catch (error) {
             const code = mapOpenAIError(error)

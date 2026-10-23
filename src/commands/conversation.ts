@@ -10,16 +10,21 @@ import { createInterface } from "node:readline"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 
 import {
-    emitAfterMessage,
     emitAfterStep,
     emitAfterTurn,
-    emitBeforeMessage,
+    emitBeforeStep,
+    emitBeforeTurn,
+    emitOnMessage,
 } from "../api/host/hooks.ts"
 import { Result } from "../api/result/result.ts"
+import { createMarkdownStream, renderMarkdown } from "../display/markdown.ts"
 import { USAGE_CODES } from "../input/codes.ts"
 import { booleanValue, parseCommandArgs, stringValue } from "../input/parse-options.ts"
 import type { OpenAIClient, StreamReply } from "../network/openai.ts"
+import type { SandboxAccess } from "../config/types.ts"
+import { registerSession } from "../session/registry.ts"
 import { lastSeq, lastTurnNumber, toChatMessages } from "../session/replay.ts"
+import { Session } from "../session/session.ts"
 import {
     SessionAmbiguousError,
     SessionLockedError,
@@ -28,7 +33,9 @@ import {
     isValidSessionId,
     type SessionData,
 } from "../session/store.ts"
-import type { SessionEvent, SessionMessage, SessionMode } from "../session/types.ts"
+import type { SessionEvent, SessionMessageRecord, SessionMode } from "../session/types.ts"
+import { executeAgentTurn, type ExecApprovalRequest } from "./agent-turn.ts"
+import { promptExecApproval } from "./exec-approval.ts"
 import {
     errorMessage,
     failure,
@@ -45,10 +52,13 @@ interface ConversationOptions {
     readonly agent?: string
     readonly json: boolean
     readonly stream: boolean
+    readonly allowExec: boolean
+    readonly permission: SandboxAccess
+    readonly maxSteps?: number
     readonly context: readonly string[]
 }
 
-interface TurnData {
+export interface TurnData {
     readonly sessionId: string
     readonly mode: SessionMode
     readonly reply: string
@@ -71,6 +81,9 @@ function parseConversationOptions(
         agent: { type: "string" },
         json: { type: "boolean" },
         stream: { type: "boolean" },
+        "allow-exec": { type: "boolean" },
+        permission: { type: "string" },
+        "max-steps": { type: "string" },
         "no-stream": { type: "boolean" },
     })
     if (!parsed.isSuccess()) {
@@ -101,6 +114,29 @@ function parseConversationOptions(
     const stream =
         streamFlag || noStream ? streamFlag : json === false && process.stdout.isTTY === true
 
+    const rawPermission = stringValue(values, "permission")
+    let permission = ctx.settings.sandbox.access
+    if (rawPermission !== undefined) {
+        if (
+            rawPermission !== "read-only" &&
+            rawPermission !== "workspace-write" &&
+            rawPermission !== "danger-full-access"
+        ) {
+            return Result.error<ConversationOptions>(USAGE_CODES.invalidValue)
+        }
+        permission = rawPermission
+    }
+
+    const rawMaxSteps = stringValue(values, "max-steps")
+    let maxSteps: number | undefined
+    if (rawMaxSteps !== undefined) {
+        const parsedSteps = Number(rawMaxSteps)
+        if (!Number.isInteger(parsedSteps) || parsedSteps < 1 || parsedSteps > 32) {
+            return Result.error<ConversationOptions>(USAGE_CODES.invalidValue)
+        }
+        maxSteps = parsedSteps
+    }
+
     return Result.successWithData<ConversationOptions>({
         sessionId,
         newSession,
@@ -109,6 +145,9 @@ function parseConversationOptions(
         agent: stringValue(values, "agent"),
         json,
         stream,
+        allowExec: booleanValue(values, "allow-exec"),
+        permission,
+        maxSteps,
         context: positionals,
     })
 }
@@ -188,12 +227,40 @@ export async function executeTurn(params: {
     readonly system?: string
     readonly stream: boolean
     readonly display: boolean
+    readonly allowExec?: boolean
+    readonly permission?: SandboxAccess
+    readonly maxSteps?: number
+    readonly approveExec?: (request: ExecApprovalRequest) => Promise<boolean>
 }): Promise<Result<TurnData>> {
     const { ctx, client, store, session, mode, input, model, system, stream, display } = params
+    if (mode === "run") {
+        return await executeAgentTurn({
+            ctx,
+            client,
+            store,
+            session,
+            input,
+            model,
+            system,
+            stream,
+            display,
+            allowExec: params.allowExec,
+            permission: params.permission,
+            maxSteps: params.maxSteps,
+            approveExec: params.approveExec,
+        })
+    }
     const turn = lastTurnNumber(session.events) + 1
     let seq = lastSeq(session.events) + 1
     const startedAt = Date.now()
 
+    await emitBeforeTurn({
+        sessionId: session.meta.id,
+        mode,
+        turn,
+        input,
+        cwd: session.meta.workspace ?? session.meta.cwd,
+    })
     const events: SessionEvent[] = [
         { type: "turn/start", seq: seq++, time: startedAt, data: { turn, mode } },
         {
@@ -206,18 +273,26 @@ export async function executeTurn(params: {
                     content: [{ type: "text", text: input }],
                     source: { kind: "cli" },
                     id: randomUUID(),
-                } satisfies SessionMessage,
+                } satisfies SessionMessageRecord,
                 surfaceOp: "append",
             },
         },
     ]
 
-    // 钩子可以往 prompt 里追加系统提示
+    // onMessage 的 before 阶段可以往 prompt 里追加系统提示
     const prompt: string[] = []
     if (system !== undefined && system.trim() !== "") {
         prompt.push(system)
     }
-    await emitBeforeMessage({ input, context: session.meta.cwd, prompt })
+    await emitOnMessage({
+        sessionId: session.meta.id,
+        mode,
+        turn,
+        role: "user",
+        phase: "before",
+        content: input,
+        prompt,
+    })
 
     const messages: ChatCompletionMessageParam[] = []
     const systemText = prompt
@@ -229,12 +304,22 @@ export async function executeTurn(params: {
     }
     messages.push(...toChatMessages(session.events), { role: "user", content: input })
 
+    await emitBeforeStep({
+        sessionId: session.meta.id,
+        mode,
+        turn,
+        step: 1,
+        input,
+    })
+
     const streamed = display && stream
+    const markdownEnabled = display && process.stdout.isTTY === true
+    const markdown = markdownEnabled && streamed ? createMarkdownStream() : null
     const streamResult = await client.chatStream(messages, {
         model,
         onText: streamed
             ? (text) => {
-                  ctx.elog.stream(text)
+                  ctx.elog.stream(markdown === null ? text : markdown.push(text))
               }
             : undefined,
     })
@@ -256,13 +341,19 @@ export async function executeTurn(params: {
             code,
         })
         if (streamed) {
+            if (markdown !== null) {
+                const tail = markdown.finish().replace(/\n+$/, "")
+                if (tail !== "") {
+                    ctx.elog.stream(tail)
+                }
+            }
             ctx.elog.line()
         }
         return Result.error<TurnData>(code)
     }
 
     const data = streamResult.getData() as StreamReply
-    const assistant: SessionMessage = {
+    const assistant: SessionMessageRecord = {
         role: "assistant",
         content: [{ type: "text", text: data.reply.text }],
         source: { kind: "model", provider: "openai", model: data.reply.model },
@@ -291,22 +382,21 @@ export async function executeTurn(params: {
     })
     await store.appendTurn(session, events)
 
+    await emitOnMessage({
+        sessionId: session.meta.id,
+        mode,
+        turn,
+        role: "assistant",
+        phase: "after",
+        content: data.reply.text,
+        prompt,
+    })
     await emitAfterStep({
         sessionId: session.meta.id,
         mode,
         turn,
         step: 1,
         reply: data.reply.text,
-        model: data.reply.model,
-    })
-    await emitAfterMessage({
-        sessionId: session.meta.id,
-        mode,
-        input,
-        reply: data.reply.text,
-        model: data.reply.model,
-        inputTokens: data.reply.inputTokens,
-        outputTokens: data.reply.outputTokens,
     })
     await emitAfterTurn({
         sessionId: session.meta.id,
@@ -317,9 +407,15 @@ export async function executeTurn(params: {
     })
 
     if (streamed) {
+        if (markdown !== null) {
+            const tail = markdown.finish().replace(/\n+$/, "")
+            if (tail !== "") {
+                ctx.elog.stream(tail)
+            }
+        }
         ctx.elog.line()
     } else if (display) {
-        ctx.elog.print(data.reply.text)
+        ctx.elog.print(markdownEnabled ? renderMarkdown(data.reply.text) : data.reply.text)
     }
 
     return Result.successWithData<TurnData>({
@@ -359,18 +455,26 @@ async function runRepl(
         historySize: 100,
     })
     let session = params.session
+    registerSession(new Session(session, params.store))
     let model = params.options.model
+    let permission = params.options.permission
+    let closed = false
 
     const refresh = (): void => {
         const name = session.meta.title ?? session.meta.id.slice(-4)
         ctx.elog.setSessionName(name)
-        rl.setPrompt(promptText(session, params.mode))
     }
     refresh()
-    rl.prompt()
-    rl.on("SIGINT", () => {
-        rl.close()
-    })
+
+    // 逐次审批
+    const approveExec = async (request: ExecApprovalRequest): Promise<boolean> => {
+        rl.pause()
+        try {
+            return await promptExecApproval(request)
+        } finally {
+            rl.resume()
+        }
+    }
 
     const handleSlash = async (line: string): Promise<"exit" | "continue"> => {
         const [command, ...args] = line.split(/\s+/)
@@ -383,6 +487,7 @@ async function runRepl(
                 return "continue"
             case "/new":
                 session = await params.store.create({ cwd, model })
+                registerSession(new Session(session, params.store))
                 ctx.elog.notice(`session: ${session.meta.id}`)
                 return "continue"
             case "/session": {
@@ -397,15 +502,32 @@ async function runRepl(
                 }
                 if (args[0] !== undefined) {
                     session = await params.store.open(args[0], cwd)
+                    registerSession(new Session(session, params.store))
                     return "continue"
                 }
                 ctx.elog.print(
-                    `${session.meta.id}  turns=${session.turns.length}  ${session.meta.cwd}`,
+                    `${session.meta.id}  turns=${session.turns.length}  ${session.meta.workspace ?? session.meta.cwd}`,
                 )
                 return "continue"
             }
             case "/clear":
                 ctx.elog.clear()
+                return "continue"
+            case "/permission":
+                if (args[0] !== undefined) {
+                    if (
+                        args[0] !== "read-only" &&
+                        args[0] !== "workspace-write" &&
+                        args[0] !== "danger-full-access"
+                    ) {
+                        ctx.elog.error(
+                            "用法：/permission read-only|workspace-write|danger-full-access",
+                        )
+                        return "continue"
+                    }
+                    permission = args[0]
+                }
+                ctx.elog.info(`permission: ${permission}`)
                 return "continue"
             case "/model":
                 if (args[0] !== undefined && args[0].trim() !== "") {
@@ -421,54 +543,71 @@ async function runRepl(
         }
     }
 
-    try {
-        for await (const line of rl) {
-            const text = line.trim()
-            if (text === "") {
-                rl.prompt()
-                continue
-            }
-            if (text.startsWith("/") && !text.startsWith("//")) {
-                try {
-                    const action = await handleSlash(text)
-                    if (action === "exit") {
-                        break
-                    }
-                } catch (error) {
-                    ctx.elog.error(errorMessage(sessionCode(error)))
-                }
-                refresh()
-                rl.prompt()
-                continue
-            }
-
-            const input = text.startsWith("//") ? text.slice(1) : text
-            rl.pause()
-            try {
-                const result = await executeTurn({
-                    ctx,
-                    client: ctx.openai as OpenAIClient,
-                    store: params.store,
-                    session,
-                    mode: params.mode,
-                    input,
-                    model,
-                    system: params.options.system,
-                    stream: params.options.stream,
-                    display: true,
-                })
-                if (!result.isSuccess()) {
-                    ctx.elog.error(errorMessage(result.getCode() ?? "openai.request-failed"))
-                }
-            } finally {
-                rl.resume()
-                refresh()
-                rl.prompt()
-            }
-        }
-    } finally {
-        rl.close()
+    const ask = (): void => {
+        rl.question(promptText(session, params.mode), (line) => {
+            void handleLine(line)
+        })
     }
+
+    const handleLine = async (line: string): Promise<void> => {
+        if (closed) {
+            return
+        }
+        const text = line.trim()
+        if (text === "") {
+            ask()
+            return
+        }
+        if (text.startsWith("/") && !text.startsWith("//")) {
+            try {
+                if ((await handleSlash(text)) === "exit") {
+                    rl.close()
+                    return
+                }
+            } catch (error) {
+                ctx.elog.error(errorMessage(sessionCode(error)))
+            }
+            refresh()
+            ask()
+            return
+        }
+
+        const input = text.startsWith("//") ? text.slice(1) : text
+        try {
+            const result = await executeTurn({
+                ctx,
+                client: ctx.openai as OpenAIClient,
+                store: params.store,
+                session,
+                mode: params.mode,
+                input,
+                model,
+                system: params.options.system,
+                stream: params.options.stream,
+                display: true,
+                allowExec: params.options.allowExec,
+                permission,
+                maxSteps: params.options.maxSteps,
+                approveExec,
+            })
+            if (!result.isSuccess()) {
+                ctx.elog.error(errorMessage(result.getCode() ?? "openai.request-failed"))
+            }
+        } catch (error) {
+            ctx.elog.error(errorMessage(sessionCode(error)))
+        }
+        refresh()
+        ask()
+    }
+
+    rl.on("SIGINT", () => {
+        rl.close()
+    })
+    rl.on("close", () => {
+        closed = true
+    })
+    ask()
+    await new Promise<void>((resolve) => rl.once("close", resolve))
     return success(null)
 }
 
@@ -529,6 +668,7 @@ export async function runConversationCommand(
     if (created) {
         ctx.elog.notice(`session: ${session.meta.id}`)
     }
+    registerSession(new Session(session, store))
 
     const result = await executeTurn({
         ctx,
@@ -541,6 +681,13 @@ export async function runConversationCommand(
         system: options.system,
         stream: options.stream,
         display: options.json === false,
+        allowExec: options.allowExec,
+        permission: options.permission,
+        maxSteps: options.maxSteps,
+        approveExec:
+            options.json === false && process.stdin.isTTY === true && process.stdout.isTTY === true
+                ? promptExecApproval
+                : undefined,
     })
     if (!result.isSuccess()) {
         return { result: Result.error<unknown>(result.getCode() ?? "openai.request-failed") }

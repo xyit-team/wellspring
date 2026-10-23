@@ -16,12 +16,17 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandSpec[] = [
     {
         name: "run",
         summary: "Agent 模式，单轮执行或进入交互式会话",
-        usage: "wellspring run [--session-id <id>] [--new] [--agent <name>] [--model <name>] <context...>",
+        usage: "wellspring run [--session-id <id>] [--new] [--agent <name>] [--model <name>] [--permission read-only|workspace-write|danger-full-access] [--allow-exec] [--max-steps <n>] <context...>",
     },
     {
         name: "start",
         summary: "以服务进程启动，加载插件并触发 onInit",
         usage: "wellspring start",
+    },
+    {
+        name: "stop",
+        summary: "停止正在运行的 Wellspring 服务",
+        usage: "wellspring stop",
     },
     {
         name: "session",
@@ -36,7 +41,7 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandSpec[] = [
     {
         name: "plugin",
         summary: "插件列表、安装与删除",
-        usage: "wellspring plugin <list|new|install|link|remove> [args]",
+        usage: "wellspring plugin <list|new|install|link|enable|disable|remove> [args]",
     },
     {
         name: "doctor",
