@@ -952,6 +952,26 @@ export class PluginSandboxClient {
                 join(this.#hostSdkDir, "src", "event", "event.ts"),
             ],
             [
+                join(PROJECT_ROOT, "src", "session", "session.ts"),
+                join(this.#hostSdkDir, "src", "session", "session.ts"),
+            ],
+            [
+                join(PROJECT_ROOT, "src", "session", "registry.ts"),
+                join(this.#hostSdkDir, "src", "session", "registry.ts"),
+            ],
+            [
+                join(PROJECT_ROOT, "src", "session", "replay.ts"),
+                join(this.#hostSdkDir, "src", "session", "replay.ts"),
+            ],
+            [
+                join(PROJECT_ROOT, "src", "session", "types.ts"),
+                join(this.#hostSdkDir, "src", "session", "types.ts"),
+            ],
+            [
+                join(PROJECT_ROOT, "src", "workspace", "index.ts"),
+                join(this.#hostSdkDir, "src", "workspace", "index.ts"),
+            ],
+            [
                 join(PROJECT_ROOT, "src", "sandbox", "bridge-state.ts"),
                 join(this.#hostSdkDir, "src", "sandbox", "bridge-state.ts"),
             ],
