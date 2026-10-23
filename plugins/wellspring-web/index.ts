@@ -1,6 +1,6 @@
-import type { PluginApi } from "wellspring/api/host"
+import type { PluginApi } from "wellspring/api/host/index.ts"
 
-export let api: PluginApi
+import { configureServer } from "./src/server.ts"
 
 export function setup() {
     return {
@@ -8,5 +8,8 @@ export function setup() {
         name: "Wellspring Web 插件",
         version: "1.0.0",
         status: "ok" as const,
+        init: (api: PluginApi) => {
+            configureServer(api)
+        },
     }
 }
