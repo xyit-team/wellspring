@@ -20,7 +20,8 @@
                 "logger",
                 "fs",
                 "capabilities",
-                "http"
+                "http",
+                "agent"
             ]
         }
     }

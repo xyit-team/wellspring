@@ -8,8 +8,8 @@ export function setup() {
         name: "Wellspring Web 插件",
         version: "1.0.0",
         status: "ok" as const,
-        init: (api: PluginApi) => {
-            configureServer(api)
+        init: async (api: PluginApi) => {
+            await configureServer(api)
         },
     }
 }
