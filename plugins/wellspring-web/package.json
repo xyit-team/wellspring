@@ -3,9 +3,6 @@
     "version": "1.0.0",
     "type": "module",
     "main": "index.ts",
-    "dependencies": {
-        "wellspring": "link:../.."
-    },
     "wellspring": {
         "apiVersion": 1,
         "sandbox": {
