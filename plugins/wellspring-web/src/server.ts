@@ -13,6 +13,13 @@ export function configureServer(value: PluginApi): void {
     api = value
 }
 
+export function getApi(): PluginApi {
+    if (api === null) {
+        throw new Error("wellspring-web 尚未初始化")
+    }
+    return api
+}
+
 export function onHttpRequest(request: HttpRequest): HttpResponse {
     return {
         status: 200,
@@ -22,10 +29,8 @@ export function onHttpRequest(request: HttpRequest): HttpResponse {
 }
 
 onInit(async () => {
-    if (api === null) {
-        throw new Error("wellspring-web 尚未初始化")
-    }
-    server = await api.http.createServer({ host: "127.0.0.1", port: 8787 }, onHttpRequest)
+    const currentApi = getApi()
+    server = await currentApi.http.createServer({ host: "127.0.0.1", port: 8787 }, onHttpRequest)
 })
 
 onShutdown(async () => {
