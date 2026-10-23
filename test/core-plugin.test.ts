@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { cp, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { after, before, test } from "node:test"
@@ -72,6 +72,7 @@ test("wellspring-core 注册全部 Agent 工具", { timeout: 20_000 }, async () 
     )
 
     const relative = ".tmp/core-read.txt"
+    await mkdir(join(process.cwd(), ".tmp"), { recursive: true })
     await writeFile(join(process.cwd(), relative), "alpha\nbeta\n")
     const read = agentTools.get("read")
     assert.ok(read)
