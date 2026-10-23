@@ -243,6 +243,74 @@ onShutdown(() => {
 - `plugin disable <name>` / `plugin enable <name>` 会把状态写到 `<dataDir>/plugins-state.json`，下次运行生效
 - 插件里的 `console.*` 会被拦截，输出用 `ctx.logger` / `ctx.output` / `api.logger`
 
+### PluginApi 能力
+
+`setup()` 的 `init(api: PluginApi)` 暴露以下能力。
+
+| 成员                       | 说明                                                     |
+| -------------------------- | -------------------------------------------------------- |
+| `apiVersion`               | 宿主 API 版本                                            |
+| `plugin`                   | `{ id, name, version }`                                  |
+| `paths`                    | 配置、数据、缓存、日志根目录                             |
+| `config`                   | 全局配置 `AppSetting`                                    |
+| `logger`                   | pino Logger                                              |
+| `output`                   | `info` / `warn` / `error` / `print`，走终端渲染          |
+| `pluginDataDir`            | 插件数据目录，已创建                                     |
+| `pluginConfig`             | `<configDir>/plugins/<id>.json` 内容                     |
+| `fs`                       | 插件数据目录内的文件 API                                 |
+| `workspaceFs`              | 当前工作目录的文件 API，需 `fs.read` 声明 `${workspace}` |
+| `registerCommand(command)` | 运行时注册命令                                           |
+| `registerAgentTool(tool)`  | 运行时注册 Agent 工具                                    |
+| `pluginData(pluginId)`     | 读取依赖插件的数据目录，无权限返回 `null`                |
+| `capabilities`             | 代码执行与网络能力                                       |
+| `http`                     | 宿主 HTTP/HTTPS/SSE/WebSocket 服务                       |
+
+#### capabilities
+
+| 方法                         | 说明                                             |
+| ---------------------------- | ------------------------------------------------ |
+| `executeCode(input)`         | 在 sandbox 执行命令，仅 Agent 工具调用上下文可用 |
+| `startBackgroundCode(input)` | 启动后台任务，返回 `{ taskId, sandboxId }`       |
+| `queryTask(taskId?)`         | 查询任务状态与实时 stdout/stderr                 |
+| `stopTask(taskId, mode)`     | 停止任务，`ctrl_c` 或 `kill`                     |
+| `webSearch(query, count?)`   | DeepSeek 网页搜索                                |
+| `webFetch(url)`              | 抓取网页并转 Markdown                            |
+
+#### fs / workspaceFs
+
+`HostFileApi` 提供：
+
+```text
+readText / readBytes / readJson
+writeText / writeBytes / writeJson
+list / stat / mkdir / remove / exists
+```
+
+路径必须是相对路径；`..`、绝对路径和越界符号链接会被拒绝。
+
+#### 命令上下文
+
+`run(ctx)` 可以访问：
+
+| 字段                             | 说明               |
+| -------------------------------- | ------------------ |
+| `argv` / `cwd` / `env` / `json`  | 命令参数与运行环境 |
+| `paths` / `config`               | 与 `api` 相同      |
+| `logger` / `output`              | 日志与终端输出     |
+| `pluginDataDir` / `pluginConfig` | 插件数据与配置     |
+| `fs` / `workspaceFs`             | 同 `api`           |
+| `stdin` / `stdout` / `stderr`    | 标准流             |
+
+#### 其他宿主导出
+
+`wellspring/api/host/index.ts` 还导出：
+
+- `getHost()`：宿主状态、OS、路径、插件列表
+- `eventBus` / `EventEntity`：事件总线
+- `getSession(id)`：获取活跃会话；`Session` / `SessionMessage` / `Workspace`
+- `onInit` / `onShutdown` / `onMessage` 等钩子
+- 全部 `PluginApi`、`PluginCommand`、`AgentTool`、`HttpServerHandle` 等类型
+
 ### 钩子
 
 `onInit`、`onShutdown`、`onMessage`、`beforeTurn`、`beforeStep`、`afterStep`、`afterTurn`、`onAgentRunSync`、`onAgentRunAsync`、`onAgentAsyncTaskComplete`、`onAgentCallTool`、`onAgentAsk`、`onAgentRead`、`onAgentQueryTask`、`onAgentSubmit`、`onAgentSetTasks`、`onAgentSetGoal`、`onAgentRequestPermission`、`onUserAnswer`。
