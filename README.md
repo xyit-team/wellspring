@@ -236,6 +236,7 @@ onShutdown(() => {
 ```
 
 - `setup()` 返回对象必须包含 `status: "ok" | "failed"`；`failed` 时端会跳过命令注册
+- `init(api)` 在每次加载插件时都会执行；`onInit` 只由 `wellspring start` 触发，`run` / `chat` / `plugin list` 等命令不会触发
 - 插件配置：`<configDir>/plugins/<id>.json`，通过 `api.pluginConfig` / `ctx.pluginConfig` 读取
 - 插件数据：`<dataDir>/plugin-data/<id>/`，通过 `api.pluginDataDir` / `ctx.pluginDataDir` 使用
 - `deps` 声明插件依赖，加载器会按依赖拓扑排序；缺失依赖或循环依赖会标记失败
@@ -257,18 +258,30 @@ onShutdown(() => {
 
 ### 类型检查（编辑器 / tsc）
 
-运行时不需要 wellspring 包：平台加载插件时会解析 `wellspring/api/host/index.ts`。但编辑器 / tsc 需要把 Wellspring 链接进插件：
+运行时不需要 wellspring 包：平台加载插件时会解析 `wellspring/api/host/index.ts`。
+
+仓库内的插件不要 `pnpm link` 根目录，否则 `node_modules/wellspring` 会指向仓库根并造成目录循环。用插件自己的 `tsconfig.json` 做类型解析：
+
+```json
+{
+    "extends": "../../tsconfig.json",
+    "compilerOptions": {
+        "paths": {
+            "wellspring/api/host": ["../../src/api/host/index.ts"],
+            "wellspring/api/host/index.ts": ["../../src/api/host/index.ts"],
+            "wellspring/*": ["../../src/*"]
+        }
+    },
+    "include": ["index.ts", "src/**/*.ts"]
+}
+```
 
 ```bash
-cd plugins/hello-plugin
-pnpm link /path/to/Wellspring
-pnpm add -D typescript @types/node   # 如果还没有
+cd plugins/wellspring-web
 pnpm exec tsc --noEmit
 ```
 
-`plugin new` 生成的插件已带 `tsconfig.json`（`allowImportingTsExtensions`、`skipLibCheck` 等）；Wellspring 的 `package.json` 用 `exports` 把 `wellspring/*` 映射到 `src/*`。
-
-注意 pnpm v12 的写法是 `pnpm link <Wellspring目录>`，`--global` 已被移除。
+仓库外的独立插件仍可以用 `pnpm link /path/to/Wellspring`。
 
 ### 文件访问与访问守卫
 
