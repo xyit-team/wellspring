@@ -14,5 +14,13 @@
             "url": "http://127.0.0.1:7890",
             "noProxy": ["localhost", "127.0.0.1"]
         }
+    },
+    "sandbox": {
+        "mode": "strict",
+        "backend": "auto",
+        "maxConcurrent": 2,
+        "defaultTimeoutMs": 60000,
+        "defaultMemoryMB": 512,
+        "outputLimitBytes": 16777216
     }
 }

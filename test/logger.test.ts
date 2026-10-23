@@ -69,6 +69,7 @@ test("initLogger 按配置级别写文件", async () => {
             logger: { level: "debug" },
             openai: DEFAULT_SETTINGS.openai,
             network: DEFAULT_SETTINGS.network,
+            sandbox: DEFAULT_SETTINGS.sandbox,
         },
         stdout: false,
     })
@@ -92,6 +93,7 @@ test("initLogger 过滤低于配置级别的日志", async () => {
             logger: { level: "warn" },
             openai: DEFAULT_SETTINGS.openai,
             network: DEFAULT_SETTINGS.network,
+            sandbox: DEFAULT_SETTINGS.sandbox,
         },
         stdout: false,
     })
@@ -140,6 +142,7 @@ test("initLogger 支持 redact", async () => {
             logger: { level: "info" },
             openai: DEFAULT_SETTINGS.openai,
             network: DEFAULT_SETTINGS.network,
+            sandbox: DEFAULT_SETTINGS.sandbox,
         },
         stdout: false,
         redact: { paths: ["apiKey"], censor: "[redacted]" },
@@ -179,6 +182,7 @@ test("文件目标不可用时 initLogger 降级到 stdout", async () => {
                 logger: { level: "info" },
                 openai: DEFAULT_SETTINGS.openai,
                 network: DEFAULT_SETTINGS.network,
+                sandbox: DEFAULT_SETTINGS.sandbox,
             },
             file: join(blocker, "app.log"),
         })
@@ -200,6 +204,7 @@ test("initLogger 重复调用返回同一实例", async () => {
             logger: { level: "info" },
             openai: DEFAULT_SETTINGS.openai,
             network: DEFAULT_SETTINGS.network,
+            sandbox: DEFAULT_SETTINGS.sandbox,
         },
         stdout: false,
     })
@@ -210,6 +215,7 @@ test("initLogger 重复调用返回同一实例", async () => {
             logger: { level: "info" },
             openai: DEFAULT_SETTINGS.openai,
             network: DEFAULT_SETTINGS.network,
+            sandbox: DEFAULT_SETTINGS.sandbox,
         },
         stdout: false,
     })

@@ -36,11 +36,21 @@ test("默认配置已冻结", () => {
         logger: { level: "info" },
         openai: { baseUrl: null, model: "gpt-4o-mini", timeoutMs: 60000, maxRetries: 2 },
         network: { proxy: null },
+        sandbox: {
+            mode: "strict",
+            backend: "auto",
+            access: "read-only",
+            maxConcurrent: 2,
+            defaultTimeoutMs: 60000,
+            defaultMemoryMB: 512,
+            outputLimitBytes: 16 * 1024 * 1024,
+        },
     })
     assert.equal(Object.isFrozen(DEFAULT_SETTINGS), true)
     assert.equal(Object.isFrozen(DEFAULT_SETTINGS.logger), true)
     assert.equal(Object.isFrozen(DEFAULT_SETTINGS.openai), true)
     assert.equal(Object.isFrozen(DEFAULT_SETTINGS.network), true)
+    assert.equal(Object.isFrozen(DEFAULT_SETTINGS.sandbox), true)
 })
 
 test("validateSettings 接受完整配置", () => {
@@ -51,6 +61,7 @@ test("validateSettings 接受完整配置", () => {
         logger: { level: "debug" },
         openai: DEFAULT_SETTINGS.openai,
         network: DEFAULT_SETTINGS.network,
+        sandbox: DEFAULT_SETTINGS.sandbox,
     })
 })
 
@@ -67,6 +78,7 @@ test("validateSettings 忽略未声明字段", () => {
         logger: { level: "warn" },
         openai: DEFAULT_SETTINGS.openai,
         network: DEFAULT_SETTINGS.network,
+        sandbox: DEFAULT_SETTINGS.sandbox,
     })
 })
 
@@ -152,6 +164,50 @@ test("validateSettings 拒绝非法代理配置", () => {
     }
 })
 
+test("validateSettings 接受 sandbox 配置", () => {
+    const result = validateSettings({
+        sandbox: {
+            mode: "best-effort",
+            backend: "bwrap",
+            access: "workspace-write",
+            maxConcurrent: 4,
+            defaultTimeoutMs: 120000,
+            defaultMemoryMB: 1024,
+            outputLimitBytes: 1024 * 1024,
+        },
+    })
+    assert.equal(result.isSuccess(), true)
+    assert.deepEqual(result.getData()?.sandbox, {
+        mode: "best-effort",
+        backend: "bwrap",
+        access: "workspace-write",
+        maxConcurrent: 4,
+        defaultTimeoutMs: 120000,
+        defaultMemoryMB: 1024,
+        outputLimitBytes: 1024 * 1024,
+    })
+    assert.deepEqual(validateSettings({ sandbox: {} }).getData()?.sandbox, DEFAULT_SETTINGS.sandbox)
+})
+
+test("validateSettings 拒绝非法 sandbox 配置", () => {
+    const cases: Array<[unknown, string]> = [
+        [{ sandbox: "x" }, invalidCode("sandbox")],
+        [{ sandbox: { mode: "yolo" } }, invalidCode("sandbox.mode")],
+        [{ sandbox: { backend: "docker" } }, invalidCode("sandbox.backend")],
+        [{ sandbox: { access: "root" } }, invalidCode("sandbox.access")],
+        [{ sandbox: { maxConcurrent: 0 } }, invalidCode("sandbox.maxConcurrent")],
+        [{ sandbox: { maxConcurrent: 33 } }, invalidCode("sandbox.maxConcurrent")],
+        [{ sandbox: { defaultTimeoutMs: 0 } }, invalidCode("sandbox.defaultTimeoutMs")],
+        [{ sandbox: { defaultMemoryMB: 8193 } }, invalidCode("sandbox.defaultMemoryMB")],
+        [{ sandbox: { outputLimitBytes: 1 } }, invalidCode("sandbox.outputLimitBytes")],
+    ]
+    for (const [input, code] of cases) {
+        const result = validateSettings(input)
+        assert.equal(result.isSuccess(), false)
+        assert.equal(result.getCode(), code)
+    }
+})
+
 test("settingsFile 位于 config 根目录", () => {
     assert.equal(settingsFile(), join(getPaths().configDir, SETTING_FILE_NAME))
 })
@@ -200,6 +256,7 @@ test("saveSettings 写盘后可读回", async () => {
             logger: { level: "trace" },
             openai: DEFAULT_SETTINGS.openai,
             network: DEFAULT_SETTINGS.network,
+            sandbox: DEFAULT_SETTINGS.sandbox,
         },
         file,
     )
@@ -213,6 +270,7 @@ test("saveSettings 写盘后可读回", async () => {
         logger: { level: "trace" },
         openai: DEFAULT_SETTINGS.openai,
         network: DEFAULT_SETTINGS.network,
+        sandbox: DEFAULT_SETTINGS.sandbox,
     })
 })
 
@@ -239,5 +297,6 @@ test("saveSettings 丢弃未声明字段", async () => {
         logger: { level: "debug" },
         openai: DEFAULT_SETTINGS.openai,
         network: DEFAULT_SETTINGS.network,
+        sandbox: DEFAULT_SETTINGS.sandbox,
     })
 })

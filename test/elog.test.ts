@@ -51,6 +51,42 @@ test("标签着色，stderr 也着色", () => {
     assert.match(err.text, /\x1b\[31m\[ERROR\]\x1b\[0m boom/)
 })
 
+test("命令按 bash 代码块渲染", () => {
+    const { elog, out } = create()
+    elog.action("Agent请求执行命令", [
+        { label: "command", value: "sh -c 'echo hi'\ncat README.md", code: true },
+        { label: "工作目录", value: "." },
+    ])
+    assert.match(out.text, /\[bash\]/)
+    assert.match(out.text, /echo hi/)
+    assert.match(out.text, /┌/)
+    assert.match(out.text, /└/)
+    assert.match(out.text, /工作目录 \./)
+    assert.ok(!out.text.includes("```"))
+})
+
+test("步骤分隔行", () => {
+    const { elog, out } = create()
+    elog.step(2, 8)
+    assert.equal(out.text, "\n── step 2/8 ──\n")
+})
+
+test("Agent 输出与操作块分开", () => {
+    const { elog, out } = create()
+    elog.agentStart()
+    elog.stream("hello")
+    elog.line()
+    elog.action("Agent请求执行命令", [
+        { label: "command", value: "node -e 1" },
+        { label: "工作目录", value: "." },
+    ])
+    elog.actionStatus("execute_code", "已拒绝")
+    assert.equal(
+        out.text,
+        "\n[Agent]\nhello\n\nAgent请求执行命令\n  command node -e 1\n  工作目录 .\n[操作] execute_code 已拒绝\n",
+    )
+})
+
 test("--json 模式静默", () => {
     const { elog, out, err } = create(true)
     elog.info("hello")
