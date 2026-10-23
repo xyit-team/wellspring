@@ -11,4 +11,13 @@ export const DEFAULT_SETTINGS: AppSetting = Object.freeze({
         maxRetries: 2,
     }),
     network: Object.freeze({ proxy: null }),
+    sandbox: Object.freeze({
+        mode: "strict" as const,
+        backend: "auto" as const,
+        access: "read-only" as const,
+        maxConcurrent: 2,
+        defaultTimeoutMs: 60_000,
+        defaultMemoryMB: 512,
+        outputLimitBytes: 16 * 1024 * 1024,
+    }),
 })

@@ -31,9 +31,25 @@ export interface NetworkSetting {
     readonly proxy: ProxySetting | null
 }
 
+export type SandboxMode = "off" | "strict" | "best-effort"
+export type SandboxBackend = "auto" | "bwrap" | "nsjail"
+export type SandboxAccess = "read-only" | "workspace-write" | "danger-full-access"
+
+/** OS 级 sandbox 配置 */
+export interface SandboxSetting {
+    readonly mode: SandboxMode
+    readonly backend: SandboxBackend
+    readonly access: SandboxAccess
+    readonly maxConcurrent: number
+    readonly defaultTimeoutMs: number
+    readonly defaultMemoryMB: number
+    readonly outputLimitBytes: number
+}
+
 export interface AppSetting {
     readonly version: number
     readonly logger: LoggerSetting
     readonly openai: OpenAISetting
     readonly network: NetworkSetting
+    readonly sandbox: SandboxSetting
 }

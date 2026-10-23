@@ -1,0 +1,939 @@
+/*
+ * sandbox 插件进程入口。
+ * 由宿主通过 bwrap/direct backend 启动；stdio 上跑 frame 协议，插件代码只通过 bridge 访问宿主。
+ */
+
+import { Readable } from "node:stream"
+import { pathToFileURL } from "node:url"
+
+import type { Logger } from "pino"
+
+import type { Host, HostOSInfo, HostPluginStatus, HostStatus } from "../api/host/host.ts"
+import type { HostFileApi, HostFileEntry, HostFileStat } from "../api/host/fs.ts"
+import type {
+    HostHttpApi,
+    HttpHandler,
+    HttpRequest,
+    HttpResponse,
+    PluginWebSocket,
+    WebSocketHandler,
+} from "../api/host/http.ts"
+import {
+    emitAfterStep,
+    emitAfterTurn,
+    emitAgentAsyncTaskComplete,
+    emitAgentAsk,
+    emitAgentCallTool,
+    emitAgentQueryTask,
+    emitAgentRead,
+    emitAgentRequestPermission,
+    emitAgentRunAsync,
+    emitAgentRunSync,
+    emitAgentSetGoal,
+    emitAgentSetTasks,
+    emitAgentSubmit,
+    emitBeforeStep,
+    emitBeforeTurn,
+    emitInitHooks,
+    emitOnMessage,
+    emitShutdownHooks,
+    emitUserAnswer,
+    listHookKinds,
+    withHookOwner,
+    type HookKind,
+} from "../api/host/hooks.ts"
+import type {
+    AgentCallToolResult,
+    AgentTool,
+    HostOutput,
+    PluginApi,
+    PluginCommand,
+    PluginCommandContext,
+    PluginConfig,
+    PluginStatus,
+    WellspringPlugin,
+} from "../api/host/plugin.ts"
+import { eventBus } from "../event/event.ts"
+import type { ResolvedPaths } from "../platform/path.ts"
+import type { AppSetting } from "../config/types.ts"
+import { ensureAccessGuard } from "../plugin/access-guard.ts"
+import { ensureHostAlias } from "../plugin/host-alias.ts"
+import { setHostBridge, type HostBridge } from "./bridge-state.ts"
+import {
+    FrameDecoder,
+    encodeMessage,
+    nextRequestId,
+    type RpcMessage,
+    type RpcRequest,
+} from "./protocol.ts"
+
+interface HostSnapshotData {
+    readonly status: HostStatus
+    readonly os: HostOSInfo
+    readonly paths: ResolvedPaths
+    readonly plugins: ReadonlyArray<{
+        readonly id: string
+        readonly name: string
+        readonly version: string
+        readonly deps: readonly string[]
+        readonly commands: readonly string[]
+        readonly status: HostPluginStatus
+    }>
+}
+
+interface ConfigurePayload {
+    readonly pluginId: string
+    readonly pluginName: string
+    readonly pluginVersion: string
+    readonly pluginEntry: string
+    readonly pluginDataDir: string
+    readonly pluginConfig: PluginConfig
+    readonly paths: ResolvedPaths
+    readonly config: AppSetting
+    readonly host: HostSnapshotData | null
+    readonly deferInit?: boolean
+}
+
+interface HostRequest {
+    readonly method: string
+    readonly params: Record<string, unknown>
+    readonly id: string
+}
+
+const rawStdoutWrite = process.stdout.write.bind(process.stdout)
+const rawStderrWrite = process.stderr.write.bind(process.stderr)
+
+function writeFrame(message: RpcMessage): void {
+    rawStdoutWrite(encodeMessage(message))
+}
+
+const pending = new Map<
+    string,
+    {
+        resolve: (value: unknown) => void
+        reject: (error: Error) => void
+        timer: NodeJS.Timeout
+    }
+>()
+
+function bridgeRequest(method: string, params: unknown, timeoutMs = 30_000): Promise<unknown> {
+    const id = nextRequestId("child")
+    return new Promise<unknown>((resolveRequest, rejectRequest) => {
+        const timer = setTimeout(() => {
+            pending.delete(id)
+            rejectRequest(new Error(`host RPC 超时：${method}`))
+        }, timeoutMs)
+        timer.unref()
+        pending.set(id, {
+            resolve: (value) => {
+                clearTimeout(timer)
+                resolveRequest(value)
+            },
+            reject: (error) => {
+                clearTimeout(timer)
+                rejectRequest(error)
+            },
+            timer,
+        })
+        writeFrame({ v: 1, type: "request", id, method, params, timeoutMs })
+    })
+}
+
+function bridgeNotify(method: string, params: unknown): void {
+    writeFrame({ v: 1, type: "event", method, params })
+}
+
+let hostSnapshot: Host | null = null
+
+const bridge: HostBridge = {
+    request: bridgeRequest,
+    notify: bridgeNotify,
+    getHostSnapshot: () => {
+        if (hostSnapshot === null) {
+            throw new Error("插件未获得 getHost 权限")
+        }
+        return hostSnapshot
+    },
+    shutdown: () => {
+        void bridgeRequest("host.shutdown", {}).catch(() => undefined)
+    },
+}
+
+setHostBridge(bridge)
+ensureHostAlias()
+ensureAccessGuard()
+
+interface PluginRuntime {
+    readonly owner: string
+    readonly plugin: WellspringPlugin
+    readonly commands: PluginCommand[]
+    readonly agentTools: AgentTool[]
+    hooks: readonly HookKind[]
+    readonly api: PluginApi
+    initialized: boolean
+}
+
+const HOOK_API_NAME: Readonly<Record<HookKind, string>> = {
+    message: "onMessage",
+    beforeTurn: "beforeTurn",
+    beforeStep: "beforeStep",
+    afterStep: "afterStep",
+    afterTurn: "afterTurn",
+    agentRunSync: "onAgentRunSync",
+    agentRunAsync: "onAgentRunAsync",
+    agentAsyncTaskComplete: "onAgentAsyncTaskComplete",
+    agentCallTool: "onAgentCallTool",
+    agentAsk: "onAgentAsk",
+    agentRead: "onAgentRead",
+    agentQueryTask: "onAgentQueryTask",
+    agentSubmit: "onAgentSubmit",
+    agentSetTasks: "onAgentSetTasks",
+    agentSetGoal: "onAgentSetGoal",
+    agentRequestPermission: "onAgentRequestPermission",
+    userAnswer: "onUserAnswer",
+    init: "onInit",
+    shutdown: "onShutdown",
+}
+
+let runtime: PluginRuntime | null = null
+
+const httpHandlers = new Map<string, HttpHandler>()
+const websocketHandlers = new Map<string, WebSocketHandler>()
+const wsMessages = new Map<string, Array<(data: string) => void>>()
+const wsCloses = new Map<string, Array<(code: number, reason: string) => void>>()
+
+function remoteHttp(): HostHttpApi {
+    return {
+        async createServer(options, handler) {
+            const serverId = nextRequestId("http")
+            httpHandlers.set(serverId, handler)
+            if (typeof options.websocket === "function") {
+                websocketHandlers.set(serverId, options.websocket)
+            }
+            try {
+                const ready = (await bridgeRequest("host.http.createServer", {
+                    serverId,
+                    host: options.host,
+                    port: options.port,
+                    tls: options.tls,
+                    websocket: typeof options.websocket === "function",
+                })) as { serverId: string; host: string; port: number }
+                return {
+                    serverId: ready.serverId,
+                    host: ready.host,
+                    port: ready.port,
+                    async close() {
+                        httpHandlers.delete(serverId)
+                        await bridgeRequest("host.http.closeServer", { serverId })
+                    },
+                }
+            } catch (error) {
+                httpHandlers.delete(serverId)
+                throw error
+            }
+        },
+    }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function validatePlugin(value: unknown): WellspringPlugin {
+    if (!isObject(value)) {
+        throw new Error("setup() 必须返回 WellspringPlugin 对象")
+    }
+    const id = value["id"]
+    const name = value["name"]
+    const version = value["version"]
+    const status = value["status"]
+    if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) {
+        throw new Error(`插件 id 不合法：${String(id)}`)
+    }
+    if (typeof name !== "string" || name.trim() === "") {
+        throw new Error(`插件 name 不合法：${String(name)}`)
+    }
+    if (typeof version !== "string" || version.trim() === "") {
+        throw new Error(`插件 version 不合法：${String(version)}`)
+    }
+    if (status !== "ok" && status !== "failed") {
+        throw new Error(`插件 status 必须是 ok / failed：${String(status)}`)
+    }
+    return value as unknown as WellspringPlugin
+}
+
+function createLogger(): Logger {
+    const make = (bindings: Record<string, unknown> = {}): Record<string, unknown> => {
+        const log =
+            (level: string) =>
+            (first: unknown, second?: unknown): void => {
+                const fields = isObject(first) ? first : bindings
+                const message = isObject(first) ? String(second ?? "") : String(first ?? "")
+                bridgeNotify("host.log", { level, message, fields })
+            }
+        const logger: Record<string, unknown> = {
+            trace: log("trace"),
+            debug: log("debug"),
+            info: log("info"),
+            warn: log("warn"),
+            error: log("error"),
+            fatal: log("fatal"),
+            child: (childBindings: Record<string, unknown>) =>
+                make({ ...bindings, ...childBindings }),
+        }
+        return logger
+    }
+    return make() as unknown as Logger
+}
+
+const logger = createLogger()
+
+const output: HostOutput = {
+    info: (text) => bridgeNotify("host.output", { kind: "info", text }),
+    warn: (text) => bridgeNotify("host.output", { kind: "warn", text }),
+    error: (text) => bridgeNotify("host.output", { kind: "error", text }),
+    print: (text = "") => bridgeNotify("host.output", { kind: "print", text }),
+}
+
+function createFileApi(scope: "fs" | "workspaceFs"): HostFileApi {
+    const call = (method: string, params: Record<string, unknown> = {}) =>
+        bridgeRequest(`host.${scope}.${method}`, params)
+    return {
+        root: scope,
+        async readText(path) {
+            const result = (await call("readText", { path })) as { text: string | null }
+            return result.text
+        },
+        async readBytes(path) {
+            const result = (await call("readBytes", { path })) as { data: string | null }
+            if (result.data === null) {
+                return null
+            }
+            return new Uint8Array(Buffer.from(result.data, "base64"))
+        },
+        async readJson<T = unknown>(path: string) {
+            const result = (await call("readJson", { path })) as { value: T | null }
+            return result.value
+        },
+        async writeText(path, text) {
+            await call("writeText", { path, text })
+        },
+        async writeBytes(path, bytes) {
+            await call("writeBytes", {
+                path,
+                data: Buffer.from(bytes).toString("base64"),
+            })
+        },
+        async writeJson(path, value) {
+            await call("writeJson", { path, value })
+        },
+        async list(path = "") {
+            const result = (await call("list", { path })) as { entries: HostFileEntry[] }
+            return result.entries
+        },
+        async stat(path) {
+            const result = (await call("stat", { path })) as { stat: HostFileStat | null }
+            return result.stat
+        },
+        async mkdir(path) {
+            await call("mkdir", { path })
+        },
+        async remove(path) {
+            await call("remove", { path })
+        },
+        async exists(path) {
+            const result = (await call("exists", { path })) as { exists: boolean }
+            return result.exists
+        },
+    }
+}
+
+function patchConsole(): void {
+    const methods: Array<[string, string]> = [
+        ["log", "info"],
+        ["info", "info"],
+        ["debug", "debug"],
+        ["warn", "warn"],
+        ["error", "error"],
+        ["trace", "trace"],
+        ["dir", "info"],
+        ["table", "info"],
+    ]
+    for (const [method, level] of methods) {
+        ;(console as unknown as Record<string, (...args: unknown[]) => void>)[method] = (
+            ...args: unknown[]
+        ): void => {
+            bridgeNotify("host.console", { level, args: args.map((item) => String(item)) })
+        }
+    }
+    console.assert = (condition: unknown, ...args: unknown[]): void => {
+        if (!condition) {
+            bridgeNotify("host.console", { level: "error", args: args.map(String) })
+        }
+    }
+}
+
+function patchProcessStreams(): void {
+    process.stdout.write = ((chunk: unknown): boolean => {
+        bridgeNotify("host.log", { level: "info", message: String(chunk), fields: {} })
+        return true
+    }) as typeof process.stdout.write
+    process.stderr.write = ((chunk: unknown): boolean => {
+        bridgeNotify("host.log", { level: "error", message: String(chunk), fields: {} })
+        return true
+    }) as typeof process.stderr.write
+}
+
+function remotePluginData(targetId: string): HostFileApi {
+    const call = async (method: string, args: unknown[]): Promise<unknown> =>
+        await bridgeRequest("host.pluginData", { targetId, method, args })
+    return {
+        root: "",
+        async readText(path) {
+            return (await call("readText", [path])) as string | null
+        },
+        async readBytes(path) {
+            const value = (await call("readBytes", [path])) as number[] | null
+            return value === null ? null : Uint8Array.from(value)
+        },
+        async readJson<T = unknown>(path: string) {
+            return (await call("readJson", [path])) as T | null
+        },
+        async writeText(path, text) {
+            await call("writeText", [path, text])
+        },
+        async writeBytes(path, bytes) {
+            await call("writeBytes", [path, [...bytes]])
+        },
+        async writeJson(path, value) {
+            await call("writeJson", [path, value])
+        },
+        async list(path = "") {
+            return (await call("list", [path])) as HostFileEntry[]
+        },
+        async stat(path) {
+            return (await call("stat", [path])) as HostFileStat | null
+        },
+        async mkdir(path) {
+            await call("mkdir", [path])
+        },
+        async remove(path) {
+            await call("remove", [path])
+        },
+        async exists(path) {
+            return (await call("exists", [path])) as boolean
+        },
+    }
+}
+
+async function bootstrap(params: ConfigurePayload): Promise<{
+    plugin: { id: string; name: string; version: string; status: PluginStatus; deps: string[] }
+    commands: Array<{
+        name: string
+        summary: string
+        usage?: string
+        aliases?: readonly string[]
+    }>
+    agentTools: Array<{
+        name: string
+        introduction: { params: Record<string, unknown>; content: string }
+    }>
+    hooks: string[]
+}> {
+    const hostData = params.host
+    hostSnapshot =
+        hostData === null
+            ? null
+            : {
+                  getStatus: () => hostData.status,
+                  getOS: () => hostData.os,
+                  getPaths: () => hostData.paths,
+                  getPlugins: () =>
+                      hostData.plugins.map((plugin) => ({
+                          id: plugin.id,
+                          name: plugin.name,
+                          version: plugin.version,
+                          deps: plugin.deps,
+                          commands: plugin.commands,
+                          getStatus: () => plugin.status,
+                      })),
+              }
+    const pluginId = params.pluginId
+    const commands: PluginCommand[] = []
+    const agentTools: AgentTool[] = []
+
+    const api: PluginApi = {
+        apiVersion: 1,
+        plugin: { id: pluginId, name: params.pluginName, version: params.pluginVersion },
+        paths: params.paths,
+        config: params.config,
+        logger,
+        output,
+        pluginDataDir: params.pluginDataDir,
+        pluginConfig: params.pluginConfig,
+        fs: createFileApi("fs"),
+        workspaceFs: createFileApi("workspaceFs"),
+        registerCommand: (command: PluginCommand): void => {
+            commands.push(command)
+        },
+        registerAgentTool: (tool: AgentTool): void => {
+            agentTools.push(tool)
+        },
+        pluginData: async (targetId: string): Promise<HostFileApi | null> => {
+            return remotePluginData(targetId)
+        },
+        capabilities: {
+            async executeCode(input: unknown) {
+                return await bridgeRequest(
+                    "host.capabilities.executeCode",
+                    input as Record<string, unknown>,
+                )
+            },
+            async startBackgroundCode(input: unknown) {
+                return await bridgeRequest(
+                    "host.capabilities.startBackgroundCode",
+                    input as Record<string, unknown>,
+                )
+            },
+            async queryTask(taskId?: string) {
+                return await bridgeRequest("host.capabilities.queryTask", { taskId })
+            },
+            async stopTask(taskId: string | undefined, mode: string) {
+                return await bridgeRequest("host.capabilities.stopTask", { taskId, mode })
+            },
+            async webSearch(query: string, count?: number) {
+                return await bridgeRequest("host.capabilities.webSearch", { query, count })
+            },
+            async webFetch(url: string) {
+                return await bridgeRequest("host.capabilities.webFetch", { url })
+            },
+        } as never,
+        http: remoteHttp(),
+    }
+
+    const module = (await withHookOwner(pluginId, async () => {
+        return (await import(pathToFileURL(params.pluginEntry).href)) as { setup?: unknown }
+    })) as { setup?: unknown }
+
+    if (typeof module.setup !== "function") {
+        throw new Error("入口需要导出 setup() 函数")
+    }
+
+    let created: WellspringPlugin | null = null
+    await withHookOwner(pluginId, async () => {
+        created = validatePlugin(await (module.setup as () => unknown)())
+        if (created.status !== "ok") {
+            throw new Error(`插件自报状态：${created.status}`)
+        }
+        commands.push(...(created.commands ?? []))
+        agentTools.push(...(created.agentTools ?? []))
+    })
+    if (created === null) {
+        throw new Error("插件未初始化")
+    }
+    const plugin: WellspringPlugin = created
+    const current: PluginRuntime = {
+        owner: pluginId,
+        plugin,
+        commands,
+        agentTools,
+        hooks: listHookKinds(pluginId),
+        api,
+        initialized: false,
+    }
+    runtime = current
+    if (params.deferInit !== true) {
+        await initializeRuntime(current)
+    }
+    return readyOf(current)
+}
+
+async function initializeRuntime(current: PluginRuntime): Promise<void> {
+    if (current.initialized) {
+        return
+    }
+    await withHookOwner(current.owner, async () => {
+        await current.plugin.init?.(current.api)
+    })
+    for (const tool of current.agentTools) {
+        if (typeof tool.name !== "string" || typeof tool.call !== "function") {
+            throw new Error("Agent 工具缺少 name / call")
+        }
+    }
+    current.initialized = true
+    current.hooks = listHookKinds(current.owner)
+}
+
+function readyOf(current: PluginRuntime): {
+    plugin: { id: string; name: string; version: string; status: PluginStatus; deps: string[] }
+    commands: Array<{
+        name: string
+        summary: string
+        usage?: string
+        aliases?: readonly string[]
+    }>
+    agentTools: Array<{
+        name: string
+        introduction: { params: Record<string, unknown>; content: string }
+    }>
+    hooks: string[]
+} {
+    return {
+        plugin: {
+            id: current.plugin.id,
+            name: current.plugin.name,
+            version: current.plugin.version,
+            status: current.plugin.status,
+            deps: [...(current.plugin.deps ?? [])],
+        },
+        commands: current.commands.map((command) => ({
+            name: command.name,
+            summary: command.summary,
+            usage: command.usage,
+            aliases: command.aliases,
+        })),
+        agentTools: current.agentTools.map((tool) => ({
+            name: tool.name,
+            introduction: {
+                params: { ...tool.introduction.params },
+                content: tool.introduction.content,
+            },
+        })),
+        hooks: current.hooks.map((kind) => HOOK_API_NAME[kind]),
+    }
+}
+
+async function dispatchHook(name: string, payload: Record<string, unknown>): Promise<unknown> {
+    switch (name) {
+        case "onMessage":
+            await emitOnMessage(payload as never)
+            return { prompt: (payload["prompt"] as string[] | undefined) ?? [] }
+        case "beforeTurn":
+            await emitBeforeTurn(payload as never)
+            return {}
+        case "beforeStep":
+            await emitBeforeStep(payload as never)
+            return {}
+        case "afterStep":
+            await emitAfterStep(payload as never)
+            return {}
+        case "afterTurn":
+            await emitAfterTurn(payload as never)
+            return {}
+        case "onAgentRunSync":
+            await emitAgentRunSync(payload as never)
+            return {}
+        case "onAgentRunAsync":
+            await emitAgentRunAsync(payload as never)
+            return {}
+        case "onAgentAsyncTaskComplete":
+            await emitAgentAsyncTaskComplete(payload as never)
+            return {}
+        case "onAgentCallTool":
+            await emitAgentCallTool(payload as never)
+            return {}
+        case "onAgentAsk":
+            await emitAgentAsk(payload as never)
+            return {}
+        case "onAgentRead":
+            await emitAgentRead(payload as never)
+            return {}
+        case "onAgentQueryTask":
+            await emitAgentQueryTask(payload as never)
+            return {}
+        case "onAgentSubmit":
+            await emitAgentSubmit(payload as never)
+            return {}
+        case "onAgentSetTasks":
+            await emitAgentSetTasks(payload as never)
+            return {}
+        case "onAgentSetGoal":
+            await emitAgentSetGoal(payload as never)
+            return {}
+        case "onAgentRequestPermission":
+            await emitAgentRequestPermission(payload as never)
+            return {}
+        case "onUserAnswer":
+            await emitUserAnswer(payload as never)
+            return {}
+        case "onInit":
+            await emitInitHooks()
+            return {}
+        case "onShutdown":
+            await emitShutdownHooks()
+            return {}
+        default:
+            throw new Error(`未知钩子：${name}`)
+    }
+}
+
+async function runCommand(request: RpcRequest): Promise<unknown> {
+    if (runtime === null) {
+        throw new Error("插件尚未初始化")
+    }
+    const params = request.params as {
+        name: string
+        argv: string[]
+        cwd: string
+        json: boolean
+        stdin?: string
+    }
+    const command = runtime.commands.find((item) => item.name === params.name)
+    if (command === undefined) {
+        throw new Error(`命令不存在：${params.name}`)
+    }
+    const context: PluginCommandContext = {
+        argv: params.argv,
+        env: {},
+        paths: runtime.api.paths,
+        config: runtime.api.config,
+        logger,
+        output,
+        pluginDataDir: runtime.api.pluginDataDir,
+        pluginConfig: runtime.api.pluginConfig,
+        fs: runtime.api.fs,
+        workspaceFs: runtime.api.workspaceFs,
+        cwd: params.cwd,
+        json: params.json,
+        stdin: Readable.from([params.stdin ?? ""]),
+        stdout: process.stdout,
+        stderr: process.stderr,
+    }
+    const code = await withHookOwner(runtime.owner, async () => await command.run(context))
+    return { exitCode: typeof code === "number" ? code : 0 }
+}
+
+async function handleHostRequest(request: RpcRequest): Promise<void> {
+    try {
+        let result: unknown
+        if (request.method === "plugin.command") {
+            result = await runCommand(request)
+        } else if (request.method === "plugin.agentTool") {
+            if (runtime === null) {
+                throw new Error("插件尚未初始化")
+            }
+            const params = request.params as { name: string; args: unknown }
+            const tool = runtime.agentTools.find((item) => item.name === params.name)
+            if (tool === undefined) {
+                throw new Error(`Agent 工具不存在：${params.name}`)
+            }
+            result = await withHookOwner(
+                runtime.owner,
+                async () => (await tool.call(params.args)) as AgentCallToolResult,
+            )
+        } else if (request.method === "plugin.init") {
+            if (runtime === null) {
+                throw new Error("插件尚未初始化")
+            }
+            await initializeRuntime(runtime)
+            result = readyOf(runtime)
+        } else if (request.method === "plugin.websocket.connect") {
+            if (runtime === null) {
+                throw new Error("插件尚未初始化")
+            }
+            const params = request.params as {
+                serverId: string
+                connectionId: string
+                request: HttpRequest
+            }
+            const handler = websocketHandlers.get(params.serverId)
+            if (handler === undefined) {
+                throw new Error("WebSocket handler 不存在")
+            }
+            const connectionId = params.connectionId
+            const socket: PluginWebSocket = {
+                connectionId,
+                async send(data: string) {
+                    await bridgeRequest("host.websocket.send", { connectionId, data })
+                },
+                async close(code = 1000, reason = "") {
+                    await bridgeRequest("host.websocket.close", {
+                        connectionId,
+                        code,
+                        reason,
+                    })
+                },
+                onMessage(handler) {
+                    const list = wsMessages.get(connectionId) ?? []
+                    list.push(handler)
+                    wsMessages.set(connectionId, list)
+                },
+                onClose(handler) {
+                    const list = wsCloses.get(connectionId) ?? []
+                    list.push(handler)
+                    wsCloses.set(connectionId, list)
+                },
+            }
+            await withHookOwner(runtime.owner, async () => handler(socket, params.request))
+            result = {}
+        } else if (request.method === "plugin.websocket.message") {
+            const params = request.params as {
+                connectionId: string
+                data: string
+                binary: boolean
+            }
+            const text = params.binary
+                ? Buffer.from(params.data, "base64").toString("utf8")
+                : Buffer.from(params.data, "base64").toString("utf8")
+            for (const handler of wsMessages.get(params.connectionId) ?? []) {
+                handler(text)
+            }
+            result = {}
+        } else if (request.method === "plugin.websocket.close") {
+            const params = request.params as {
+                connectionId: string
+                code: number
+                reason: string
+            }
+            for (const handler of wsCloses.get(params.connectionId) ?? []) {
+                handler(params.code, params.reason)
+            }
+            wsMessages.delete(params.connectionId)
+            wsCloses.delete(params.connectionId)
+            result = {}
+        } else if (request.method === "plugin.http") {
+            if (runtime === null) {
+                throw new Error("插件尚未初始化")
+            }
+            const params = request.params as {
+                serverId: string
+                requestId: string
+                request: HttpRequest
+            }
+            const handler = httpHandlers.get(params.serverId)
+            if (handler === undefined) {
+                throw new Error(`HTTP handler 不存在：${params.serverId}`)
+            }
+            const requestId = params.requestId
+            let flushed = false
+            let ended = false
+            const buffered: string[] = []
+            const flush = (): void => {
+                if (flushed) {
+                    return
+                }
+                flushed = true
+                for (const chunk of buffered) {
+                    bridgeNotify("host.http.stream", { requestId, chunk })
+                }
+                buffered.length = 0
+                if (ended) {
+                    bridgeNotify("host.http.stream", { requestId, end: true })
+                }
+            }
+            const stream = {
+                write(chunk: string) {
+                    if (flushed) {
+                        bridgeNotify("host.http.stream", { requestId, chunk })
+                    } else {
+                        buffered.push(chunk)
+                    }
+                },
+                end() {
+                    if (flushed) {
+                        bridgeNotify("host.http.stream", { requestId, end: true })
+                    } else {
+                        ended = true
+                    }
+                },
+            }
+            const response = (await withHookOwner(runtime.owner, async () =>
+                handler(params.request, stream),
+            )) as HttpResponse
+            if (response.stream === true) {
+                setImmediate(flush)
+            }
+            result = response
+        } else if (request.method === "plugin.hook") {
+            const params = request.params as { hook: string; payload: Record<string, unknown> }
+            if (runtime === null) {
+                throw new Error("插件尚未初始化")
+            }
+            result = await withHookOwner(runtime.owner, async () =>
+                dispatchHook(params.hook, params.payload),
+            )
+        } else if (request.method === "sandbox.ping") {
+            result = { time: Date.now() }
+        } else if (request.method === "sandbox.shutdown") {
+            await emitShutdownHooks()
+            result = {}
+            writeFrame({ v: 1, type: "response", id: request.id, ok: true, result })
+            setTimeout(() => process.exit(0), 10)
+            return
+        } else {
+            throw new Error(`未知方法：${request.method}`)
+        }
+        writeFrame({ v: 1, type: "response", id: request.id, ok: true, result })
+    } catch (error) {
+        writeFrame({
+            v: 1,
+            type: "response",
+            id: request.id,
+            ok: false,
+            error: {
+                code:
+                    request.method === "plugin.hook"
+                        ? "plugin.hook-failed"
+                        : "plugin.command-failed",
+                message: error instanceof Error ? error.message : String(error),
+            },
+        })
+    }
+}
+
+const configureResolvers: Array<(params: ConfigurePayload) => void> = []
+
+async function main(): Promise<void> {
+    const decoder = new FrameDecoder()
+    process.stdin.on("data", async (chunk: Buffer) => {
+        for (const message of decoder.push(chunk)) {
+            if (message.type === "response") {
+                const entry = pending.get(message.id)
+                if (entry !== undefined) {
+                    pending.delete(message.id)
+                    if (message.ok) {
+                        entry.resolve(message.result)
+                    } else {
+                        entry.reject(new Error(message.error?.message ?? "host RPC 失败"))
+                    }
+                }
+                continue
+            }
+            if (message.type === "event") {
+                if (message.method === "sandbox.event") {
+                    const params = message.params as { name: string; data: unknown }
+                    eventBus.receive(params.name, params.data)
+                }
+                continue
+            }
+            const request = message
+            if (request.method === "sandbox.configure") {
+                const params = request.params as ConfigurePayload
+                try {
+                    patchConsole()
+                    patchProcessStreams()
+                    const ready = await bootstrap(params)
+                    writeFrame({ v: 1, type: "response", id: request.id, ok: true, result: ready })
+                } catch (error) {
+                    writeFrame({
+                        v: 1,
+                        type: "response",
+                        id: request.id,
+                        ok: false,
+                        error: {
+                            code: "plugin.init-failed",
+                            message: error instanceof Error ? error.message : String(error),
+                        },
+                    })
+                    setTimeout(() => process.exit(1), 10)
+                }
+                continue
+            }
+            void handleHostRequest(request)
+        }
+    })
+    process.stdin.resume()
+    await new Promise<void>(() => undefined)
+}
+
+await main()

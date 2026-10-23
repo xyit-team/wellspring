@@ -5,6 +5,7 @@
 import { existsSync } from "node:fs"
 
 import { describePaths, platform } from "../platform/index.ts"
+import { SandboxManager } from "../sandbox/manager.ts"
 import { success, type CommandContext, type CommandOutcome } from "./shared.ts"
 
 interface Check {
@@ -49,11 +50,23 @@ export async function runDoctorCommand(ctx: CommandContext): Promise<CommandOutc
         detail: ctx.paths.logDir,
     })
 
+    const sandboxProbe = await new SandboxManager({
+        settings: ctx.settings.sandbox,
+        paths: ctx.paths,
+    }).probe()
+    const sandboxOk = ctx.settings.sandbox.mode !== "strict" || sandboxProbe.available
+    checks.push({
+        name: "sandbox",
+        ok: sandboxOk,
+        detail: `${ctx.settings.sandbox.mode}/${sandboxProbe.backend}/${ctx.settings.sandbox.access}${sandboxProbe.available ? "" : `：${sandboxProbe.reason ?? "不可用"}`}`,
+    })
+
     const plugins = await ctx.loadPlugins()
+    const disabled = plugins.filter((plugin) => plugin.status === "disabled").length
     checks.push({
         name: "plugins",
-        ok: plugins.every((plugin) => plugin.status === "ok"),
-        detail: `${plugins.length} 个`,
+        ok: plugins.every((plugin) => plugin.status !== "failed"),
+        detail: `${plugins.length} 个${disabled > 0 ? `（禁用 ${disabled}）` : ""}`,
     })
 
     for (const check of checks) {

@@ -9,6 +9,10 @@ import {
     type NetworkSetting,
     type OpenAISetting,
     type ProxySetting,
+    type SandboxAccess,
+    type SandboxBackend,
+    type SandboxMode,
+    type SandboxSetting,
 } from "./types.ts"
 
 const LEVELS: ReadonlySet<string> = new Set<LevelWithSilent>([
@@ -134,6 +138,89 @@ function validateNetwork(input: Record<string, unknown>): Result<NetworkSetting>
     })
 }
 
+const SANDBOX_MODES: ReadonlySet<string> = new Set<SandboxMode>(["off", "strict", "best-effort"])
+const SANDBOX_BACKENDS: ReadonlySet<string> = new Set<SandboxBackend>(["auto", "bwrap", "nsjail"])
+const SANDBOX_ACCESS: ReadonlySet<string> = new Set<SandboxAccess>([
+    "read-only",
+    "workspace-write",
+    "danger-full-access",
+])
+
+function validateSandbox(input: Record<string, unknown>): Result<SandboxSetting> {
+    let mode = DEFAULT_SETTINGS.sandbox.mode
+    const rawMode = input["mode"]
+    if (rawMode !== undefined) {
+        if (typeof rawMode !== "string" || !SANDBOX_MODES.has(rawMode)) {
+            return Result.error<SandboxSetting>(invalidCode("sandbox.mode"))
+        }
+        mode = rawMode as SandboxMode
+    }
+
+    let backend = DEFAULT_SETTINGS.sandbox.backend
+    const rawBackend = input["backend"]
+    if (rawBackend !== undefined) {
+        if (typeof rawBackend !== "string" || !SANDBOX_BACKENDS.has(rawBackend)) {
+            return Result.error<SandboxSetting>(invalidCode("sandbox.backend"))
+        }
+        backend = rawBackend as SandboxBackend
+    }
+
+    let access = DEFAULT_SETTINGS.sandbox.access
+    const rawAccess = input["access"]
+    if (rawAccess !== undefined) {
+        if (typeof rawAccess !== "string" || !SANDBOX_ACCESS.has(rawAccess)) {
+            return Result.error<SandboxSetting>(invalidCode("sandbox.access"))
+        }
+        access = rawAccess as SandboxAccess
+    }
+
+    let maxConcurrent = DEFAULT_SETTINGS.sandbox.maxConcurrent
+    const rawMaxConcurrent = input["maxConcurrent"]
+    if (rawMaxConcurrent !== undefined) {
+        if (!isPositiveInteger(rawMaxConcurrent) || rawMaxConcurrent > 32) {
+            return Result.error<SandboxSetting>(invalidCode("sandbox.maxConcurrent"))
+        }
+        maxConcurrent = rawMaxConcurrent
+    }
+
+    let defaultTimeoutMs = DEFAULT_SETTINGS.sandbox.defaultTimeoutMs
+    const rawTimeout = input["defaultTimeoutMs"]
+    if (rawTimeout !== undefined) {
+        if (!isPositiveInteger(rawTimeout) || rawTimeout > 600_000) {
+            return Result.error<SandboxSetting>(invalidCode("sandbox.defaultTimeoutMs"))
+        }
+        defaultTimeoutMs = rawTimeout
+    }
+
+    let defaultMemoryMB = DEFAULT_SETTINGS.sandbox.defaultMemoryMB
+    const rawMemory = input["defaultMemoryMB"]
+    if (rawMemory !== undefined) {
+        if (!isPositiveInteger(rawMemory) || rawMemory > 8192) {
+            return Result.error<SandboxSetting>(invalidCode("sandbox.defaultMemoryMB"))
+        }
+        defaultMemoryMB = rawMemory
+    }
+
+    let outputLimitBytes = DEFAULT_SETTINGS.sandbox.outputLimitBytes
+    const rawOutput = input["outputLimitBytes"]
+    if (rawOutput !== undefined) {
+        if (!isPositiveInteger(rawOutput) || rawOutput < 1024 || rawOutput > 64 * 1024 * 1024) {
+            return Result.error<SandboxSetting>(invalidCode("sandbox.outputLimitBytes"))
+        }
+        outputLimitBytes = rawOutput
+    }
+
+    return Result.successWithData<SandboxSetting>({
+        mode,
+        backend,
+        access,
+        maxConcurrent,
+        defaultTimeoutMs,
+        defaultMemoryMB,
+        outputLimitBytes,
+    })
+}
+
 /** 校验并补齐默认值；未声明字段忽略，不做保留 */
 export function validateSettings(input: unknown): Result<AppSetting> {
     if (!isPlainObject(input)) {
@@ -181,10 +268,24 @@ export function validateSettings(input: unknown): Result<AppSetting> {
         networkSetting = validated.getData() ?? DEFAULT_SETTINGS.network
     }
 
+    const sandbox = input["sandbox"]
+    if (sandbox !== undefined && !isPlainObject(sandbox)) {
+        return Result.error<AppSetting>(invalidCode("sandbox"))
+    }
+    let sandboxSetting = DEFAULT_SETTINGS.sandbox
+    if (sandbox !== undefined) {
+        const validated = validateSandbox(sandbox)
+        if (!validated.isSuccess()) {
+            return Result.error<AppSetting>(validated.getCode() ?? CONFIG_CODES.invalid)
+        }
+        sandboxSetting = validated.getData() ?? DEFAULT_SETTINGS.sandbox
+    }
+
     return Result.successWithData<AppSetting>({
         version: SETTING_VERSION,
         logger: { level: rawLevel ?? DEFAULT_SETTINGS.logger.level },
         openai: openaiSetting,
         network: networkSetting,
+        sandbox: sandboxSetting,
     })
 }

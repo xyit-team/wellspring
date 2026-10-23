@@ -4,10 +4,32 @@
  */
 
 import { emitInitHooks, emitShutdownHooks, setShutdownHandler } from "../api/host/hooks.ts"
-import { success, type CommandContext, type CommandOutcome } from "./shared.ts"
+import { setHostStatus } from "../api/host/host.ts"
+import {
+    ServiceAlreadyRunningError,
+    assertServiceStartable,
+    clearServiceRecord,
+    writeServiceRecord,
+} from "../service/control.ts"
+import { failure, success, type CommandContext, type CommandOutcome } from "./shared.ts"
 
 export async function runStartCommand(ctx: CommandContext): Promise<CommandOutcome> {
     await ctx.loadPlugins()
+
+    try {
+        await assertServiceStartable(ctx.paths)
+    } catch (error) {
+        if (error instanceof ServiceAlreadyRunningError) {
+            return failure(`service.already-running:${error.pid}`)
+        }
+        const message = error instanceof Error ? error.message : String(error)
+        return failure(`service.record-failed:${message}`)
+    }
+
+    await writeServiceRecord(
+        { pid: process.pid, startedAt: new Date().toISOString(), cwd: process.cwd() },
+        ctx.paths,
+    )
 
     const state: { resolve: (() => void) | null } = { resolve: null }
     const shutdownPromise = new Promise<void>((resolve) => {
@@ -33,6 +55,7 @@ export async function runStartCommand(ctx: CommandContext): Promise<CommandOutco
     try {
         await emitInitHooks()
         await shutdownPromise
+        setHostStatus("stopping")
         ctx.elog.notice("正在关闭…")
         await emitShutdownHooks()
         ctx.logger.info("service stopped")
@@ -43,5 +66,6 @@ export async function runStartCommand(ctx: CommandContext): Promise<CommandOutco
         process.off("SIGINT", onSignal)
         process.off("SIGTERM", onSignal)
         setShutdownHandler(null)
+        await clearServiceRecord(process.pid, ctx.paths)
     }
 }
