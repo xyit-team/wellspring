@@ -15,6 +15,37 @@ export interface OpenAISetting {
     readonly maxRetries: number
 }
 
+/** 自定义模型供应商（OpenAI 兼容接口）；内置供应商 openai 由 openai.* 字段描述 */
+export interface ModelProviderSetting {
+    /** 供应商标识，1-32 位 [a-z0-9-_.]；不能叫 openai */
+    readonly id: string
+    readonly name: string
+    /** null 表示使用 SDK 默认地址 */
+    readonly baseUrl: string | null
+    /** 预置模型列表；可手动维护，也可从供应商接口拉取 */
+    readonly models: readonly string[]
+    /** 该供应商缺省模型；null 时取列表第一个或全局 openai.model */
+    readonly defaultModel: string | null
+    /** 可选：用这个环境变量提供该供应商的 API Key（优先级高于本地凭据） */
+    readonly apiKeyEnv: string | null
+}
+
+/** 推理强度；参考 Harness：off / low / high / max */
+export type ReasoningLevel = "off" | "low" | "high" | "max"
+
+export const REASONING_LEVELS: readonly ReasoningLevel[] = ["off", "low", "high", "max"]
+
+export interface ModelsSetting {
+    /** 自定义供应商；内置 openai 不在列表里 */
+    readonly providers: readonly ModelProviderSetting[]
+    /** 当前使用的供应商 id；openai 表示内置 */
+    readonly activeProvider: string
+    /** 当前使用的模型；null 表示用供应商缺省模型 */
+    readonly activeModel: string | null
+    /** 当前推理强度；off 表示不发推理参数 */
+    readonly activeReasoning: ReasoningLevel
+}
+
 /** 代理类型，一期只支持 http/https 代理 */
 export type ProxyType = "http"
 
@@ -50,6 +81,8 @@ export interface AppSetting {
     readonly version: number
     readonly logger: LoggerSetting
     readonly openai: OpenAISetting
+    /** 多供应商/模型设置；旧配置没有这一节时按默认值处理 */
+    readonly models?: ModelsSetting
     readonly network: NetworkSetting
     readonly sandbox: SandboxSetting
 }

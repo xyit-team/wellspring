@@ -1,7 +1,8 @@
 /*
  * OpenAI SDK 接入。
  * Responses API 为默认文本接口；chat 兼容只提供 Chat Completions 的网关。
- * API key 只从显式参数或 OPENAI_API_KEY 读取，不写入配置文件。
+ * API key 读取顺序：显式参数 > OPENAI_API_KEY > <configDir>/credentials.json，
+ * 明文只进请求，不进配置、日志与界面。
  */
 
 import OpenAI, {
@@ -24,6 +25,7 @@ import type {
 import type { Logger } from "pino"
 
 import { Result } from "../api/result/result.ts"
+import { normalizeApiKey, resolveApiKeySync } from "../config/credentials.ts"
 import { DEFAULT_SETTINGS } from "../config/defaults.ts"
 import type { OpenAISetting } from "../config/types.ts"
 import { readEnv } from "../platform/os.ts"
@@ -64,6 +66,8 @@ export interface ChatOptions {
     readonly model?: string
     readonly temperature?: number
     readonly maxTokens?: number
+    /** 推理强度；off 表示不发送 reasoning 参数 */
+    readonly reasoning?: string
 }
 
 /** 规范化后的流式片段，直接落进会话事件 */
@@ -83,21 +87,39 @@ export interface StreamReply {
     readonly reply: OpenAIReply
     readonly chunks: readonly OpenAISessionChunk[]
     readonly toolCalls: readonly ToolCall[]
+    /** 模型返回的思考内容（DeepSeek 等推理模型的 reasoning_content）；没有时为空串 */
+    readonly reasoning: string
 }
 
 export interface ChatStreamOptions extends ChatOptions {
     readonly onText?: (text: string) => void
+    /** 思考内容增量回调；只在模型返回 reasoning_content 时触发 */
+    readonly onReasoning?: (text: string) => void
     readonly tools?: readonly ChatCompletionTool[]
     readonly toolChoice?: "auto" | "none" | "required"
 }
 
 export interface CreateOpenAIClientOptions {
     readonly settings?: OpenAISetting
-    /** 覆盖 OPENAI_API_KEY */
+    /** 覆盖 OPENAI_API_KEY 与本地凭据 */
     readonly apiKey?: string
+    /** 本地凭据文件路径；不传用当前 configDir 下的 credentials.json */
+    readonly credentialsFile?: string
     readonly logger?: Logger
     /** 注入 fetch，测试用 */
     readonly fetch?: ClientOptions["fetch"]
+}
+
+/**
+ * 推理强度映射：
+ * off 不发参数；low / high / max 原样发给 OpenAI 兼容端点。
+ * （标准 OpenAI 只定义到 high；若端点不接受 max 会返回 400，可换 high。）
+ */
+function reasoningParams(level: string | undefined): Record<string, unknown> {
+    if (level === undefined || level === "" || level === "off") {
+        return {}
+    }
+    return { reasoning_effort: level }
 }
 
 /** 把 SDK 异常归一化为错误码 */
@@ -150,8 +172,18 @@ export class OpenAIClient {
     /** 创建客户端。缺少 API key 或 SDK 初始化失败时返回错误码 */
     static create(options: CreateOpenAIClientOptions = {}): Result<OpenAIClient> {
         const settings = options.settings ?? DEFAULT_SETTINGS.openai
-        const apiKey = (options.apiKey ?? readEnv("OPENAI_API_KEY"))?.trim()
-        if (apiKey === undefined || apiKey === "") {
+        const explicit = options.apiKey === undefined ? null : normalizeApiKey(options.apiKey)
+        if (options.apiKey !== undefined && explicit === null) {
+            return Result.error<OpenAIClient>(OPENAI_CODES.missingApiKey)
+        }
+        const apiKey =
+            explicit ??
+            (options.credentialsFile === undefined
+                ? resolveApiKeySync()
+                : resolveApiKeySync(options.credentialsFile)
+            )?.apiKey ??
+            null
+        if (apiKey === null) {
             return Result.error<OpenAIClient>(OPENAI_CODES.missingApiKey)
         }
 
@@ -214,6 +246,7 @@ export class OpenAIClient {
                 ...(options.maxTokens === undefined
                     ? {}
                     : { max_completion_tokens: options.maxTokens }),
+                ...reasoningParams(options.reasoning),
             })
             const text = completion.choices[0]?.message.content ?? ""
             if (text === "") {
@@ -248,6 +281,7 @@ export class OpenAIClient {
                 ...(options.maxTokens === undefined
                     ? {}
                     : { max_completion_tokens: options.maxTokens }),
+                ...reasoningParams(options.reasoning),
                 ...(options.tools === undefined || options.tools.length === 0
                     ? {}
                     : {
@@ -258,6 +292,7 @@ export class OpenAIClient {
 
             const chunks: OpenAISessionChunk[] = []
             let text = ""
+            let reasoning = ""
             let id = ""
             let responseModel = model
             let inputTokens: number | null = null
@@ -320,7 +355,25 @@ export class OpenAIClient {
                         argumentsDelta: toolCallDelta.function?.arguments ?? null,
                     })
                 }
-                const delta = choice.delta.content
+                // 推理模型（DeepSeek 等）把思考内容放在 delta.reasoning_content，
+                // 部分网关用 delta.reasoning；两者都按增量拼接，不进正文
+                const rawDelta = choice.delta as {
+                    readonly content?: unknown
+                    readonly reasoning_content?: unknown
+                    readonly reasoning?: unknown
+                }
+                const reasoningDelta =
+                    typeof rawDelta.reasoning_content === "string"
+                        ? rawDelta.reasoning_content
+                        : typeof rawDelta.reasoning === "string"
+                          ? rawDelta.reasoning
+                          : ""
+                if (reasoningDelta !== "") {
+                    reasoning += reasoningDelta
+                    push({ type: "reasoning-delta", index: 1, text: reasoningDelta })
+                    options.onReasoning?.(reasoningDelta)
+                }
+                const delta = rawDelta.content
                 if (typeof delta === "string" && delta !== "") {
                     if (!blockStarted) {
                         push({ type: "block-start", index: 0, blockType: "text" })
@@ -358,6 +411,7 @@ export class OpenAIClient {
                 reply: { text, model: responseModel, id, inputTokens, outputTokens },
                 chunks,
                 toolCalls,
+                reasoning,
             })
         } catch (error) {
             const code = mapOpenAIError(error)
@@ -365,6 +419,42 @@ export class OpenAIClient {
             const reason = error instanceof Error ? error.message : String(error)
             this.#logger?.warn({ code, model, status, reason }, "OpenAI 流式调用失败")
             return Result.error<StreamReply>(code)
+        }
+    }
+
+    /** 拉取供应商的模型 id 列表（用于自定义供应商的“拉取模型”） */
+    async listModels(): Promise<Result<readonly string[]>> {
+        try {
+            const page = await this.#client.models.list()
+            const models = (page.data ?? [])
+                .map((item) => (typeof item?.id === "string" ? item.id.trim() : ""))
+                .filter((id) => id !== "")
+            if (models.length === 0) {
+                return Result.error<readonly string[]>(OPENAI_CODES.emptyOutput)
+            }
+            return Result.successWithData<readonly string[]>(models.sort())
+        } catch (error) {
+            const code = mapOpenAIError(error)
+            const reason = error instanceof Error ? error.message : String(error)
+            this.#logger?.warn({ code, reason }, "拉取模型列表失败")
+            return Result.error<readonly string[]>(code)
+        }
+    }
+
+    /** 轻量连通性测试：拉模型列表，不产生对话费用 */
+    async testConnection(): Promise<Result<{ readonly models: number }>> {
+        try {
+            const page = await this.#client.models.list()
+            const models = Array.isArray(page.data) ? page.data.length : 0
+            if (models === 0) {
+                return Result.error<{ readonly models: number }>(OPENAI_CODES.emptyOutput)
+            }
+            return Result.successWithData<{ readonly models: number }>({ models })
+        } catch (error) {
+            const code = mapOpenAIError(error)
+            const reason = error instanceof Error ? error.message : String(error)
+            this.#logger?.warn({ code, reason }, "OpenAI 连通性测试失败")
+            return Result.error<{ readonly models: number }>(code)
         }
     }
 

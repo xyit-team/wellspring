@@ -1,4 +1,12 @@
-import { SETTING_VERSION, type AppSetting } from "./types.ts"
+import { SETTING_VERSION, type AppSetting, type ModelsSetting } from "./types.ts"
+
+/** 单供应商时代的默认模型设置；旧配置缺 models 时用它兜底 */
+export const DEFAULT_MODELS: ModelsSetting = Object.freeze({
+    providers: Object.freeze([]),
+    activeProvider: "openai",
+    activeModel: null,
+    activeReasoning: "off",
+})
 
 /** 缺省配置。缺文件或读取失败时作为回退 */
 export const DEFAULT_SETTINGS: AppSetting = Object.freeze({
@@ -10,6 +18,7 @@ export const DEFAULT_SETTINGS: AppSetting = Object.freeze({
         timeoutMs: 60_000,
         maxRetries: 2,
     }),
+    models: DEFAULT_MODELS,
     network: Object.freeze({ proxy: null }),
     sandbox: Object.freeze({
         mode: "strict" as const,

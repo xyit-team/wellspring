@@ -2,10 +2,13 @@ import type { LevelWithSilent } from "pino"
 
 import { Result } from "../api/result/result.ts"
 import { CONFIG_CODES, invalidCode } from "./codes.ts"
-import { DEFAULT_SETTINGS } from "./defaults.ts"
+import { DEFAULT_MODELS, DEFAULT_SETTINGS } from "./defaults.ts"
 import {
+    REASONING_LEVELS,
     SETTING_VERSION,
     type AppSetting,
+    type ModelProviderSetting,
+    type ModelsSetting,
     type NetworkSetting,
     type OpenAISetting,
     type ProxySetting,
@@ -91,6 +94,156 @@ function validateOpenAI(input: Record<string, unknown>): Result<OpenAISetting> {
     }
 
     return Result.successWithData<OpenAISetting>({ baseUrl, model, timeoutMs, maxRetries })
+}
+
+const PROVIDER_ID = /^[a-z0-9][a-z0-9._-]{0,31}$/
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
+const BUILTIN_PROVIDER_ID = "openai"
+const MAX_PROVIDERS = 20
+const MAX_MODELS_PER_PROVIDER = 200
+
+function validateProvider(
+    input: Record<string, unknown>,
+    seen: ReadonlySet<string>,
+): Result<ModelProviderSetting> {
+    const rawId = input["id"]
+    const id = typeof rawId === "string" && PROVIDER_ID.test(rawId.trim()) ? rawId.trim() : null
+    if (id === null || id === BUILTIN_PROVIDER_ID) {
+        return Result.error<ModelProviderSetting>(invalidCode("models.providers.id"))
+    }
+    if (seen.has(id)) {
+        return Result.error<ModelProviderSetting>(invalidCode(`models.providers.${id}`))
+    }
+    const rawName = input["name"]
+    const name =
+        typeof rawName === "string" && rawName.trim() !== "" && rawName.trim().length <= 60
+            ? rawName.trim()
+            : null
+    if (name === null) {
+        return Result.error<ModelProviderSetting>(invalidCode(`models.providers.${id}.name`))
+    }
+    let baseUrl: string | null = null
+    const rawBaseUrl = input["baseUrl"]
+    if (rawBaseUrl !== undefined && rawBaseUrl !== null) {
+        if (!isBaseUrl(rawBaseUrl)) {
+            return Result.error<ModelProviderSetting>(invalidCode(`models.providers.${id}.baseUrl`))
+        }
+        baseUrl = rawBaseUrl.trim()
+    }
+    const models: string[] = []
+    const rawModels = input["models"]
+    if (rawModels !== undefined) {
+        if (!Array.isArray(rawModels) || rawModels.length > MAX_MODELS_PER_PROVIDER) {
+            return Result.error<ModelProviderSetting>(invalidCode(`models.providers.${id}.models`))
+        }
+        for (const item of rawModels) {
+            if (typeof item !== "string" || item.trim() === "" || item.trim().length > 120) {
+                return Result.error<ModelProviderSetting>(
+                    invalidCode(`models.providers.${id}.models`),
+                )
+            }
+            const model = item.trim()
+            if (!models.includes(model)) {
+                models.push(model)
+            }
+        }
+    }
+    let defaultModel: string | null = null
+    const rawDefault = input["defaultModel"]
+    if (rawDefault !== undefined && rawDefault !== null) {
+        if (typeof rawDefault !== "string" || rawDefault.trim() === "") {
+            return Result.error<ModelProviderSetting>(
+                invalidCode(`models.providers.${id}.defaultModel`),
+            )
+        }
+        defaultModel = rawDefault.trim()
+    }
+    let apiKeyEnv: string | null = null
+    const rawEnv = input["apiKeyEnv"]
+    if (rawEnv !== undefined && rawEnv !== null) {
+        if (typeof rawEnv !== "string" || !ENV_NAME.test(rawEnv.trim())) {
+            return Result.error<ModelProviderSetting>(
+                invalidCode(`models.providers.${id}.apiKeyEnv`),
+            )
+        }
+        apiKeyEnv = rawEnv.trim()
+    }
+    return Result.successWithData<ModelProviderSetting>({
+        id,
+        name,
+        baseUrl,
+        models,
+        defaultModel,
+        apiKeyEnv,
+    })
+}
+
+function validateModels(input: Record<string, unknown>): Result<ModelsSetting> {
+    const providers: ModelProviderSetting[] = []
+    const rawProviders = input["providers"]
+    if (rawProviders !== undefined && rawProviders !== null) {
+        if (!Array.isArray(rawProviders) || rawProviders.length > MAX_PROVIDERS) {
+            return Result.error<ModelsSetting>(invalidCode("models.providers"))
+        }
+        const seen = new Set<string>()
+        for (const item of rawProviders) {
+            if (!isPlainObject(item)) {
+                return Result.error<ModelsSetting>(invalidCode("models.providers"))
+            }
+            const validated = validateProvider(item, seen)
+            if (!validated.isSuccess()) {
+                return Result.error<ModelsSetting>(validated.getCode() ?? CONFIG_CODES.invalid)
+            }
+            const provider = validated.getData()
+            if (provider === null) {
+                return Result.error<ModelsSetting>(invalidCode("models.providers"))
+            }
+            seen.add(provider.id)
+            providers.push(provider)
+        }
+    }
+
+    let activeProvider = DEFAULT_MODELS.activeProvider
+    const rawActiveProvider = input["activeProvider"]
+    if (rawActiveProvider !== undefined && rawActiveProvider !== null) {
+        if (typeof rawActiveProvider !== "string" || rawActiveProvider.trim() === "") {
+            return Result.error<ModelsSetting>(invalidCode("models.activeProvider"))
+        }
+        activeProvider = rawActiveProvider.trim()
+    }
+    const known =
+        activeProvider === BUILTIN_PROVIDER_ID || providers.some((p) => p.id === activeProvider)
+    if (!known) {
+        return Result.error<ModelsSetting>(invalidCode("models.activeProvider"))
+    }
+
+    let activeModel: string | null = DEFAULT_MODELS.activeModel
+    const rawActiveModel = input["activeModel"]
+    if (rawActiveModel !== undefined && rawActiveModel !== null) {
+        if (typeof rawActiveModel !== "string" || rawActiveModel.trim() === "") {
+            return Result.error<ModelsSetting>(invalidCode("models.activeModel"))
+        }
+        activeModel = rawActiveModel.trim()
+    }
+
+    let activeReasoning = DEFAULT_MODELS.activeReasoning
+    const rawActiveReasoning = input["activeReasoning"]
+    if (rawActiveReasoning !== undefined && rawActiveReasoning !== null) {
+        if (
+            typeof rawActiveReasoning !== "string" ||
+            !(REASONING_LEVELS as readonly string[]).includes(rawActiveReasoning)
+        ) {
+            return Result.error<ModelsSetting>(invalidCode("models.activeReasoning"))
+        }
+        activeReasoning = rawActiveReasoning as ModelsSetting["activeReasoning"]
+    }
+
+    return Result.successWithData<ModelsSetting>({
+        providers,
+        activeProvider,
+        activeModel,
+        activeReasoning,
+    })
 }
 
 function validateProxy(input: Record<string, unknown>): Result<ProxySetting> {
@@ -255,6 +408,19 @@ export function validateSettings(input: unknown): Result<AppSetting> {
         openaiSetting = validated.getData() ?? DEFAULT_SETTINGS.openai
     }
 
+    const models = input["models"]
+    if (models !== undefined && models !== null && !isPlainObject(models)) {
+        return Result.error<AppSetting>(invalidCode("models"))
+    }
+    let modelsSetting = DEFAULT_MODELS
+    if (models !== undefined && models !== null) {
+        const validated = validateModels(models)
+        if (!validated.isSuccess()) {
+            return Result.error<AppSetting>(validated.getCode() ?? CONFIG_CODES.invalid)
+        }
+        modelsSetting = validated.getData() ?? DEFAULT_MODELS
+    }
+
     const network = input["network"]
     if (network !== undefined && !isPlainObject(network)) {
         return Result.error<AppSetting>(invalidCode("network"))
@@ -285,6 +451,7 @@ export function validateSettings(input: unknown): Result<AppSetting> {
         version: SETTING_VERSION,
         logger: { level: rawLevel ?? DEFAULT_SETTINGS.logger.level },
         openai: openaiSetting,
+        models: modelsSetting,
         network: networkSetting,
         sandbox: sandboxSetting,
     })

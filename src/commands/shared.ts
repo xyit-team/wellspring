@@ -26,6 +26,10 @@ export interface CommandContext {
     readonly registry: PluginRegistry
     readonly agentTools: AgentToolRegistry
     readonly openai: OpenAIClient | null
+    /** 当前生效的供应商 id 与模型（已按 models.* 解析）；测试上下文可省略 */
+    readonly activeProvider?: string
+    readonly activeModel?: string
+    readonly activeReasoning?: string
     loadPlugins(): Promise<readonly LoadedPlugin[]>
 }
 
@@ -57,7 +61,9 @@ const MESSAGES: Readonly<Record<string, string>> = {
     "config.invalid": "配置项非法",
     "config.version-unsupported": "配置版本不受支持",
     "config.write-failed": "配置文件写入失败",
-    "openai.missing-api-key": "缺少 OPENAI_API_KEY",
+    "config.invalid-api-key": "API Key 格式不合法",
+    "config.credentials-write-failed": "凭据文件写入失败",
+    "openai.missing-api-key": "缺少 API Key（wellspring key set 或环境变量 OPENAI_API_KEY）",
     "openai.empty-output": "模型返回空内容",
     "openai.timeout": "模型请求超时",
     "openai.connection-failed": "无法连接模型服务",

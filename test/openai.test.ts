@@ -1,4 +1,6 @@
 import assert from "node:assert/strict"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { test } from "node:test"
 
 import {
@@ -76,11 +78,97 @@ test("mapOpenAIError 归一化 SDK 异常", () => {
     assert.equal(mapOpenAIError(new Error("boom")), OPENAI_CODES.requestFailed)
 })
 
+test("chatStream 按推理强度发送 reasoning_effort，off 不发", async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    const sse =
+        'data: {"id":"c1","object":"chat.completion.chunk","model":"test-model","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\n\n' +
+        "data: [DONE]\n\n"
+    const fetchImpl: FetchImpl = async (_input, init) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+        return new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } })
+    }
+    const created = OpenAIClient.create({ apiKey: "test-key", settings, fetch: fetchImpl })
+    const client = created.getData()
+    assert.ok(client !== null)
+
+    const high = await client.chatStream([{ role: "user", content: "hi" }], {
+        model: "test-model",
+        reasoning: "high",
+    })
+    assert.equal(high.isSuccess(), true)
+    assert.equal(bodies[0]?.["reasoning_effort"], "high")
+
+    const max = await client.chatStream([{ role: "user", content: "hi" }], {
+        model: "test-model",
+        reasoning: "max",
+    })
+    assert.equal(max.isSuccess(), true)
+    assert.equal(bodies[1]?.["reasoning_effort"], "max")
+
+    const off = await client.chatStream([{ role: "user", content: "hi" }], {
+        model: "test-model",
+        reasoning: "off",
+    })
+    assert.equal(off.isSuccess(), true)
+    assert.equal("reasoning_effort" in (bodies[2] ?? {}), false)
+})
+
+test("chatStream 捕获 reasoning_content 并逐段回调", async () => {
+    const sse =
+        'data: {"id":"c1","object":"chat.completion.chunk","model":"test-model","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"先看"},"finish_reason":null}]}\n\n' +
+        'data: {"id":"c1","object":"chat.completion.chunk","model":"test-model","choices":[{"index":0,"delta":{"reasoning_content":"再算"},"finish_reason":null}]}\n\n' +
+        'data: {"id":"c1","object":"chat.completion.chunk","model":"test-model","choices":[{"index":0,"delta":{"content":"答案"},"finish_reason":"stop"}]}\n\n' +
+        "data: [DONE]\n\n"
+    const fetchImpl: FetchImpl = async () =>
+        new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } })
+    const client = OpenAIClient.create({ apiKey: "test-key", settings, fetch: fetchImpl }).getData()
+    assert.ok(client !== null)
+
+    const reasoning: string[] = []
+    const result = await client.chatStream([{ role: "user", content: "hi" }], {
+        model: "test-model",
+        onReasoning: (text) => reasoning.push(text),
+    })
+    assert.equal(result.isSuccess(), true)
+    const data = result.getData()
+    assert.ok(data !== null)
+    assert.equal(data.reasoning, "先看再算")
+    assert.deepEqual(reasoning, ["先看", "再算"])
+    assert.equal(data.reply.text, "答案")
+    assert.equal(
+        data.chunks.some(
+            (record) => record.type === "chunk" && record.chunk["type"] === "reasoning-delta",
+        ),
+        true,
+        "原始 chunk 里应记录 reasoning-delta",
+    )
+})
+
+test("chatStream 兼容网关的 delta.reasoning 字段", async () => {
+    const sse =
+        'data: {"id":"c2","object":"chat.completion.chunk","model":"test-model","choices":[{"index":0,"delta":{"reasoning":"思考"},"finish_reason":null}]}\n\n' +
+        'data: {"id":"c2","object":"chat.completion.chunk","model":"test-model","choices":[{"index":0,"delta":{"content":"好"},"finish_reason":"stop"}]}\n\n' +
+        "data: [DONE]\n\n"
+    const fetchImpl: FetchImpl = async () =>
+        new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } })
+    const client = OpenAIClient.create({ apiKey: "test-key", settings, fetch: fetchImpl }).getData()
+    assert.ok(client !== null)
+    const result = await client.chatStream([{ role: "user", content: "hi" }], {
+        model: "test-model",
+    })
+    assert.equal(result.isSuccess(), true)
+    assert.equal(result.getData()?.reasoning, "思考")
+})
+
 test("缺少 API key 时创建失败", () => {
     const saved = process.env["OPENAI_API_KEY"]
     delete process.env["OPENAI_API_KEY"]
     try {
-        const result = OpenAIClient.create({ settings })
+        // 指定一个不存在的凭据文件，避免读到开发机上的真实 credentials.json
+        const result = OpenAIClient.create({
+            settings,
+            credentialsFile: join(tmpdir(), "wellspring-missing-credentials.json"),
+        })
         assert.equal(result.isSuccess(), false)
         assert.equal(result.getCode(), OPENAI_CODES.missingApiKey)
         assert.equal(result.getData(), null)

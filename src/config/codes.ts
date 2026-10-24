@@ -5,6 +5,8 @@ export const CONFIG_CODES = {
     invalid: "config.invalid",
     versionUnsupported: "config.version-unsupported",
     writeFailed: "config.write-failed",
+    invalidApiKey: "config.invalid-api-key",
+    credentialsWriteFailed: "config.credentials-write-failed",
 } as const
 
 export type ConfigCode = (typeof CONFIG_CODES)[keyof typeof CONFIG_CODES]
