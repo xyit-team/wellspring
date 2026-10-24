@@ -9,6 +9,7 @@ import pino from "pino"
 import { configureHost } from "../src/api/host/host.ts"
 import { emitInitHooks, emitShutdownHooks } from "../src/api/host/hooks.ts"
 import { DEFAULT_SETTINGS } from "../src/config/defaults.ts"
+import { EventEntity, eventBus } from "../src/event/event.ts"
 import { initElog, type ElogStream } from "../src/logger/elog4js.ts"
 import type { ResolvedPaths } from "../src/platform/path.ts"
 import { DirectBackend } from "../src/sandbox/backends/direct.ts"
@@ -16,6 +17,8 @@ import { PluginSandboxClient, shutdownAllSandboxPlugins } from "../src/sandbox/p
 
 const projectRoot = join(import.meta.dirname, "..")
 let root = ""
+const askCalls: Array<{ askId: string; answer: string }> = []
+let lastAgentPermission: unknown = "unset"
 
 before(async () => {
     root = await mkdtemp(join(tmpdir(), "wellspring-web-test-"))
@@ -61,26 +64,69 @@ test("web 插件：首次设置密码、登录、与 Agent 聊天", { timeout: 2
         limits: { timeoutMs: 10_000, memoryMB: 256, pids: 32, outputLimitBytes: 4096 },
         logger: pino({ level: "silent" }),
         permissions: {
-            hostApi: ["logger", "fs", "http", "agent"],
+            hostApi: ["logger", "fs", "http", "agent", "event"],
             workspaceRead: false,
             workspaceWrite: false,
         },
         agent: {
             async chat(input) {
+                lastAgentPermission = input.permission
                 return {
                     sessionId: "web-session",
+                    turn: 1,
+                    steps: 2,
                     reply: `reply:${input.message}`,
                     model: "test",
                     usage: null,
                 }
             },
             async stream(input, onEvent) {
+                lastAgentPermission = input.permission
+                onEvent({ type: "session", sessionId: "stream-session" })
                 onEvent({ type: "delta", text: "partial" })
+                onEvent({
+                    type: "ask",
+                    request: {
+                        askId: "ask_test",
+                        question: "用哪个分支？",
+                        options: ["main", "dev"],
+                    },
+                })
                 return {
                     sessionId: "stream-session",
+                    turn: 1,
+                    steps: 2,
                     reply: `stream:${input.message}`,
                     model: "test",
                     usage: null,
+                }
+            },
+            async interject() {
+                return false
+            },
+            async respondApproval(approvalId: string, approved: boolean) {
+                return approvalId !== "unknown" && approved
+            },
+            async respondAsk(askId: string, answer: string) {
+                askCalls.push({ askId, answer })
+                return askId !== "unknown" && answer !== ""
+            },
+            async validateWorkspace(path: string) {
+                return {
+                    ok: true,
+                    root: path,
+                    name: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
+                }
+            },
+            async pickDirectory() {
+                return { ok: false, root: "", name: "", error: "已取消" }
+            },
+            async searchWorkspaceFiles(root: string) {
+                return {
+                    ok: true,
+                    root,
+                    entries: [{ path: "src/main.ts", name: "main.ts", type: "file" as const }],
+                    truncated: false,
                 }
             },
         },
@@ -105,7 +151,7 @@ test("web 插件：首次设置密码、登录、与 Agent 聊天", { timeout: 2
             body: JSON.stringify({ password: "secret123" }),
         })
         assert.equal(setup.status, 200)
-        const cookie = setup.headers.get("set-cookie")?.split(";")[0] ?? ""
+        let cookie = setup.headers.get("set-cookie")?.split(";")[0] ?? ""
         assert.match(cookie, /wellspring_web_session=/)
 
         const authed = (await (
@@ -113,10 +159,66 @@ test("web 插件：首次设置密码、登录、与 Agent 聊天", { timeout: 2
         ).json()) as { authenticated: boolean }
         assert.equal(authed.authenticated, true)
 
+        // 修改密码：当前密码错误 → 401；太短 → 400；成功后旧会话失效、新 cookie 生效
+        const wrongCurrent = await fetch(`${base}/api/auth/password`, {
+            method: "POST",
+            headers: { "content-type": "application/json", cookie },
+            body: JSON.stringify({ currentPassword: "wrong", newPassword: "newsecret456" }),
+        })
+        assert.equal(wrongCurrent.status, 401)
+        const tooShort = await fetch(`${base}/api/auth/password`, {
+            method: "POST",
+            headers: { "content-type": "application/json", cookie },
+            body: JSON.stringify({ currentPassword: "secret123", newPassword: "123" }),
+        })
+        assert.equal(tooShort.status, 400)
+        const changed = await fetch(`${base}/api/auth/password`, {
+            method: "POST",
+            headers: { "content-type": "application/json", cookie },
+            body: JSON.stringify({ currentPassword: "secret123", newPassword: "newsecret456" }),
+        })
+        assert.equal(changed.status, 200)
+        const newCookie = changed.headers.get("set-cookie")?.split(";")[0] ?? ""
+        assert.match(newCookie, /wellspring_web_session=/)
+        assert.notEqual(newCookie, cookie)
+        const oldSession = (await (
+            await fetch(`${base}/api/state`, { headers: { cookie } })
+        ).json()) as { authenticated: boolean }
+        assert.equal(oldSession.authenticated, false, "修改密码后旧会话应失效")
+        const newSession = (await (
+            await fetch(`${base}/api/state`, { headers: { cookie: newCookie } })
+        ).json()) as { authenticated: boolean }
+        assert.equal(newSession.authenticated, true)
+        const oldLogin = await fetch(`${base}/api/auth/login`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ password: "secret123" }),
+        })
+        assert.equal(oldLogin.status, 401)
+        const newLogin = await fetch(`${base}/api/auth/login`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ password: "newsecret456" }),
+        })
+        assert.equal(newLogin.status, 200)
+        cookie = newCookie
+
+        const workspaceResponse = await fetch(`${base}/api/workspaces`, {
+            method: "POST",
+            headers: { "content-type": "application/json", cookie },
+            body: JSON.stringify({ root: projectRoot }),
+        })
+        assert.equal(workspaceResponse.status, 201)
+        const workspaceBody = (await workspaceResponse.json()) as {
+            workspace: { id: string; root: string }
+        }
+        assert.equal(workspaceBody.workspace.root, projectRoot)
+        const workspaceId = workspaceBody.workspace.id
+
         const chat = await fetch(`${base}/api/chat`, {
             method: "POST",
             headers: { "content-type": "application/json", cookie },
-            body: JSON.stringify({ message: "hello" }),
+            body: JSON.stringify({ message: "hello", workspaceId }),
         })
         assert.equal(chat.status, 200)
         const data = (await chat.json()) as { sessionId: string; reply: string }
@@ -126,7 +228,7 @@ test("web 插件：首次设置密码、登录、与 Agent 聊天", { timeout: 2
         const streamed = await fetch(`${base}/api/chat/stream`, {
             method: "POST",
             headers: { "content-type": "application/json", cookie },
-            body: JSON.stringify({ message: "hello" }),
+            body: JSON.stringify({ message: "hello", workspaceId }),
         })
         const events = await streamed.text()
         assert.equal(streamed.status, 200, events)
@@ -134,13 +236,144 @@ test("web 插件：首次设置密码、登录、与 Agent 聊天", { timeout: 2
         assert.match(events, /"text":"partial"/)
         assert.match(events, /"type":"done"/)
         assert.match(events, /"sessionId":"stream-session"/)
+        assert.match(events, /"type":"session"/)
+        assert.match(events, /"sessionId":"stream-session"/)
+        assert.match(events, /"type":"ask"/)
+        assert.match(events, /"question":"用哪个分支？"/)
+
+        const answered = await fetch(`${base}/api/asks/ask_test`, {
+            method: "POST",
+            headers: { "content-type": "application/json", cookie },
+            body: JSON.stringify({ answer: "main" }),
+        })
+        assert.equal(answered.status, 200)
+        assert.deepEqual(askCalls[0], { askId: "ask_test", answer: "main" })
+        const badAnswer = await fetch(`${base}/api/asks/ask_test`, {
+            method: "POST",
+            headers: { "content-type": "application/json", cookie },
+            body: JSON.stringify({ answer: 42 }),
+        })
+        assert.equal(badAnswer.status, 400)
+        const missingAsk = await fetch(`${base}/api/asks/unknown`, {
+            method: "POST",
+            headers: { "content-type": "application/json", cookie },
+            body: JSON.stringify({ answer: "x" }),
+        })
+        assert.equal(missingAsk.status, 404)
+
+        // 权限切换器：permission 透传到宿主 Agent，非法值被拒绝
+        const permissionChat = await fetch(`${base}/api/chat`, {
+            method: "POST",
+            headers: { "content-type": "application/json", cookie },
+            body: JSON.stringify({
+                message: "hello",
+                workspaceId,
+                permission: "danger-full-access",
+            }),
+        })
+        assert.equal(permissionChat.status, 200)
+        assert.equal(lastAgentPermission, "danger-full-access")
+
+        const permissionStream = await fetch(`${base}/api/chat/stream`, {
+            method: "POST",
+            headers: { "content-type": "application/json", cookie },
+            body: JSON.stringify({
+                message: "hello",
+                workspaceId,
+                permission: "workspace-write",
+            }),
+        })
+        assert.equal(permissionStream.status, 200)
+        await permissionStream.text()
+        assert.equal(lastAgentPermission, "workspace-write")
+
+        const invalidPermission = await fetch(`${base}/api/chat`, {
+            method: "POST",
+            headers: { "content-type": "application/json", cookie },
+            body: JSON.stringify({ message: "hello", workspaceId, permission: "root" }),
+        })
+        assert.equal(invalidPermission.status, 400)
 
         const unauthorized = await fetch(`${base}/api/chat`, {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ message: "hello" }),
+            body: JSON.stringify({ message: "hello", workspaceId }),
         })
         assert.equal(unauthorized.status, 401)
+
+        // 侧栏扩展：事件注册 nav-bottom 链接
+        const addonsUnauthorized = await fetch(`${base}/api/addons`)
+        assert.equal(addonsUnauthorized.status, 401)
+
+        eventBus.publish(
+            "wellspring-web:addon:register",
+            EventEntity.create({
+                type: "nav-bottom",
+                meta: { label: "打开 Wellspring Code", to: "http://127.0.0.1:8788" },
+            }),
+        )
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        const addonsResponse = await fetch(`${base}/api/addons`, { headers: { cookie } })
+        assert.equal(addonsResponse.status, 200)
+        const addonsBody = (await addonsResponse.json()) as {
+            addons: Array<{ label: string; to: string; external: boolean }>
+        }
+        assert.deepEqual(
+            addonsBody.addons.map((addon) => [addon.label, addon.to, addon.external]),
+            [["打开 Wellspring Code", "http://127.0.0.1:8788/", true]],
+        )
+
+        // 省略协议的 host:port 会被补成 http
+        eventBus.publish(
+            "wellspring-web:addon:register",
+            EventEntity.create({
+                type: "nav-bottom",
+                meta: { id: "wellspring-code", label: "代码编辑器", to: "127.0.0.1:8788" },
+            }),
+        )
+        await new Promise((resolve) => setTimeout(resolve, 150))
+        const withShortUrl = (await (
+            await fetch(`${base}/api/addons`, { headers: { cookie } })
+        ).json()) as { addons: Array<{ id: string; label: string; to: string; external: boolean }> }
+        const codeAddon = withShortUrl.addons.find((addon) => addon.id === "wellspring-code")
+        assert.equal(codeAddon?.label, "代码编辑器")
+        assert.equal(codeAddon?.to, "http://127.0.0.1:8788/")
+        assert.equal(codeAddon?.external, true)
+
+        eventBus.publish(
+            "wellspring-web:addon:register",
+            EventEntity.create({
+                type: "nav-bottom",
+                meta: { label: "危险链接", to: "javascript:alert(1)" },
+            }),
+        )
+        await new Promise((resolve) => setTimeout(resolve, 150))
+        const afterInvalid = (await (
+            await fetch(`${base}/api/addons`, { headers: { cookie } })
+        ).json()) as { addons: unknown[] }
+        assert.equal(afterInvalid.addons.length, 2)
+
+        // SSE 初始快照
+        const controller = new AbortController()
+        const sse = await fetch(`${base}/api/addons/stream`, {
+            headers: { cookie },
+            signal: controller.signal,
+        })
+        assert.equal(sse.status, 200)
+        assert.match(sse.headers.get("content-type") ?? "", /text\/event-stream/)
+        assert.ok(sse.body !== null)
+        const reader = sse.body.getReader()
+        const first = await Promise.race([
+            reader.read(),
+            new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error("addon SSE 超时")), 3000),
+            ),
+        ])
+        const chunk = new TextDecoder().decode(first.value)
+        assert.match(chunk, /event: addons/)
+        assert.match(chunk, /打开 Wellspring Code/)
+        assert.match(chunk, /代码编辑器/)
+        controller.abort()
     } finally {
         await emitShutdownHooks()
         await shutdownAllSandboxPlugins()
