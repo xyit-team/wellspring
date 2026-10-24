@@ -108,8 +108,12 @@ export class AgentCallToolEvent extends EventBase {
 
 export class AgentAskEvent extends EventBase {
     declare readonly sessionId: string
+    /** 本次提问的 id；回答时对应用 UserAnswerEvent.askId */
+    declare readonly askId?: string
+    declare readonly turn?: number
+    declare readonly step?: number
     declare readonly question: string
-    readonly options?: readonly string[]
+    declare readonly options?: readonly string[]
 }
 
 export class AgentReadEvent extends EventBase {
@@ -122,7 +126,7 @@ export class AgentReadEvent extends EventBase {
 
 export class AgentQueryTaskEvent extends EventBase {
     declare readonly sessionId: string
-    readonly query?: string
+    declare readonly query?: string
 }
 
 export class AgentSubmitEvent extends EventBase {
@@ -143,11 +147,12 @@ export class AgentSetGoalEvent extends EventBase {
 export class AgentRequestPermissionEvent extends EventBase {
     declare readonly sessionId: string
     declare readonly action: string
-    readonly resource?: string
+    declare readonly resource?: string
 }
 
 export class UserAnswerEvent extends EventBase {
     declare readonly sessionId: string
+    declare readonly askId?: string
     declare readonly answer: string
 }
 

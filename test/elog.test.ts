@@ -87,6 +87,18 @@ test("Agent 输出与操作块分开", () => {
     )
 })
 
+test("工具调用单独成行，参数摘要跟在后面", () => {
+    const { elog, out } = create()
+    elog.agent("好的，我将调用一次工具")
+    elog.toolCall("执行命令", "node -e console.log(1)")
+    elog.toolResult("失败：exit=1")
+    elog.agent("继续")
+    assert.equal(
+        out.text,
+        "\n[Agent]\n好的，我将调用一次工具\n\n执行命令  node -e console.log(1)\n  失败：exit=1\n\n[Agent]\n继续\n",
+    )
+})
+
 test("--json 模式静默", () => {
     const { elog, out, err } = create(true)
     elog.info("hello")

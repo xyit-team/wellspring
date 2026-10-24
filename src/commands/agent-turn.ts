@@ -12,15 +12,20 @@ import type {
 import {
     emitAfterStep,
     emitAfterTurn,
+    emitAgentAsk,
     emitAgentCallTool,
     emitAgentRunSync,
     emitAgentSubmit,
     emitBeforeStep,
     emitBeforeTurn,
     emitOnMessage,
+    emitUserAnswer,
 } from "../api/host/hooks.ts"
+import type { HostAgentAskRequest, HostAgentToolEvent } from "../api/host/agent.ts"
 import type { AgentTool } from "../api/host/plugin.ts"
 import type { SandboxAccess } from "../config/types.ts"
+import { createAskId, cancelAsk, waitForAsk } from "../agent/pending-asks.ts"
+import { toolLabel, toolSummary } from "../display/tool-label.ts"
 import { withAgentToolContext } from "../agent/tool-context.ts"
 import { Result } from "../api/result/result.ts"
 import type { OpenAIClient, ToolCall } from "../network/openai.ts"
@@ -53,6 +58,7 @@ export interface AgentTurnParams {
     readonly session: SessionData
     readonly input: string
     readonly model: string
+    readonly reasoning?: string
     readonly system?: string
     readonly stream: boolean
     readonly display: boolean
@@ -61,6 +67,54 @@ export interface AgentTurnParams {
     readonly maxSteps?: number
     readonly approveExec?: ExecApproval
     readonly onDelta?: (text: string) => void
+    /** 模型思考内容增量 */
+    readonly onReasoning?: (text: string) => void
+    /** 工具调用开始/结束；界面用来显示工具提示 */
+    readonly onTool?: (event: HostAgentToolEvent) => void
+    /** ask 工具提问；界面收到后把问题展示给用户 */
+    readonly onAsk?: (request: HostAgentAskRequest) => void
+    /** 直接问当前终端用户（CLI）；缺省时等待 HostAgentApi.respondAsk */
+    readonly askUser?: (request: HostAgentAskRequest) => Promise<string | null>
+    readonly onStep?: (event: { readonly turn: number; readonly step: number }) => void
+}
+
+/** 平台内置提问工具：模型用它向用户要信息，宿主等回答后再继续 */
+const ASK_TOOL_NAME = "ask"
+const ASK_QUESTION_LIMIT = 2000
+const ASK_OPTION_LIMIT = 10
+const ASK_ANSWER_LIMIT = 8000
+
+const ASK_TOOL_SCHEMA: ChatCompletionTool = {
+    type: "function",
+    function: {
+        name: ASK_TOOL_NAME,
+        description:
+            "向用户提问并等待回答。用于缺少必要信息、需要在几个方案里选择或确认时。问题要简短、自包含，用用户看得懂的话；不要用它代替执行任务。如果你推荐某个选项，把它放第一个，并在标签后加「（推荐）」。",
+        parameters: {
+            type: "object",
+            additionalProperties: false,
+            required: ["question"],
+            properties: {
+                question: { type: "string", description: "要问用户的问题" },
+                options: {
+                    type: "array",
+                    items: { type: "string" },
+                    description:
+                        "可选答案；推荐的选项放第一个并在标签后加「（推荐）」，用户也可以自由输入",
+                },
+            },
+        },
+    },
+}
+
+/** 推给界面的工具输出上限；完整内容仍写进会话 */
+const TOOL_EVENT_RESULT_LIMIT = 4000
+
+function toolEventResult(text: string): { readonly result: string; readonly truncated: boolean } {
+    if (text.length <= TOOL_EVENT_RESULT_LIMIT) {
+        return { result: text, truncated: false }
+    }
+    return { result: text.slice(0, TOOL_EVENT_RESULT_LIMIT), truncated: true }
 }
 
 interface ToolArgs {
@@ -190,9 +244,16 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
     const hostSession = getSession(session.meta.id)
     hostSession?.begin()
     const maxSteps = params.maxSteps ?? Number.POSITIVE_INFINITY
+    let stepsExecuted = 0
     const pluginTools = ctx.agentTools.list()
     const toolDefinitions = pluginTools.map((record) => pluginToolSchema(record.tool))
+    // 插件可以自己提供同名工具覆盖内置 ask
+    const askToolBuiltin = ctx.agentTools.get(ASK_TOOL_NAME) === undefined
+    if (askToolBuiltin) {
+        toolDefinitions.push(ASK_TOOL_SCHEMA)
+    }
     let finalText = ""
+    let printedStepText = ""
     let finalModel = model
     let inputTokens: number | null = null
     let outputTokens: number | null = null
@@ -221,7 +282,83 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
         return Result.error<TurnData>(code)
     }
 
+    const runAskTool = async (
+        rawArguments: string,
+        askStep: number,
+    ): Promise<{ content: string; ok: boolean }> => {
+        const args = parseToolArguments(rawArguments)
+        const rawQuestion = args["question"]
+        const question =
+            typeof rawQuestion === "string" ? rawQuestion.trim().slice(0, ASK_QUESTION_LIMIT) : ""
+        if (question === "") {
+            return { content: "ask 工具缺少 question 参数", ok: false }
+        }
+        const options: string[] = []
+        if (Array.isArray(args["options"])) {
+            for (const item of args["options"]) {
+                if (typeof item !== "string") {
+                    continue
+                }
+                const value = item.trim()
+                if (value === "") {
+                    continue
+                }
+                options.push(value.slice(0, 200))
+                if (options.length >= ASK_OPTION_LIMIT) {
+                    break
+                }
+            }
+        }
+        const askId = createAskId()
+        const request: HostAgentAskRequest = {
+            askId,
+            question,
+            ...(options.length === 0 ? {} : { options }),
+        }
+        const waiting =
+            params.askUser === undefined ? waitForAsk({ askId, sessionId: session.meta.id }) : null
+        try {
+            await emitAgentAsk({
+                sessionId: session.meta.id,
+                askId,
+                turn,
+                step: askStep,
+                question,
+                ...(options.length === 0 ? {} : { options }),
+            })
+            try {
+                params.onAsk?.(request)
+            } catch {
+                return { content: "提问没有送达用户，已跳过。", ok: false }
+            }
+            const answer =
+                params.askUser === undefined ? await waiting! : await params.askUser(request)
+            if (answer !== null) {
+                await emitUserAnswer({
+                    sessionId: session.meta.id,
+                    askId,
+                    answer: answer.slice(0, ASK_ANSWER_LIMIT),
+                })
+            }
+            if (answer === null) {
+                return {
+                    content: "用户没有回答问题。请根据已有信息继续，或说明还需要哪些信息。",
+                    ok: false,
+                }
+            }
+            const trimmed = answer.trim().slice(0, ASK_ANSWER_LIMIT)
+            if (trimmed === "") {
+                return { content: "用户跳过了这个问题。", ok: true }
+            }
+            return { content: `用户回答：${trimmed}`, ok: true }
+        } finally {
+            cancelAsk(askId)
+        }
+    }
+
     for (let step = 1; step <= maxSteps; step += 1) {
+        stepsExecuted = step
+        params.onStep?.({ turn, step })
         events.push({ type: "step/start", seq: seq++, time: Date.now(), data: { turn, step } })
         await emitBeforeStep({
             sessionId: session.meta.id,
@@ -279,8 +416,12 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
         }
         const streamResult = await client.chatStream(messages, {
             model,
+            reasoning: params.reasoning,
             tools: toolDefinitions,
             toolChoice: "auto",
+            onReasoning: (text) => {
+                params.onReasoning?.(text)
+            },
             onText: (text) => {
                 params.onDelta?.(text)
                 if (!streamed) {
@@ -320,6 +461,9 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
         }
 
         const parts: ContentPart[] = []
+        if (data.reasoning !== "") {
+            parts.push({ type: "reasoning", text: data.reasoning })
+        }
         if (data.reply.text !== "") {
             parts.push({ type: "text", text: data.reply.text })
         }
@@ -358,6 +502,11 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
             })
         }
         endAgent()
+        // 非流式（管道/--no-stream）也按步打印模型输出，让工具调用和消息交替出现（参考 Harness）
+        if (display && !streamed && data.reply.text !== "") {
+            ctx.elog.agent(markdownEnabled ? renderMarkdown(data.reply.text) : data.reply.text)
+            printedStepText = data.reply.text
+        }
 
         if (data.toolCalls.length === 0) {
             await emitAfterStep({
@@ -402,15 +551,26 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
                 name: call.name,
                 arguments: call.arguments,
             })
+            params.onTool?.({
+                id: call.id,
+                name: call.name,
+                phase: "start",
+                arguments: call.arguments,
+            })
 
-            let toolContent = ""
             const args = parseToolArguments(call.arguments)
-            if (ctx.agentTools.get(call.name) !== undefined) {
+            ctx.elog.toolCall(toolLabel(call.name), toolSummary(call.name, args))
+            let toolContent = ""
+            let toolOk = false
+            if (askToolBuiltin && call.name === ASK_TOOL_NAME) {
+                const outcome = await runAskTool(call.arguments, step)
+                toolContent = outcome.content
+                toolOk = outcome.ok
+            } else if (ctx.agentTools.get(call.name) !== undefined) {
                 const record = ctx.agentTools.get(call.name)
                 if (record === undefined) {
                     toolContent = `未知工具：${call.name}`
                 } else {
-                    ctx.elog.action("[Agent] Agent调用工具", [{ label: "name", value: call.name }])
                     try {
                         const result = await withAgentToolContext(
                             {
@@ -440,17 +600,29 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
                                 : result.success
                                   ? JSON.stringify(result.data)
                                   : `工具失败：${JSON.stringify(result.data)}`
-                        ctx.elog.actionStatus(call.name, result.success ? "完成" : "失败")
+                        toolOk = result.success
                     } catch (error) {
                         const message = error instanceof Error ? error.message : String(error)
                         toolContent = `工具执行失败：${message}`
-                        ctx.elog.actionStatus(call.name, "失败")
                     }
                 }
             } else {
                 toolContent = `未知工具：${call.name}`
             }
 
+            if (!toolOk) {
+                const firstLine = toolContent.split("\n")[0] ?? ""
+                ctx.elog.toolResult(`失败：${firstLine.slice(0, 160)}`)
+            }
+            const toolEvent = toolEventResult(toolContent)
+            params.onTool?.({
+                id: call.id,
+                name: call.name,
+                phase: "end",
+                ok: toolOk,
+                result: toolEvent.result,
+                ...(toolEvent.truncated ? { truncated: true } : {}),
+            })
             events.push({
                 type: "tool/result",
                 seq: seq++,
@@ -509,13 +681,16 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
         code: null,
     })
 
-    if (!streamed && display) {
+    if (!streamed && display && finalText !== printedStepText) {
+        // 只有兜底文案（例如达到最大步数）或最后一步没有正文时才需要补打
         ctx.elog.agent(markdownEnabled ? renderMarkdown(finalText) : finalText)
     }
 
     return Result.successWithData<TurnData>({
         sessionId: session.meta.id,
         mode: "run",
+        turn,
+        steps: stepsExecuted,
         reply: finalText,
         model: finalModel,
         usage: inputTokens === null && outputTokens === null ? null : { inputTokens, outputTokens },

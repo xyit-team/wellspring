@@ -249,6 +249,27 @@ export class Elog {
         }
     }
 
+    /** 工具调用行：换行后单独一行显示中文动作名与参数摘要 */
+    toolCall(label: string, summary = ""): void {
+        if (this.#json) {
+            return
+        }
+        const color = this.#colorStdout
+        const name = color ? `\x1b[36m${label}\x1b[0m` : label
+        const line = summary === "" ? name : `${name}  ${summary}`
+        this.#stdout.write(`\n${line}\n`)
+    }
+
+    /** 工具结果/错误行：缩进在工具调用下面 */
+    toolResult(text: string): void {
+        if (this.#json || text === "") {
+            return
+        }
+        const color = this.#colorStdout
+        const line = `  ${text}`
+        this.#stdout.write(`${color ? `\x1b[90m${line}\x1b[0m` : line}\n`)
+    }
+
     /** 操作结果行 */
     actionStatus(name: string, status: string): void {
         if (this.#json) {
