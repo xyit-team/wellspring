@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { after, before, test } from "node:test"
 
 import pino from "pino"
@@ -487,6 +487,39 @@ test("web 插件：页面外壳、静态资源与主题 cookie", { timeout: 20_0
 
         assert.ok(STATIC_ASSETS.get("/assets/app.js"))
     } finally {
+        await stopWebPlugin()
+    }
+})
+
+test("web 插件：page.html 覆盖内置页面", { timeout: 20_000 }, async () => {
+    const server = await startWebPlugin()
+    const pageFile = join(root, "data", "plugin-data", "wellspring-web", "page.html")
+    try {
+        await mkdir(dirname(pageFile), { recursive: true })
+
+        // 没有覆盖文件时用内置模板
+        const builtin = await fetch(`${server.base}/`)
+        assert.match(await builtin.text(), /id="composer-input"/)
+
+        await writeFile(pageFile, "<!doctype html><html{{theme}}><body>覆盖页</body></html>")
+        const overridden = await fetch(`${server.base}/`, {
+            headers: { cookie: "wellspring_theme=light" },
+        })
+        const body = await overridden.text()
+        assert.match(body, /覆盖页/)
+        assert.match(body, /<html data-theme="light">/, "{{theme}} 应替换成主题属性")
+        assert.ok(!body.includes("composer-input"), "覆盖后不再输出内置模板")
+
+        // 空文件视为没有覆盖
+        await writeFile(pageFile, "   ")
+        const blank = await fetch(`${server.base}/`)
+        assert.match(await blank.text(), /id="composer-input"/)
+
+        await rm(pageFile, { force: true })
+        const restored = await fetch(`${server.base}/`)
+        assert.match(await restored.text(), /id="composer-input"/)
+    } finally {
+        await rm(pageFile, { force: true })
         await stopWebPlugin()
     }
 })
