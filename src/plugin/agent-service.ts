@@ -96,7 +96,6 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
             display: false,
             allowExec: false,
             permission: options.settings.sandbox.access,
-            maxSteps: 12,
         })
         if (!result.isSuccess()) {
             throw new Error(result.getCode() ?? "agent.failed")
