@@ -60,6 +60,7 @@ export interface AgentTurnParams {
     readonly permission?: SandboxAccess
     readonly maxSteps?: number
     readonly approveExec?: ExecApproval
+    readonly onDelta?: (text: string) => void
 }
 
 interface ToolArgs {
@@ -280,22 +281,24 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
             model,
             tools: toolDefinitions,
             toolChoice: "auto",
-            onText: streamed
-                ? (text) => {
-                      if (!agentStarted) {
-                          ctx.elog.agentStart()
-                          agentStarted = true
-                          if (markdownEnabled) {
-                              markdown = createMarkdownStream()
-                          }
-                      }
-                      if (markdown !== null) {
-                          writeMarkdown(markdown.push(text))
-                      } else {
-                          ctx.elog.stream(text)
-                      }
-                  }
-                : undefined,
+            onText: (text) => {
+                params.onDelta?.(text)
+                if (!streamed) {
+                    return
+                }
+                if (!agentStarted) {
+                    ctx.elog.agentStart()
+                    agentStarted = true
+                    if (markdownEnabled) {
+                        markdown = createMarkdownStream()
+                    }
+                }
+                if (markdown !== null) {
+                    writeMarkdown(markdown.push(text))
+                } else {
+                    ctx.elog.stream(text)
+                }
+            },
         })
         if (!streamResult.isSuccess()) {
             return await fail(streamResult.getCode() ?? "openai.request-failed")

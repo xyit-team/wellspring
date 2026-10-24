@@ -496,6 +496,16 @@ export class PluginSandboxClient {
                     throw new PluginSandboxError("宿主没有 Agent 服务")
                 }
                 result = await this.#options.agent.chat(params as unknown as HostAgentChatInput)
+            } else if (request.method === "host.agent.stream") {
+                this.#requireHostApi("agent")
+                if (this.#options.agent === undefined) {
+                    throw new PluginSandboxError("宿主没有 Agent 服务")
+                }
+                const streamId = String(params["streamId"] ?? "")
+                const input = params["input"] as unknown as HostAgentChatInput
+                result = await this.#options.agent.stream(input, (event) => {
+                    this.#notify("sandbox.agent.stream", { streamId, event })
+                })
             } else if (request.method === "host.http.createServer") {
                 this.#requireHostApi("http")
                 const serverId = String(params["serverId"] ?? "")

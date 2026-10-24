@@ -231,6 +231,7 @@ export async function executeTurn(params: {
     readonly permission?: SandboxAccess
     readonly maxSteps?: number
     readonly approveExec?: (request: ExecApprovalRequest) => Promise<boolean>
+    readonly onDelta?: (text: string) => void
 }): Promise<Result<TurnData>> {
     const { ctx, client, store, session, mode, input, model, system, stream, display } = params
     if (mode === "run") {
@@ -248,6 +249,7 @@ export async function executeTurn(params: {
             permission: params.permission,
             maxSteps: params.maxSteps,
             approveExec: params.approveExec,
+            onDelta: params.onDelta,
         })
     }
     const turn = lastTurnNumber(session.events) + 1

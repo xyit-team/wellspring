@@ -915,6 +915,15 @@ test("sandbox 插件通过 host agent 与 Agent 交互", { timeout: 20_000 }, as
                     usage: null,
                 }
             },
+            async stream(input, onEvent) {
+                onEvent({ type: "delta", text: "partial" })
+                return {
+                    sessionId: "stream-session",
+                    reply: `stream:${input.message}`,
+                    model: "test",
+                    usage: null,
+                }
+            },
         },
     })
     try {

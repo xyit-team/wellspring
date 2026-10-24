@@ -23,6 +23,16 @@ export interface HostAgentChatResult {
     } | null
 }
 
+export type HostAgentStreamEvent = {
+    readonly type: "delta"
+    readonly text: string
+}
+
 export interface HostAgentApi {
     chat(input: HostAgentChatInput): Promise<HostAgentChatResult>
+    /** 流式执行；delta 通过回调推送，Promise 在完成时返回最终结果 */
+    stream(
+        input: HostAgentChatInput,
+        onEvent: (event: HostAgentStreamEvent) => void,
+    ): Promise<HostAgentChatResult>
 }

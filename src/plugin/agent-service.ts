@@ -5,7 +5,12 @@
 
 import { join } from "node:path"
 
-import type { HostAgentApi, HostAgentChatInput, HostAgentChatResult } from "../api/host/agent.ts"
+import type {
+    HostAgentApi,
+    HostAgentChatInput,
+    HostAgentChatResult,
+    HostAgentStreamEvent,
+} from "../api/host/agent.ts"
 import type { CommandContext } from "../commands/shared.ts"
 import { executeTurn } from "../commands/conversation.ts"
 import { SETTING_FILE_NAME } from "../config/loader.ts"
@@ -72,7 +77,10 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
         loadPlugins: async () => [],
     })
 
-    const chatOnce = async (input: HostAgentChatInput): Promise<HostAgentChatResult> => {
+    const chatOnce = async (
+        input: HostAgentChatInput,
+        onDelta?: (text: string) => void,
+    ): Promise<HostAgentChatResult> => {
         const message = input.message.trim()
         if (message === "") {
             throw new Error("消息不能为空")
@@ -96,6 +104,7 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
             display: false,
             allowExec: false,
             permission: options.settings.sandbox.access,
+            onDelta,
         })
         if (!result.isSuccess()) {
             throw new Error(result.getCode() ?? "agent.failed")
@@ -112,24 +121,34 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
         }
     }
 
+    const enqueue = async (
+        input: HostAgentChatInput,
+        onDelta?: (text: string) => void,
+    ): Promise<HostAgentChatResult> => {
+        const key = input.sessionId ?? "new"
+        const previous = queues.get(key) ?? Promise.resolve()
+        const next = previous.then(
+            async () => await chatOnce(input, onDelta),
+            async () => await chatOnce(input, onDelta),
+        )
+        queues.set(
+            key,
+            next.catch(() => undefined),
+        )
+        const result = await next
+        if (input.sessionId === undefined) {
+            queues.delete(key)
+            queues.set(result.sessionId, Promise.resolve(result))
+        }
+        return result
+    }
+
     return {
         async chat(input) {
-            const key = input.sessionId ?? "new"
-            const previous = queues.get(key) ?? Promise.resolve()
-            const next = previous.then(
-                async () => await chatOnce(input),
-                async () => await chatOnce(input),
-            )
-            queues.set(
-                key,
-                next.catch(() => undefined),
-            )
-            const result = await next
-            if (input.sessionId === undefined) {
-                queues.delete(key)
-                queues.set(result.sessionId, Promise.resolve(result))
-            }
-            return result
+            return await enqueue(input)
+        },
+        async stream(input, onEvent: (event: HostAgentStreamEvent) => void) {
+            return await enqueue(input, (text) => onEvent({ type: "delta", text }))
         },
     }
 }

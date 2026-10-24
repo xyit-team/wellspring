@@ -10,7 +10,7 @@ import type { Logger } from "pino"
 
 import type { Host, HostOSInfo, HostPluginStatus, HostStatus } from "../api/host/host.ts"
 import type { HostFileApi, HostFileEntry, HostFileStat } from "../api/host/fs.ts"
-import type { HostAgentApi, HostAgentChatInput } from "../api/host/agent.ts"
+import type { HostAgentApi, HostAgentChatInput, HostAgentStreamEvent } from "../api/host/agent.ts"
 import type {
     HostHttpApi,
     HttpHandler,
@@ -199,6 +199,7 @@ const HOOK_API_NAME: Readonly<Record<HookKind, string>> = {
 let runtime: PluginRuntime | null = null
 
 const httpHandlers = new Map<string, HttpHandler>()
+const agentStreamHandlers = new Map<string, (event: HostAgentStreamEvent) => void>()
 const websocketHandlers = new Map<string, WebSocketHandler>()
 const wsMessages = new Map<string, Array<(data: string) => void>>()
 const wsCloses = new Map<string, Array<(code: number, reason: string) => void>>()
@@ -209,7 +210,17 @@ function remoteAgent(): HostAgentApi {
             return await bridgeRequest(
                 "host.agent.chat",
                 input as unknown as Record<string, unknown>,
+                180_000,
             )
+        },
+        async stream(input: HostAgentChatInput, onEvent: (event: HostAgentStreamEvent) => void) {
+            const streamId = nextRequestId("agent-stream")
+            agentStreamHandlers.set(streamId, onEvent)
+            try {
+                return await bridgeRequest("host.agent.stream", { streamId, input }, 180_000)
+            } finally {
+                agentStreamHandlers.delete(streamId)
+            }
         },
     } as HostAgentApi
 }
@@ -916,6 +927,12 @@ async function main(): Promise<void> {
                 if (message.method === "sandbox.event") {
                     const params = message.params as { name: string; data: unknown }
                     eventBus.receive(params.name, params.data)
+                } else if (message.method === "sandbox.agent.stream") {
+                    const params = message.params as {
+                        streamId: string
+                        event: HostAgentStreamEvent
+                    }
+                    agentStreamHandlers.get(params.streamId)?.(params.event)
                 }
                 continue
             }
