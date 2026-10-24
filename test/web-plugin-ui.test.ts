@@ -257,6 +257,10 @@ test("web 插件：页面外壳、静态资源与主题 cookie", { timeout: 20_0
         assert.match(html, /id="workspace-toggle"[^>]*aria-expanded="true"[^>]*aria-controls="workspace-body"/)
         assert.match(html, /id="workspace-body"/)
         assert.match(html, /id="workspace-active" hidden/)
+        assert.match(html, /id="foot-toggle"[^>]*aria-expanded="true"[^>]*aria-controls="foot-body"/)
+        assert.match(html, /id="foot-body"/)
+        // 连接状态留在折叠区外
+        assert.match(html, /id="foot-body">[\s\S]*id="logout"[\s\S]*<\/div>\s*<div class="host-line" id="host-line">/)
         // 输入框 @ 引用高亮层（镜像层在 textarea 之下）
         assert.match(html, /class="composer-field"/)
         assert.match(html, /id="composer-highlight"/)
@@ -407,6 +411,8 @@ test("web 插件：页面外壳、静态资源与主题 cookie", { timeout: 20_0
         assert.match(cssBody, /\.sidebar-fold \{/)
         assert.match(cssBody, /\.sidebar-fold-value/)
         assert.match(cssBody, /\.workspace-body\[hidden\]/)
+        assert.match(cssBody, /\.sidebar-foot-body\[hidden\]/)
+        assert.match(cssBody, /\.foot-fold/)
         // 窄屏：composer-bar 不换行时发送按钮会溢出 composer，被 .app 的 overflow 裁掉
         const narrowCss = cssBody.slice(cssBody.indexOf("@media (max-width: 860px)"))
         assert.ok(narrowCss.includes(".composer-bar"), "窄屏断点里必须有输入条布局")
@@ -453,6 +459,9 @@ test("web 插件：页面外壳、静态资源与主题 cookie", { timeout: 20_0
         assert.match(scriptBody, /function renderWorkspaceFold\(/)
         assert.match(scriptBody, /function toggleWorkspaceFold\(/)
         assert.match(scriptBody, /WORKSPACE_FOLD_KEY/)
+        assert.match(scriptBody, /function renderFootFold\(/)
+        assert.match(scriptBody, /function toggleFootFold\(/)
+        assert.match(scriptBody, /FOOT_FOLD_KEY/)
         assert.match(scriptBody, /compositionend[\s\S]{0,240}refreshTrigger\(\)/)
         assert.match(scriptBody, /function maybeResumeTurn\(/)
         assert.match(scriptBody, /function resumeTurn\(/)
