@@ -159,6 +159,8 @@ test("executeTurn 写入会话与流式 chunk", async () => {
 
     assert.equal(result.isSuccess(), true)
     assert.equal(result.getData()?.reply, "hello")
+    assert.equal(result.getData()?.turn, 1)
+    assert.equal(result.getData()?.steps, 1)
     assert.deepEqual(result.getData()?.usage, { inputTokens: 2, outputTokens: 2 })
 
     const reopened = await store.open("conv-1", cwd)
@@ -376,6 +378,7 @@ test("Agent 循环执行 execute_code 并回填 tool result", { timeout: 20_000 
     })
 
     const toolCalls: string[] = []
+    const stepsSeen: Array<{ turn: number; step: number }> = []
     let approvals = 0
     const off = onAgentCallTool((payload) => {
         toolCalls.push(`${payload.name}:${payload.arguments}`)
@@ -396,9 +399,18 @@ test("Agent 循环执行 execute_code 并回填 tool result", { timeout: 20_000 
                 approvals += 1
                 return false
             },
+            onStep: (event) => {
+                stepsSeen.push(event)
+            },
         })
         assert.equal(result.isSuccess(), true)
         assert.equal(result.getData()?.reply, "最终回答")
+        assert.equal(result.getData()?.turn, 1)
+        assert.equal(result.getData()?.steps, 2)
+        assert.deepEqual(stepsSeen, [
+            { turn: 1, step: 1 },
+            { turn: 1, step: 2 },
+        ])
         assert.equal(approvals, 0)
         assert.equal(requests.length, 2)
 
@@ -783,4 +795,96 @@ test("executeTurn 失败时记录 failed 轮次", async () => {
 
 test("代理为 null 时不注入 fetch", () => {
     assert.equal(createProxyFetch(null), undefined)
+})
+
+test("run 非流式输出：每步消息与工具调用交替，且换行分隔", async () => {
+    let output = ""
+    const agentTools = new AgentToolRegistry()
+    agentTools.register("test", {
+        name: "read",
+        introduction: { params: { file_path: "路径" }, content: "读取文件" },
+        call: async () => ({ success: true, data: { content: "file body" } }),
+    })
+    const paths: ResolvedPaths = {
+        configDir: join(root, "config"),
+        dataDir: join(root, "data"),
+        cacheDir: join(root, "cache"),
+        logDir: join(root, "logs"),
+        sources: {
+            configDir: "override",
+            dataDir: "override",
+            cacheDir: "override",
+            logDir: "override",
+        },
+    }
+    const elog = new Elog({
+        stdout: { write: (text: string) => ((output += text), true) },
+        stderr: { write: () => true },
+        color: false,
+        json: false,
+    })
+    const responses = [
+        sse([
+            chunk({ role: "assistant" }),
+            chunk({ content: "我先读一下。" }),
+            chunk({
+                tool_calls: [
+                    {
+                        index: 0,
+                        id: "call_1",
+                        type: "function",
+                        function: { name: "read", arguments: '{"file_path":"a.txt"}' },
+                    },
+                ],
+            }),
+            chunk({}, "tool_calls"),
+            usageChunk(),
+        ]),
+        sse([
+            chunk({ role: "assistant" }),
+            chunk({ content: "读完了。" }),
+            chunk({}, "stop"),
+            usageChunk(),
+        ]),
+    ]
+    let index = 0
+    const client = createClient(
+        async () => responses[Math.min(index++, responses.length - 1)] ?? responses[1]!,
+    )
+    const ctx: CommandContext = {
+        global: { json: false, quiet: false, help: false, version: false },
+        settings: DEFAULT_SETTINGS,
+        settingsFile: join(paths.configDir, "app-setting.json"),
+        configCode: null,
+        paths,
+        logger: pino({ level: "silent" }),
+        elog,
+        registry: new PluginRegistry(),
+        agentTools,
+        openai: client,
+        loadPlugins: async () => [],
+    }
+    const store = new SessionStore(join(root, "sessions"))
+    const session = await store.create({ cwd, model: "test-model" })
+    registerSession(new Session(session, store))
+
+    const result = await executeTurn({
+        ctx,
+        client,
+        store,
+        session,
+        mode: "run",
+        input: "看看仓库",
+        model: "test-model",
+        stream: false,
+        display: true,
+        permission: "read-only",
+    })
+    assert.equal(result.isSuccess(), true)
+    assert.equal(result.getData()?.reply, "读完了。")
+
+    assert.match(output, /我先读一下。\n\n读取文件  a\.txt\n\n\[Agent\]\n读完了。/, output)
+    assert.equal(output.split("读完了。").length - 1, 1, "最终消息不应重复打印")
+    assert.ok(!output.includes("Agent调用工具"), `工具调用不再用旧的多行块：\n${output}`)
+    assert.ok(!output.includes("[操作]"), `不再打印 [操作] 状态行：\n${output}`)
 })

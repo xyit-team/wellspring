@@ -13,6 +13,7 @@ import { runConfigCommand } from "./commands/config.ts"
 import { runConversationCommand } from "./commands/conversation.ts"
 import { runDoctorCommand } from "./commands/doctor.ts"
 import { runHelpCommand } from "./commands/help.ts"
+import { runKeyCommand } from "./commands/key.ts"
 import { runPluginCommand } from "./commands/plugin.ts"
 import {
     errorMessage,
@@ -25,6 +26,14 @@ import { runSessionCommand } from "./commands/session.ts"
 import { runStartCommand } from "./commands/start.ts"
 import { runStopCommand } from "./commands/stop.ts"
 import { runVersionCommand } from "./commands/version.ts"
+import { credentialsFile } from "./config/credentials.ts"
+import {
+    activeModelProvider,
+    effectiveModel,
+    effectiveReasoning,
+    providerApiKey,
+    providerOpenAISettings,
+} from "./config/providers.ts"
 import { DEFAULT_SETTINGS } from "./config/defaults.ts"
 import { loadSettings, SETTING_FILE_NAME } from "./config/loader.ts"
 import type { AppSetting } from "./config/types.ts"
@@ -168,8 +177,15 @@ async function main(argv: readonly string[]): Promise<void> {
         elog.warn(`代理初始化失败：${reason}`)
         proxyFetch = undefined
     }
+    // 当前供应商/模型：启动时解析一次，CLI 单轮命令直接用
+    const provider = activeModelProvider(settings)
+    const activeModel = effectiveModel(settings, provider)
+    const activeReasoning = effectiveReasoning(settings, provider)
+    const providerApiKeyValue = providerApiKey(provider, paths.configDir)
     const openaiResult = initOpenAIClient({
-        settings: settings.openai,
+        settings: providerOpenAISettings(settings, provider),
+        apiKey: providerApiKeyValue ?? "",
+        credentialsFile: credentialsFile(paths.configDir),
         logger: logger.child({ module: "openai" }),
         fetch: proxyFetch,
     })
@@ -225,12 +241,16 @@ async function main(argv: readonly string[]): Promise<void> {
         registry,
         agentTools,
         openai,
+        activeProvider: provider.id,
+        activeModel,
+        activeReasoning,
         loadPlugins: ensurePlugins,
     }
 
     try {
         // 钩子与插件命令都可能在任意命令里用到；只有 version 不需要插件
-        if (commandName !== "version") {
+        // version / key 不依赖插件，启动会更快
+        if (commandName !== "version" && commandName !== "key") {
             await ensurePlugins()
         }
         setHostStatus("running")
@@ -260,6 +280,9 @@ async function main(argv: readonly string[]): Promise<void> {
                 break
             case "doctor":
                 outcome = await runDoctorCommand(ctx)
+                break
+            case "key":
+                outcome = await runKeyCommand(ctx, commandArgv)
                 break
             case "version":
                 outcome = await runVersionCommand(ctx)

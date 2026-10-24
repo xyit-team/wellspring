@@ -35,6 +35,12 @@ test("默认配置已冻结", () => {
         version: 1,
         logger: { level: "info" },
         openai: { baseUrl: null, model: "gpt-4o-mini", timeoutMs: 60000, maxRetries: 2 },
+        models: {
+            providers: [],
+            activeProvider: "openai",
+            activeModel: null,
+            activeReasoning: "off",
+        },
         network: { proxy: null },
         sandbox: {
             mode: "strict",
@@ -49,6 +55,7 @@ test("默认配置已冻结", () => {
     assert.equal(Object.isFrozen(DEFAULT_SETTINGS), true)
     assert.equal(Object.isFrozen(DEFAULT_SETTINGS.logger), true)
     assert.equal(Object.isFrozen(DEFAULT_SETTINGS.openai), true)
+    assert.equal(Object.isFrozen(DEFAULT_SETTINGS.models), true)
     assert.equal(Object.isFrozen(DEFAULT_SETTINGS.network), true)
     assert.equal(Object.isFrozen(DEFAULT_SETTINGS.sandbox), true)
 })
@@ -60,6 +67,7 @@ test("validateSettings 接受完整配置", () => {
         version: 1,
         logger: { level: "debug" },
         openai: DEFAULT_SETTINGS.openai,
+        models: DEFAULT_SETTINGS.models,
         network: DEFAULT_SETTINGS.network,
         sandbox: DEFAULT_SETTINGS.sandbox,
     })
@@ -77,6 +85,7 @@ test("validateSettings 忽略未声明字段", () => {
         version: 1,
         logger: { level: "warn" },
         openai: DEFAULT_SETTINGS.openai,
+        models: DEFAULT_SETTINGS.models,
         network: DEFAULT_SETTINGS.network,
         sandbox: DEFAULT_SETTINGS.sandbox,
     })
@@ -255,6 +264,7 @@ test("saveSettings 写盘后可读回", async () => {
             version: 1,
             logger: { level: "trace" },
             openai: DEFAULT_SETTINGS.openai,
+            models: DEFAULT_SETTINGS.models,
             network: DEFAULT_SETTINGS.network,
             sandbox: DEFAULT_SETTINGS.sandbox,
         },
@@ -269,6 +279,7 @@ test("saveSettings 写盘后可读回", async () => {
         version: 1,
         logger: { level: "trace" },
         openai: DEFAULT_SETTINGS.openai,
+        models: DEFAULT_SETTINGS.models,
         network: DEFAULT_SETTINGS.network,
         sandbox: DEFAULT_SETTINGS.sandbox,
     })
@@ -296,6 +307,7 @@ test("saveSettings 丢弃未声明字段", async () => {
         version: 1,
         logger: { level: "debug" },
         openai: DEFAULT_SETTINGS.openai,
+        models: DEFAULT_SETTINGS.models,
         network: DEFAULT_SETTINGS.network,
         sandbox: DEFAULT_SETTINGS.sandbox,
     })

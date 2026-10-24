@@ -117,16 +117,20 @@ test("web 请求对 5xx 重试一次", async () => {
     assert.equal(calls, 2)
 })
 
-test("web Markdown 转义清理", async () => {
+test("web Markdown 转义清理：覆盖全部 ASCII 标点", async () => {
+    const escaped = String.raw`\# 标题\, 值\= 1\(x\) \<tag\> \; \/ \? \! \@ \^ \% \$ \& \" \' \d C:\\Users`
     const client = createDeepSeekWebClient({
         baseUrl: "https://api.deepseek.com",
         apiKey: "key",
         fetch: fakeFetch([], {
             title: "\\# 标题",
-            content: "\\# 标题\\: 值\\(x\\)",
+            content: escaped,
         }),
     })
     const result = await client.fetch("https://example.com/a")
     assert.equal(result.isSuccess(), true)
-    assert.deepEqual(result.getData(), { title: "# 标题", content: "# 标题: 值(x)" })
+    assert.deepEqual(result.getData(), {
+        title: "# 标题",
+        content: String.raw`# 标题, 值= 1(x) <tag> ; / ? ! @ ^ % $ & " ' \d C:\Users`,
+    })
 })

@@ -4,6 +4,7 @@
 
 import { existsSync } from "node:fs"
 
+import { apiKeyStatusSync, credentialsFile } from "../config/credentials.ts"
 import { describePaths, platform } from "../platform/index.ts"
 import { SandboxManager } from "../sandbox/manager.ts"
 import { success, type CommandContext, type CommandOutcome } from "./shared.ts"
@@ -29,15 +30,28 @@ export async function runDoctorCommand(ctx: CommandContext): Promise<CommandOutc
         ok: ctx.configCode === null,
         detail: ctx.configCode ?? ctx.settingsFile,
     })
+    const keyStatus = apiKeyStatusSync(credentialsFile(ctx.paths.configDir))
+    const keySource =
+        keyStatus.source === "env"
+            ? "OPENAI_API_KEY"
+            : keyStatus.source === "credentials"
+              ? keyStatus.file
+              : null
     checks.push({
         name: "openai-key",
-        ok: (process.env["OPENAI_API_KEY"] ?? "").trim() !== "",
-        detail: "OPENAI_API_KEY",
+        ok: keyStatus.configured,
+        detail:
+            keySource === null
+                ? "未配置（wellspring key set 或 OPENAI_API_KEY）"
+                : `${keySource} ${keyStatus.masked ?? ""}`.trim(),
     })
     checks.push({
         name: "openai",
         ok: ctx.openai !== null,
-        detail: ctx.openai === null ? "客户端未就绪" : ctx.settings.openai.model,
+        detail:
+            ctx.openai === null
+                ? "客户端未就绪"
+                : `${ctx.activeProvider ?? "openai"} / ${ctx.activeModel ?? ctx.settings.openai.model}`,
     })
     checks.push({
         name: "proxy",

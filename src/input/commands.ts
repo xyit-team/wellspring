@@ -11,12 +11,12 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandSpec[] = [
     {
         name: "chat",
         summary: "对话模式，单轮对话或进入交互式会话",
-        usage: "wellspring chat [--session-id <id>] [--new] [--model <name>] [--system <text>] <context...>",
+        usage: "wellspring chat [--session-id <id>] [--new] [--model <name>] [--reasoning off|low|high|max] [--system <text>] <context...>",
     },
     {
         name: "run",
         summary: "Agent 模式，单轮执行或进入交互式会话",
-        usage: "wellspring run [--session-id <id>] [--new] [--agent <name>] [--model <name>] [--permission read-only|workspace-write|danger-full-access] [--allow-exec] [--max-steps <n>] <context...>",
+        usage: "wellspring run [--session-id <id>] [--new] [--agent <name>] [--model <name>] [--reasoning off|low|high|max] [--permission read-only|workspace-write|danger-full-access] [--allow-exec] [--max-steps <n>] <context...>",
     },
     {
         name: "start",
@@ -37,6 +37,11 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandSpec[] = [
         name: "config",
         summary: "配置路径、查看与读写配置项",
         usage: "wellspring config <path|show|get|set> [args]",
+    },
+    {
+        name: "key",
+        summary: "查看、设置、清除与测试 OpenAI API Key",
+        usage: "wellspring key <status|set|clear|test|path> [--provider <id>] [args]",
     },
     {
         name: "plugin",

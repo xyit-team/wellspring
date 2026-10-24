@@ -3,8 +3,13 @@
  */
 
 import { Result } from "../api/result/result.ts"
+import { CONFIG_CODES } from "../config/codes.ts"
 import { saveSettings } from "../config/loader.ts"
+import { modelsSetting } from "../config/providers.ts"
 import type { AppSetting } from "../config/types.ts"
+import { readJsonIfExists, writeJsonAtomic } from "../platform/file.ts"
+import { PLUGIN_NAME } from "../plugin/paths.ts"
+import { pluginConfigFile } from "../plugin/runtime.ts"
 import { USAGE_CODES } from "../input/codes.ts"
 import { parseCommandArgs } from "../input/parse-options.ts"
 import { failure, success, type CommandContext, type CommandOutcome } from "./shared.ts"
@@ -15,13 +20,81 @@ const KEYS = [
     "openai.baseUrl",
     "openai.timeoutMs",
     "openai.maxRetries",
+    "models.activeProvider",
+    "models.activeModel",
+    "models.activeReasoning",
     "network.proxy",
 ] as const
 
 type ConfigKey = (typeof KEYS)[number]
 
+function modelsOf(settings: AppSetting) {
+    return modelsSetting(settings)
+}
+
 function isKey(value: string): value is ConfigKey {
     return (KEYS as readonly string[]).includes(value)
+}
+
+const PLUGIN_CONFIG_DPIREFIX = "plugins."
+const PLUGIN_CONFIG_FIELD = /^[A-Za-z0-9_-]+$/
+
+interface PluginConfigRef {
+    readonly pluginId: string
+    /** 插件配置里的顶层字段；省略表示整份配置 */
+    readonly field: string | null
+}
+
+/**
+ * `plugins.<id>.<field>`：读写插件自己的 <configDir>/plugins/<id>.json。
+ * 插件 id 本身允许点号的情况极少，因此按“最后一个点”切分字段；
+ * 没有点时表示整份配置。
+ */
+function parsePluginKey(key: string): PluginConfigRef | null {
+    if (!key.startsWith(PLUGIN_CONFIG_DPIREFIX)) {
+        return null
+    }
+    const rest = key.slice(PLUGIN_CONFIG_DPIREFIX.length)
+    const dot = rest.lastIndexOf(".")
+    if (dot > 0) {
+        const pluginId = rest.slice(0, dot)
+        const field = rest.slice(dot + 1)
+        if (PLUGIN_NAME.test(pluginId) && PLUGIN_CONFIG_FIELD.test(field)) {
+            return { pluginId, field }
+        }
+    }
+    if (PLUGIN_NAME.test(rest)) {
+        return { pluginId: rest, field: null }
+    }
+    return null
+}
+
+async function readPluginConfig(
+    ctx: CommandContext,
+    pluginId: string,
+): Promise<Record<string, unknown> | string> {
+    const file = pluginConfigFile(pluginId, ctx.paths)
+    try {
+        const value = await readJsonIfExists<unknown>(file)
+        if (value === null) {
+            return {}
+        }
+        if (typeof value !== "object" || value === null || Array.isArray(value)) {
+            return `${CONFIG_CODES.invalid}:${file}（插件配置必须是 JSON 对象）`
+        }
+        return { ...(value as Record<string, unknown>) }
+    } catch {
+        return `${CONFIG_CODES.parseFailed}:${file}`
+    }
+}
+
+/** 先按 JSON 解析，失败就当裸字符串；这样 port 能存成数字、host 仍是字符串 */
+function parsePluginValue(raw: string): unknown {
+    try {
+        return JSON.parse(raw)
+    } catch {
+        return raw
+    }
 }
 
 function readValue(settings: AppSetting, key: ConfigKey): unknown {
@@ -36,6 +109,12 @@ function readValue(settings: AppSetting, key: ConfigKey): unknown {
             return settings.openai.timeoutMs
         case "openai.maxRetries":
             return settings.openai.maxRetries
+        case "models.activeProvider":
+            return modelsOf(settings).activeProvider
+        case "models.activeModel":
+            return modelsOf(settings).activeModel
+        case "models.activeReasoning":
+            return modelsOf(settings).activeReasoning
         case "network.proxy":
             return settings.network.proxy
     }
@@ -64,6 +143,22 @@ function writeValue(settings: AppSetting, key: ConfigKey, raw: string): AppSetti
                 return `${USAGE_CODES.invalidValue}:openai.maxRetries`
             }
             return { ...settings, openai: { ...settings.openai, maxRetries: value } }
+        }
+        case "models.activeProvider": {
+            const next = modelsOf(settings)
+            return { ...settings, models: { ...next, activeProvider: raw } }
+        }
+        case "models.activeModel": {
+            const next = modelsOf(settings)
+            const value = raw === "null" || raw === "none" || raw === "" ? null : raw
+            return { ...settings, models: { ...next, activeModel: value } }
+        }
+        case "models.activeReasoning": {
+            if (raw !== "off" && raw !== "low" && raw !== "high" && raw !== "max") {
+                return `${USAGE_CODES.invalidValue}:models.activeReasoning`
+            }
+            const next = modelsOf(settings)
+            return { ...settings, models: { ...next, activeReasoning: raw } }
         }
         case "network.proxy":
             return `${USAGE_CODES.invalidValue}:network.proxy（请直接编辑配置文件）`
@@ -98,6 +193,16 @@ export async function runConfigCommand(
             if (key === undefined) {
                 return failure(`${USAGE_CODES.missingValue}:key`)
             }
+            const pluginRef = parsePluginKey(key)
+            if (pluginRef !== null) {
+                const config = await readPluginConfig(ctx, pluginRef.pluginId)
+                if (typeof config === "string") {
+                    return failure(config)
+                }
+                const value = pluginRef.field === null ? config : (config[pluginRef.field] ?? null)
+                ctx.elog.print(value === null ? "null" : JSON.stringify(value))
+                return success({ key, value })
+            }
             if (!isKey(key)) {
                 return failure(`${USAGE_CODES.unknownConfigKey}:${key}`)
             }
@@ -110,6 +215,25 @@ export async function runConfigCommand(
             const raw = line.positionals[1]
             if (key === undefined || raw === undefined) {
                 return failure(`${USAGE_CODES.missingValue}:key value`)
+            }
+            const pluginRef = parsePluginKey(key)
+            if (pluginRef !== null) {
+                const config = await readPluginConfig(ctx, pluginRef.pluginId)
+                if (typeof config === "string") {
+                    return failure(config)
+                }
+                const value = parsePluginValue(raw)
+                if (pluginRef.field === null) {
+                    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+                        return failure(`${CONFIG_CODES.invalid}:${key}（整份配置需要 JSON 对象）`)
+                    }
+                    await writeJsonAtomic(pluginConfigFile(pluginRef.pluginId, ctx.paths), value)
+                } else {
+                    config[pluginRef.field] = value
+                    await writeJsonAtomic(pluginConfigFile(pluginRef.pluginId, ctx.paths), config)
+                }
+                ctx.elog.info(`已更新 ${key}（重启服务后生效）`)
+                return success({ key, value })
             }
             if (!isKey(key)) {
                 return failure(`${USAGE_CODES.unknownConfigKey}:${key}`)

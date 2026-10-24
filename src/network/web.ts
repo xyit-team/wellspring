@@ -107,9 +107,11 @@ async function postJson(
     return Result.error<unknown>(WEB_CODES.requestFailed)
 }
 
-// Markdown 转义清理
+// Markdown 转义清理：DeepSeek Fetch 会把所有 ASCII 标点转义成 `\.` / `\(` 之类
+const MARKDOWN_ESCAPES = /\\([!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~])/g
+
 function unescapeMarkdown(text: string): string {
-    return text.replace(/\\([\\`*_{}\[\]()#+\-.!>~|:])/g, "$1")
+    return text.replace(MARKDOWN_ESCAPES, "$1")
 }
 
 function parseSearchResult(value: unknown): WebSearchResult | null {

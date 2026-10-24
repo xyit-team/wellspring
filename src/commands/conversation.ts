@@ -34,7 +34,9 @@ import {
     type SessionData,
 } from "../session/store.ts"
 import type { SessionEvent, SessionMessageRecord, SessionMode } from "../session/types.ts"
+import type { HostAgentAskRequest, HostAgentToolEvent } from "../api/host/agent.ts"
 import { executeAgentTurn, type ExecApprovalRequest } from "./agent-turn.ts"
+import { promptAgentAsk } from "./ask-prompt.ts"
 import { promptExecApproval } from "./exec-approval.ts"
 import {
     errorMessage,
@@ -48,6 +50,7 @@ interface ConversationOptions {
     readonly sessionId?: string
     readonly newSession: boolean
     readonly model: string
+    readonly reasoning?: string
     readonly system?: string
     readonly agent?: string
     readonly json: boolean
@@ -61,6 +64,10 @@ interface ConversationOptions {
 export interface TurnData {
     readonly sessionId: string
     readonly mode: SessionMode
+    /** 会话内第几轮 */
+    readonly turn: number
+    /** 本轮执行的步数 */
+    readonly steps: number
     readonly reply: string
     readonly model: string
     readonly usage: {
@@ -85,6 +92,7 @@ function parseConversationOptions(
         permission: { type: "string" },
         "max-steps": { type: "string" },
         "no-stream": { type: "boolean" },
+        reasoning: { type: "string" },
     })
     if (!parsed.isSuccess()) {
         return Result.error<ConversationOptions>(parsed.getCode() ?? USAGE_CODES.invalidValue)
@@ -140,7 +148,7 @@ function parseConversationOptions(
     return Result.successWithData<ConversationOptions>({
         sessionId,
         newSession,
-        model: stringValue(values, "model") ?? ctx.settings.openai.model,
+        model: stringValue(values, "model") ?? ctx.activeModel ?? ctx.settings.openai.model,
         system: stringValue(values, "system"),
         agent: stringValue(values, "agent"),
         json,
@@ -148,6 +156,7 @@ function parseConversationOptions(
         allowExec: booleanValue(values, "allow-exec"),
         permission,
         maxSteps,
+        reasoning: stringValue(values, "reasoning") ?? ctx.activeReasoning,
         context: positionals,
     })
 }
@@ -224,6 +233,7 @@ export async function executeTurn(params: {
     readonly mode: SessionMode
     readonly input: string
     readonly model: string
+    readonly reasoning?: string
     readonly system?: string
     readonly stream: boolean
     readonly display: boolean
@@ -232,6 +242,11 @@ export async function executeTurn(params: {
     readonly maxSteps?: number
     readonly approveExec?: (request: ExecApprovalRequest) => Promise<boolean>
     readonly onDelta?: (text: string) => void
+    readonly onReasoning?: (text: string) => void
+    readonly onTool?: (event: HostAgentToolEvent) => void
+    readonly onAsk?: (request: HostAgentAskRequest) => void
+    readonly askUser?: (request: HostAgentAskRequest) => Promise<string | null>
+    readonly onStep?: (event: { readonly turn: number; readonly step: number }) => void
 }): Promise<Result<TurnData>> {
     const { ctx, client, store, session, mode, input, model, system, stream, display } = params
     if (mode === "run") {
@@ -242,6 +257,7 @@ export async function executeTurn(params: {
             session,
             input,
             model,
+            reasoning: params.reasoning,
             system,
             stream,
             display,
@@ -250,6 +266,11 @@ export async function executeTurn(params: {
             maxSteps: params.maxSteps,
             approveExec: params.approveExec,
             onDelta: params.onDelta,
+            onReasoning: params.onReasoning,
+            onTool: params.onTool,
+            onAsk: params.onAsk,
+            askUser: params.askUser,
+            onStep: params.onStep,
         })
     }
     const turn = lastTurnNumber(session.events) + 1
@@ -319,6 +340,7 @@ export async function executeTurn(params: {
     const markdown = markdownEnabled && streamed ? createMarkdownStream() : null
     const streamResult = await client.chatStream(messages, {
         model,
+        reasoning: params.reasoning,
         onText: streamed
             ? (text) => {
                   ctx.elog.stream(markdown === null ? text : markdown.push(text))
@@ -423,6 +445,8 @@ export async function executeTurn(params: {
     return Result.successWithData<TurnData>({
         sessionId: session.meta.id,
         mode,
+        turn,
+        steps: 1,
         reply: data.reply.text,
         model: data.reply.model,
         usage:
@@ -473,6 +497,16 @@ async function runRepl(
         rl.pause()
         try {
             return await promptExecApproval(request)
+        } finally {
+            rl.resume()
+        }
+    }
+
+    // ask 工具：在当前终端里提问
+    const askUser = async (request: HostAgentAskRequest): Promise<string | null> => {
+        rl.pause()
+        try {
+            return await promptAgentAsk(request)
         } finally {
             rl.resume()
         }
@@ -584,6 +618,7 @@ async function runRepl(
                 mode: params.mode,
                 input,
                 model,
+                reasoning: params.options.reasoning,
                 system: params.options.system,
                 stream: params.options.stream,
                 display: true,
@@ -591,6 +626,7 @@ async function runRepl(
                 permission,
                 maxSteps: params.options.maxSteps,
                 approveExec,
+                askUser,
             })
             if (!result.isSuccess()) {
                 ctx.elog.error(errorMessage(result.getCode() ?? "openai.request-failed"))
@@ -680,6 +716,7 @@ export async function runConversationCommand(
         mode,
         input,
         model: options.model,
+        reasoning: options.reasoning,
         system: options.system,
         stream: options.stream,
         display: options.json === false,
@@ -690,6 +727,10 @@ export async function runConversationCommand(
             options.json === false && process.stdin.isTTY === true && process.stdout.isTTY === true
                 ? promptExecApproval
                 : undefined,
+        askUser:
+            options.json === false && process.stdin.isTTY === true && process.stdout.isTTY === true
+                ? promptAgentAsk
+                : async () => null,
     })
     if (!result.isSuccess()) {
         return { result: Result.error<unknown>(result.getCode() ?? "openai.request-failed") }
