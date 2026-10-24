@@ -74,6 +74,15 @@ test("web 插件：首次设置密码、登录、与 Agent 聊天", { timeout: 2
                     usage: null,
                 }
             },
+            async stream(input, onEvent) {
+                onEvent({ type: "delta", text: "partial" })
+                return {
+                    sessionId: "stream-session",
+                    reply: `stream:${input.message}`,
+                    model: "test",
+                    usage: null,
+                }
+            },
         },
     })
     try {
@@ -113,6 +122,18 @@ test("web 插件：首次设置密码、登录、与 Agent 聊天", { timeout: 2
         const data = (await chat.json()) as { sessionId: string; reply: string }
         assert.equal(data.sessionId, "web-session")
         assert.equal(data.reply, "reply:hello")
+
+        const streamed = await fetch(`${base}/api/chat/stream`, {
+            method: "POST",
+            headers: { "content-type": "application/json", cookie },
+            body: JSON.stringify({ message: "hello" }),
+        })
+        const events = await streamed.text()
+        assert.equal(streamed.status, 200, events)
+        assert.match(events, /"type":"delta"/)
+        assert.match(events, /"text":"partial"/)
+        assert.match(events, /"type":"done"/)
+        assert.match(events, /"sessionId":"stream-session"/)
 
         const unauthorized = await fetch(`${base}/api/chat`, {
             method: "POST",

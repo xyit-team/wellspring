@@ -173,20 +173,47 @@ async function send() {
   if (text === "") return;
   input.value = "";
   addMessage("user", text);
+  const answer = addMessage("assistant", "");
   busy = true;
   $("send").disabled = true;
   try {
-    const data = await call("/api/chat", {
+    const response = await fetch("/api/chat/stream", {
       method: "POST",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ message: text, sessionId }),
     });
-    sessionId = data.sessionId;
-    addMessage("assistant", data.reply || "（空回复）");
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || ("HTTP " + response.status));
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop() || "";
+      for (const raw of events) {
+        if (!raw.startsWith("data:")) continue;
+        const data = JSON.parse(raw.slice(5).trim());
+        if (data.type === "delta") {
+          answer.textContent += data.text;
+          answer.scrollIntoView({ block: "end" });
+        } else if (data.type === "done") {
+          sessionId = data.sessionId;
+          if (!answer.textContent) answer.textContent = data.reply || "（空回复）";
+        } else if (data.type === "error") {
+          throw new Error(data.error || "Agent 执行失败");
+        }
+      }
+    }
   } catch (error) {
     if (String(error.message).includes("401")) {
       show("login");
     } else {
-      addMessage("assistant", "出错了：" + error.message);
+      answer.textContent += (answer.textContent ? "\n" : "") + "出错了：" + error.message;
     }
   } finally {
     busy = false;

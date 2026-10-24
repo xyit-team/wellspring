@@ -2,6 +2,7 @@ import type {
     HttpRequest,
     HttpResponse,
     HttpServerHandle,
+    HttpStreamContext,
     PluginApi,
 } from "wellspring/api/host/index.ts"
 import { onInit, onShutdown } from "wellspring/api/host/index.ts"
@@ -68,7 +69,7 @@ function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error)
 }
 
-async function route(request: HttpRequest): Promise<HttpResponse> {
+async function route(request: HttpRequest, stream: HttpStreamContext): Promise<HttpResponse> {
     const currentAuth = getAuth()
     const currentApi = getApi()
     const url = new URL(request.url, "http://localhost")
@@ -138,12 +139,48 @@ async function route(request: HttpRequest): Promise<HttpResponse> {
         }
     }
 
+    if (request.method === "POST" && path === "/api/chat/stream") {
+        const body = parseJson(request)
+        const message = String(body["message"] ?? "").trim()
+        if (message === "") {
+            return json(400, { error: "消息不能为空" })
+        }
+        const sessionId =
+            typeof body["sessionId"] === "string" && body["sessionId"] !== ""
+                ? body["sessionId"]
+                : undefined
+        const send = (data: unknown): void => {
+            stream.write(`data: ${JSON.stringify(data)}\n\n`)
+        }
+        void currentApi.agent
+            .stream({ message, sessionId }, (event) => send(event))
+            .then((result) => {
+                send({ type: "done", ...result })
+            })
+            .catch((error: unknown) => {
+                send({ type: "error", error: errorMessage(error) })
+            })
+            .finally(() => stream.end())
+        return {
+            status: 200,
+            headers: {
+                "content-type": "text/event-stream; charset=utf-8",
+                "cache-control": "no-cache",
+                connection: "keep-alive",
+            },
+            stream: true,
+        }
+    }
+
     return json(404, { error: "Not Found" })
 }
 
-export async function onHttpRequest(request: HttpRequest): Promise<HttpResponse> {
+export async function onHttpRequest(
+    request: HttpRequest,
+    stream: HttpStreamContext,
+): Promise<HttpResponse> {
     try {
-        return await route(request)
+        return await route(request, stream)
     } catch (error) {
         return json(500, { error: errorMessage(error) })
     }

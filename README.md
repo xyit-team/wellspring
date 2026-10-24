@@ -282,6 +282,7 @@ onShutdown(() => {
 | 方法                                                   | 说明                                                           |
 | ------------------------------------------------------ | -------------------------------------------------------------- |
 | `agent.chat({ message, sessionId?, model?, system? })` | 执行一轮 Agent 对话，返回 `{ sessionId, reply, model, usage }` |
+| `agent.stream(input, onEvent)`                         | 同上，但通过 `onEvent({ type: "delta", text })` 推送增量文本   |
 
 不传 `sessionId` 时创建新会话；传入上一次返回的 `sessionId` 可继续对话。会话写入正常的 Wellspring 会话存储。
 
@@ -512,7 +513,7 @@ wellspring start
 
 - 第一次访问设置密码，密码以 scrypt 哈希保存在 `<dataDir>/plugin-data/wellspring-web/auth.json`
 - 之后访问需要登录；登录 token 只保存在服务进程内存，重启后需要重新登录
-- 聊天通过 `api.agent.chat` 调用 Agent，会话保存到标准会话存储
+- 聊天通过 `/api/chat/stream` SSE 调用 `api.agent.stream`，会话保存到标准会话存储
 - 默认监听 `127.0.0.1:8787`，可在 `<configDir>/plugins/wellspring-web.json` 覆盖：
 
 ```json
