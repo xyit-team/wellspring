@@ -21,7 +21,8 @@
         "test": "node --test",
         "typecheck": "tsc --noEmit",
         "format": "oxfmt",
-        "format:check": "oxfmt --check"
+        "format:check": "oxfmt --check",
+        "pty:build": "node scripts/build-node-pty.mjs"
     },
     "dependencies": {
         "cli-highlight": "^2.1.11",
@@ -36,6 +37,9 @@
         "@types/ws": "^8.5.0",
         "oxfmt": "^0.73.0",
         "typescript": "^7.0.2"
+    },
+    "optionalDependencies": {
+        "node-pty": "^1.0.0"
     },
     "engines": {
         "node": ">=24"
