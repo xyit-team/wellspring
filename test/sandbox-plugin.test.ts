@@ -869,6 +869,15 @@ test("sandbox 插件通过 host agent 与 Agent 交互", { timeout: 20_000 }, as
         "                ctx.output.print(result.reply)",
         "                return 0",
         "            },",
+        "        }, {",
+        '            name: "stream",',
+        '            summary: "stream",',
+        "            run: async (ctx) => {",
+        "                const events = []",
+        "                const result = await api.agent.stream({ message: ctx.argv.join(' ') }, (event) => events.push(event))",
+        "                ctx.output.print(result.reply + '|' + events.map((event) => event.type + ':' + event.text).join(','))",
+        "                return 0",
+        "            },",
         "        }],",
         "    }",
         "}",
@@ -910,6 +919,8 @@ test("sandbox 插件通过 host agent 与 Agent 交互", { timeout: 20_000 }, as
             async chat(input) {
                 return {
                     sessionId: "session-1",
+                    turn: 1,
+                    steps: 2,
                     reply: `agent:${input.message}`,
                     model: "test",
                     usage: null,
@@ -919,9 +930,38 @@ test("sandbox 插件通过 host agent 与 Agent 交互", { timeout: 20_000 }, as
                 onEvent({ type: "delta", text: "partial" })
                 return {
                     sessionId: "stream-session",
+                    turn: 1,
+                    steps: 2,
                     reply: `stream:${input.message}`,
                     model: "test",
                     usage: null,
+                }
+            },
+            async interject() {
+                return false
+            },
+            async respondApproval(approvalId: string, approved: boolean) {
+                return approvalId !== "unknown" && approved
+            },
+            async respondAsk(askId: string, answer: string) {
+                return askId !== "unknown" && answer !== ""
+            },
+            async validateWorkspace(path: string) {
+                return {
+                    ok: true,
+                    root: path,
+                    name: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
+                }
+            },
+            async pickDirectory() {
+                return { ok: false, root: "", name: "", error: "已取消" }
+            },
+            async searchWorkspaceFiles(root: string) {
+                return {
+                    ok: true,
+                    root,
+                    entries: [{ path: "src/main.ts", name: "main.ts", type: "file" as const }],
+                    truncated: false,
                 }
             },
         },
@@ -930,6 +970,9 @@ test("sandbox 插件通过 host agent 与 Agent 交互", { timeout: 20_000 }, as
         await client.start()
         assert.equal(await client.runCommand("chat", ["hello"], root, true), 0)
         assert.match(output.text, /agent:hello/)
+        // 流式 RPC 不设超时上限，但仍要正常把增量事件转发给插件
+        assert.equal(await client.runCommand("stream", ["hi"], root, true), 0)
+        assert.match(output.text, /stream:hi\|delta:partial/)
     } finally {
         await shutdownAllSandboxPlugins()
     }

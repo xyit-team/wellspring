@@ -26,6 +26,7 @@ import type {
 } from "../api/host/plugin.ts"
 import { HOST_API_VERSION } from "../api/host/version.ts"
 import { DEFAULT_SETTINGS } from "../config/defaults.ts"
+import { SETTING_FILE_NAME } from "../config/loader.ts"
 import type { AppSetting, SandboxSetting } from "../config/types.ts"
 import { getElog } from "../logger/elog4js.ts"
 import { ensureDir, readJsonIfExists } from "../platform/file.ts"
@@ -41,6 +42,7 @@ import { ensureHostAlias } from "./host-alias.ts"
 import { PLUGIN_NAME, pluginsRoot } from "./paths.ts"
 import { PluginRegistry } from "./registry.ts"
 import { createHostAgentService, type HostAgentService } from "./agent-service.ts"
+import { createHostModelsService } from "./models-service.ts"
 import { loadPluginConfig } from "./runtime.ts"
 import { readPluginState } from "./state.ts"
 
@@ -230,6 +232,7 @@ async function loadEntry(
     dataAccess: PluginDataService,
     sandboxSetting: SandboxSetting,
     agentService: HostAgentService,
+    modelsService: ReturnType<typeof createHostModelsService>,
 ): Promise<PluginEntry> {
     let pkg: PluginPackageJson | null = null
     try {
@@ -314,6 +317,7 @@ async function loadEntry(
                     logger: options.logger,
                 }),
                 agent: agentService,
+                models: modelsService,
             })
             const ready = await client.start({ deferInit: true })
             entry.sandboxClient = client
@@ -461,6 +465,13 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
             registry: options.registry,
             agentTools: options.agentTools ?? new AgentToolRegistry(),
         })
+    // 自定义供应商与模型切换：直接读写 app-setting.json，改完下一轮对话生效
+    const modelsService = createHostModelsService({
+        settings: options.config,
+        settingsFile: join(resolvedPaths.configDir, SETTING_FILE_NAME),
+        configDir: resolvedPaths.configDir,
+        logger: options.logger,
+    })
     const disabled = await readPluginState(options.paths ?? getPaths())
     const entries: PluginEntry[] = []
     let index = 0
@@ -488,6 +499,7 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
                 dataAccess,
                 sandboxSetting,
                 agentService,
+                modelsService,
             ),
         )
         index += 1

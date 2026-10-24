@@ -3,7 +3,9 @@
 import type { Logger } from "pino"
 
 import type { AppSetting } from "../config/types.ts"
+import { credentialsFile, resolveApiKeySync } from "../config/credentials.ts"
 import {
+    WEB_CODES,
     createDeepSeekWebClient,
     type WebFetchResult,
     type WebSearchResult,
@@ -50,6 +52,35 @@ const ACCESS_RANK: Readonly<Record<string, number>> = {
 export function createHostCapabilities(options: HostCapabilitiesOptions): HostCapabilities {
     let manager: SandboxManager | null = null
     let web: ReturnType<typeof createDeepSeekWebClient> | null = null
+    let webApiKey: string | null = null
+
+    /** 联网工具用默认供应商（OpenAI/DeepSeek）的 Key：环境变量 > credentials.json */
+    const resolveWebApiKey = (): string | null =>
+        resolveApiKeySync(credentialsFile(options.paths.configDir))?.apiKey ?? null
+
+    /** Key 可能在服务运行中被网页改掉，缓存要跟着失效 */
+    const webClient = (): ReturnType<typeof createDeepSeekWebClient> => {
+        const apiKey = resolveWebApiKey()
+        if (web === null || webApiKey !== apiKey) {
+            webApiKey = apiKey
+            web = createDeepSeekWebClient({
+                baseUrl: options.config.openai.baseUrl,
+                timeoutMs: options.config.openai.timeoutMs,
+                fetch: createProxyFetch(options.config.network.proxy) as typeof fetch | undefined,
+                ...(apiKey === null ? {} : { apiKey }),
+            })
+        }
+        return web
+    }
+
+    const webError = (code: string | null, action: string): Error => {
+        if (code === WEB_CODES.missingApiKey) {
+            return new Error(
+                "web.missing-api-key：联网工具缺少 API Key。设置环境变量 OPENAI_API_KEY，或运行 wellspring key set（网页：左下角「供应商」里填写该供应商的 Key）",
+            )
+        }
+        return new Error(code ?? `web.${action}-failed`)
+    }
     const sandbox = (): SandboxManager => {
         manager ??= new SandboxManager({
             settings: options.config.sandbox,
@@ -66,7 +97,7 @@ export function createHostCapabilities(options: HostCapabilitiesOptions): HostCa
         const requested = input.access ?? current
         const cwd = input.cwd ?? context.workspaceDir
         if ((ACCESS_RANK[requested] ?? 0) > (ACCESS_RANK[current] ?? 0)) {
-            context.elog.action("[Agent] Agent请求执行命令", [
+            context.elog.action("请求执行命令", [
                 {
                     label: "command",
                     value: [input.command, ...(input.argv ?? [])].join(" "),
@@ -83,12 +114,13 @@ export function createHostCapabilities(options: HostCapabilitiesOptions): HostCa
                     cwd,
                     currentPermission: current,
                     requestedPermission: requested,
+                    justification: input.justification,
                 })
             }
             if (!allowed) {
                 throw new Error("工具执行被拒绝")
             }
-            context.elog.actionStatus("execute_code", "已允许")
+            context.elog.toolResult("已允许提权")
         }
         return { access: requested, cwd }
     }
@@ -105,7 +137,9 @@ export function createHostCapabilities(options: HostCapabilitiesOptions): HostCa
                 workspaceDir: context.workspaceDir,
                 access,
             })
-            context.elog.actionStatus("execute_code", `已完成 exit=${String(result.exitCode)}`)
+            if (result.exitCode !== 0) {
+                context.elog.toolResult(`exit=${String(result.exitCode)}`)
+            }
             return result
         },
         async startBackgroundCode(input, explicitContext) {
@@ -121,7 +155,7 @@ export function createHostCapabilities(options: HostCapabilitiesOptions): HostCa
                 access,
             })
             const info = registerBackgroundTask(handle)
-            context.elog.actionStatus("execute_code", `后台任务 ${info.taskId}`)
+            context.elog.toolResult(`后台任务 ${info.taskId}`)
             return { taskId: info.taskId, sandboxId: info.sandboxId }
         },
         queryTask(taskId?: string) {
@@ -131,27 +165,20 @@ export function createHostCapabilities(options: HostCapabilitiesOptions): HostCa
             return stopTask(taskId, mode)
         },
         async webSearch(query, count) {
-            web ??= createDeepSeekWebClient({
-                baseUrl: options.config.openai.baseUrl,
-                timeoutMs: options.config.openai.timeoutMs,
-                fetch: createProxyFetch(options.config.network.proxy) as typeof fetch | undefined,
-            })
-            const result = await web.search(query, count)
+            const result = await webClient().search(query, count)
+            if (!result.isSuccess()) {
+                throw webError(result.getCode(), "search")
+            }
             return result.getData() ?? []
         },
         async webFetch(url) {
-            web ??= createDeepSeekWebClient({
-                baseUrl: options.config.openai.baseUrl,
-                timeoutMs: options.config.openai.timeoutMs,
-                fetch: createProxyFetch(options.config.network.proxy) as typeof fetch | undefined,
-            })
-            const result = await web.fetch(url)
+            const result = await webClient().fetch(url)
             if (!result.isSuccess()) {
-                throw new Error(result.getCode() ?? "web.fetch-failed")
+                throw webError(result.getCode(), "fetch")
             }
             const page = result.getData()
             if (page === null) {
-                throw new Error("web.fetch-failed")
+                throw webError(null, "fetch")
             }
             return page
         },

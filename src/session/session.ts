@@ -54,6 +54,11 @@ export class Session {
         this.#active = false
     }
 
+    /** 是否有一轮正在跑；插话只在这个窗口内有效 */
+    get active(): boolean {
+        return this.#active
+    }
+
     /** 取走运行期排队的消息 */
     take(): SessionMessage[] {
         return this.#queue.splice(0)

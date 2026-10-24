@@ -7,7 +7,7 @@ import { createServer as createHttpServer, type Server as HttpServer } from "nod
 import { createServer as createHttpsServer } from "node:https"
 import { WebSocketServer, type WebSocket } from "ws"
 import { randomUUID } from "node:crypto"
-import { cp, mkdir, rm } from "node:fs/promises"
+import { cp, mkdir, rm, stat } from "node:fs/promises"
 import { basename, dirname, join, relative, resolve } from "node:path"
 
 import type { Logger } from "pino"
@@ -33,8 +33,27 @@ import type {
     PluginConfig,
 } from "../api/host/plugin.ts"
 import type { HostFileApi, HostFileEntry, HostFileStat } from "../api/host/fs.ts"
+import {
+    HOST_EXEC_DEFAULT_TIMEOUT_MS,
+    HOST_EXEC_MAX_OUTPUT_BYTES,
+    type HostExecChunk,
+} from "../api/host/exec.ts"
+import {
+    HOST_PTY_DEFAULT_COLS,
+    HOST_PTY_DEFAULT_ROWS,
+    HOST_PTY_MAX_COLS,
+    HOST_PTY_MAX_OUTPUT_CHARS,
+    HOST_PTY_MAX_POLL_CHARS,
+    HOST_PTY_MAX_ROWS,
+    HOST_PTY_MAX_SESSIONS,
+    HOST_PTY_MIN_COLS,
+    HOST_PTY_MIN_ROWS,
+    type HostPtyChunk,
+    type HostPtySession,
+} from "../api/host/pty.ts"
 import type { HttpRequest, HttpResponse } from "../api/host/http.ts"
 import type { HostAgentChatInput } from "../api/host/agent.ts"
+import type { HostModelsApi, HostModelProviderInput } from "../api/host/models.ts"
 import type { HostAgentService } from "../plugin/agent-service.ts"
 import { HTTP_MAX_BODY_BYTES } from "../api/host/http.ts"
 import {
@@ -107,6 +126,171 @@ export interface SandboxPluginReady {
     readonly hooks: readonly string[]
 }
 
+/** stat 但不存在时返回 null，用于 cwd 校验 */
+async function statSafe(path: string) {
+    try {
+        return await stat(path)
+    } catch {
+        return null
+    }
+}
+
+/** 结束整棵进程树：detached 启动时先杀进程组，再兜底 kill */
+function killSession(session: ExecSession): void {
+    const child = session.child
+    if (child.killed || child.exitCode !== null) return
+    if (process.platform !== "win32" && typeof child.pid === "number") {
+        try {
+            process.kill(-child.pid, "SIGKILL")
+            return
+        } catch {
+            /* 进程组可能已消失，退回单进程 kill */
+        }
+    }
+    try {
+        child.kill("SIGKILL")
+    } catch {
+        /* 已经退出 */
+    }
+}
+
+/** node-pty 进程的最小结构，避免把可选依赖变成静态类型依赖 */
+interface NodePtyProcess {
+    readonly pid: number
+    onData(handler: (data: string) => void): void
+    onExit(handler: (event: { exitCode: number; signal?: number }) => void): void
+    write(data: string): void
+    resize(cols: number, rows: number): void
+    kill(signal?: string): void
+}
+
+interface NodePtyModule {
+    spawn(file: string, args: string[], options: Record<string, unknown>): NodePtyProcess
+}
+
+/** 后端无关的 PTY 句柄 */
+interface PtyHandle {
+    readonly pid: number
+    write(data: string): void
+    resize(cols: number, rows: number): void
+    kill(): void
+}
+
+type PtyBackendName = "node-pty" | "python-pty"
+
+/** PTY 会话的宿主侧状态 */
+interface PtySession {
+    readonly handle: PtyHandle
+    readonly backend: PtyBackendName
+    readonly file: string
+    readonly cwd: string
+    cols: number
+    rows: number
+    output: string
+    delivered: number
+    done: boolean
+    exitCode: number | null
+}
+
+/** 无需原生模块的 PTY 后端：python3 + pty-bridge.py */
+const PTY_BRIDGE_PATH = join(PROJECT_ROOT, "src", "sandbox", "pty-bridge.py")
+
+let pythonPtyProbe: Promise<string | null> | null = null
+
+/** 探测可用的 python 解释器；没有就返回 null */
+async function probePython(): Promise<string | null> {
+    if (pythonPtyProbe === null) {
+        pythonPtyProbe = (async () => {
+            for (const candidate of ["python3", "python"]) {
+                const ok = await new Promise<boolean>((resolveOk) => {
+                    try {
+                        const probe = spawn(candidate, ["-c", "import pty, termios"], {
+                            stdio: "ignore",
+                        })
+                        probe.on("error", () => resolveOk(false))
+                        probe.on("close", (code) => resolveOk(code === 0))
+                    } catch {
+                        resolveOk(false)
+                    }
+                })
+                if (ok) return candidate
+            }
+            return null
+        })()
+    }
+    return await pythonPtyProbe
+}
+
+/** PTY 尺寸夹在合理范围，避免异常值把终端撑爆；cols 与 rows 的最小值不同 */
+function clampSize(value: unknown, fallback: number, min: number, max: number): number {
+    const size = typeof value === "number" ? Math.round(value) : Number.NaN
+    if (!Number.isFinite(size)) return fallback
+    return Math.min(max, Math.max(min, size))
+}
+
+function clampCols(value: unknown): number {
+    return clampSize(value, HOST_PTY_DEFAULT_COLS, HOST_PTY_MIN_COLS, HOST_PTY_MAX_COLS)
+}
+
+function clampRows(value: unknown): number {
+    return clampSize(value, HOST_PTY_DEFAULT_ROWS, HOST_PTY_MIN_ROWS, HOST_PTY_MAX_ROWS)
+}
+
+/** 默认登录 shell */
+function defaultShell(): string {
+    if (process.platform === "win32") {
+        return process.env.ComSpec ?? "powershell.exe"
+    }
+    return process.env.SHELL ?? "/bin/bash"
+}
+
+/** node-pty 是可选依赖：只尝试加载一次，失败就记住不可用 */
+let nodePtyPromise: Promise<NodePtyModule | null> | null = null
+/** node-pty 加载失败的原因，便于排查是没装还是原生模块装坏了 */
+let nodePtyError: string | null = null
+
+async function loadNodePty(): Promise<NodePtyModule | null> {
+    if (nodePtyPromise === null) {
+        nodePtyPromise = (async () => {
+            try {
+                // 变量 specifier：node-pty 可能根本没装，不能做成静态 import
+                const specifier = "node-pty"
+                const module = (await import(specifier)) as unknown as {
+                    spawn?: NodePtyModule["spawn"]
+                    default?: { spawn?: NodePtyModule["spawn"] }
+                }
+                const spawnPty = module.spawn ?? module.default?.spawn
+                if (typeof spawnPty !== "function") {
+                    nodePtyError = "node-pty 已加载但没有导出 spawn"
+                    return null
+                }
+                nodePtyError = null
+                return module as unknown as NodePtyModule
+            } catch (error) {
+                // 未安装与原生模块加载失败是两类问题，原因要原样带出去
+                nodePtyError = error instanceof Error ? error.message : String(error)
+                return null
+            }
+        })()
+    }
+    return await nodePtyPromise
+}
+
+/** 终端会话的宿主侧状态 */
+interface ExecSession {
+    readonly child: ChildProcess
+    readonly cwd: string
+    readonly startedAt: number
+    output: string
+    /** 已交付给插件 poll 的字符数 */
+    delivered: number
+    done: boolean
+    exitCode: number | null
+    timedOut: boolean
+    truncated: boolean
+    timer: NodeJS.Timeout | null
+}
+
 export interface PluginSandboxPermissions {
     readonly hostApi: readonly string[]
     readonly workspaceRead: boolean
@@ -129,6 +313,7 @@ export interface PluginSandboxClientOptions {
     readonly dataAccess?: PluginDataService
     readonly capabilities?: HostCapabilities
     readonly agent?: HostAgentService
+    readonly models?: HostModelsApi
 }
 
 export class PluginSandboxError extends Error {
@@ -180,9 +365,19 @@ export class PluginSandboxClient {
     >()
     readonly #httpResponses = new Map<
         string,
-        { readonly response: import("node:http").ServerResponse }
+        {
+            readonly response: import("node:http").ServerResponse
+            /** 响应头尚未应用时先缓存 chunk，避免 set headers 之后的写入报错 */
+            readonly chunks: string[]
+            ready: boolean
+            ended: boolean
+        }
     >()
     readonly #wsConnections = new Map<string, WebSocket>()
+    /** 终端执行会话：输出缓冲留在宿主侧，插件按需 poll */
+    readonly #execSessions = new Map<string, ExecSession>()
+    /** PTY 会话：真 tty，支持键盘输入与 ANSI 全屏程序 */
+    readonly #ptySessions = new Map<string, PtySession>()
     #child: ChildProcess | null = null
     #ready: SandboxPluginReady | null = null
     #closed = false
@@ -421,13 +616,26 @@ export class PluginSandboxClient {
         if (method === "host.http.stream") {
             const requestId = String(data["requestId"] ?? "")
             const pending = this.#httpResponses.get(requestId)
-            if (pending !== undefined) {
+            if (pending === undefined) {
+                return
+            }
+            if (!pending.ready) {
+                if (data["end"] === true) {
+                    pending.ended = true
+                } else {
+                    pending.chunks.push(String(data["chunk"] ?? ""))
+                }
+                return
+            }
+            try {
                 if (data["end"] === true) {
                     this.#httpResponses.delete(requestId)
                     pending.response.end()
                 } else {
                     pending.response.write(String(data["chunk"] ?? ""))
                 }
+            } catch {
+                this.#httpResponses.delete(requestId)
             }
             return
         }
@@ -476,6 +684,414 @@ export class PluginSandboxClient {
         }
     }
 
+    /** 模型供应商与切换：state / setActive / saveProvider / removeProvider / fetchModels / saveKey / clearKey */
+    async #handleModels(method: string, params: Record<string, unknown>): Promise<unknown> {
+        const service = this.#options.models
+        if (service === undefined) {
+            throw new PluginSandboxError("宿主没有模型配置服务")
+        }
+        if (method === "host.models.state") {
+            return await service.state()
+        }
+        if (method === "host.models.setActive") {
+            const model = params["model"]
+            const reasoning = params["reasoning"]
+            return await service.setActive(
+                String(params["providerId"] ?? ""),
+                typeof model === "string" && model.trim() !== "" ? model : null,
+                typeof reasoning === "string" && reasoning.trim() !== "" ? reasoning : null,
+            )
+        }
+        if (method === "host.models.saveProvider") {
+            return await service.saveProvider(params as unknown as HostModelProviderInput)
+        }
+        if (method === "host.models.removeProvider") {
+            return await service.removeProvider(String(params["id"] ?? ""))
+        }
+        if (method === "host.models.fetchModels") {
+            const candidate = params["apiKey"]
+            return await service.fetchModels(
+                String(params["id"] ?? ""),
+                typeof candidate === "string" ? candidate : undefined,
+            )
+        }
+        if (method === "host.models.saveKey") {
+            return await service.saveKey(String(params["id"] ?? ""), String(params["apiKey"] ?? ""))
+        }
+        if (method === "host.models.clearKey") {
+            return await service.clearKey(String(params["id"] ?? ""))
+        }
+        throw new PluginSandboxError(`不支持的 models 方法：${method}`)
+    }
+
+    /** 终端执行：run/poll/stop 三个动作，输出缓冲留在宿主侧 */
+    async #handleExec(method: string, params: Record<string, unknown>): Promise<unknown> {
+        if (method === "host.exec.run") {
+            return await this.#execRun(params)
+        }
+        if (method === "host.exec.poll") {
+            return this.#execPoll(String(params["sessionId"] ?? ""))
+        }
+        if (method === "host.exec.stop") {
+            this.#execStop(String(params["sessionId"] ?? ""))
+            return {}
+        }
+        throw new PluginSandboxError(`不支持的 exec 方法：${method}`)
+    }
+
+    async #execRun(params: Record<string, unknown>): Promise<{
+        sessionId: string
+        pid: number | null
+        cwd: string
+    }> {
+        const command = String(params["command"] ?? "").trim()
+        if (command === "") {
+            throw new PluginSandboxError("命令不能为空")
+        }
+        if (command.length > 8000) {
+            throw new PluginSandboxError("命令过长")
+        }
+        const rawCwd = String(params["cwd"] ?? "")
+        const cwd = rawCwd === "" ? process.cwd() : resolve(rawCwd)
+        const stat = await statSafe(cwd)
+        if (!stat?.isDirectory()) {
+            throw new PluginSandboxError(`工作目录不存在或不是目录：${cwd}`)
+        }
+        const extraEnv: Record<string, string> = {}
+        const rawEnv = params["env"]
+        if (rawEnv !== null && typeof rawEnv === "object" && !Array.isArray(rawEnv)) {
+            for (const [key, value] of Object.entries(rawEnv as Record<string, unknown>)) {
+                if (typeof value === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+                    extraEnv[key] = value
+                }
+            }
+        }
+        const rawTimeout = params["timeoutMs"]
+        const timeoutMs =
+            typeof rawTimeout === "number" && Number.isFinite(rawTimeout) && rawTimeout > 0
+                ? Math.min(rawTimeout, HOST_EXEC_DEFAULT_TIMEOUT_MS)
+                : HOST_EXEC_DEFAULT_TIMEOUT_MS
+
+        const sessionId = randomUUID()
+        const child = spawn(command, {
+            cwd,
+            shell: true,
+            env: { ...process.env, ...extraEnv, TERM: "dumb", NO_COLOR: "1" },
+            stdio: ["ignore", "pipe", "pipe"],
+            // 独立进程组，stop 时能连带子进程一起结束
+            detached: process.platform !== "win32",
+        })
+        const session: ExecSession = {
+            child,
+            cwd,
+            startedAt: Date.now(),
+            output: "",
+            delivered: 0,
+            done: false,
+            exitCode: null,
+            timedOut: false,
+            truncated: false,
+            timer: null,
+        }
+
+        const append = (chunk: Buffer | string): void => {
+            if (session.truncated) return
+            const text = typeof chunk === "string" ? chunk : chunk.toString("utf8")
+            if (session.output.length + text.length > HOST_EXEC_MAX_OUTPUT_BYTES) {
+                session.output += text.slice(0, HOST_EXEC_MAX_OUTPUT_BYTES - session.output.length)
+                session.truncated = true
+                killSession(session)
+                return
+            }
+            session.output += text
+        }
+
+        child.stdout?.on("data", append)
+        child.stderr?.on("data", append)
+        child.on("error", (error) => {
+            append(`
+[exec] ${error.message}
+`)
+            finish(null)
+        })
+
+        const timer = setTimeout(() => {
+            session.timedOut = true
+            killSession(session)
+        }, timeoutMs)
+        Object.assign(session, { timer })
+
+        let finished = false
+        function finish(code: number | null): void {
+            if (finished) return
+            finished = true
+            session.done = true
+            session.exitCode = code
+            if (session.timer !== null) clearTimeout(session.timer)
+        }
+        child.on("close", (code) => finish(code))
+
+        this.#execSessions.set(sessionId, session)
+        // 只保留最近 32 个会话，避免长时间使用后内存堆积
+        if (this.#execSessions.size > 32) {
+            for (const [id, entry] of this.#execSessions) {
+                if (this.#execSessions.size <= 32) break
+                if (entry.done) this.#execSessions.delete(id)
+            }
+        }
+        return { sessionId, pid: child.pid ?? null, cwd }
+    }
+
+    #execPoll(sessionId: string): HostExecChunk {
+        const session = this.#execSessions.get(sessionId)
+        if (session === undefined) {
+            throw new PluginSandboxError("执行会话不存在或已过期")
+        }
+        const chunk = session.output.slice(session.delivered)
+        session.delivered = session.output.length
+        return {
+            chunk,
+            done: session.done,
+            exitCode: session.exitCode,
+            timedOut: session.timedOut,
+            truncated: session.truncated,
+        }
+    }
+
+    #execStop(sessionId: string): void {
+        const session = this.#execSessions.get(sessionId)
+        if (session === undefined || session.done) return
+        killSession(session)
+    }
+
+    /** PTY：available/spawn/poll/write/resize/kill */
+    async #handlePty(method: string, params: Record<string, unknown>): Promise<unknown> {
+        if (method === "host.pty.available") {
+            const module = await loadNodePty()
+            if (module !== null) {
+                return { available: true, backend: "node-pty" }
+            }
+            const python = await probePython()
+            if (python !== null) {
+                // node-pty 缺失时用 python 自建 pty，仍是真 tty
+                return { available: true, backend: "python-pty", reason: nodePtyError ?? null }
+            }
+            return {
+                available: false,
+                reason: `node-pty 与 python3 均不可用：${nodePtyError ?? "未安装"}`,
+            }
+        }
+        if (method === "host.pty.spawn") {
+            return await this.#ptySpawn(params)
+        }
+        if (method === "host.pty.poll") {
+            return this.#ptyPoll(String(params["sessionId"] ?? ""))
+        }
+        if (method === "host.pty.write") {
+            const session = this.#ptySession(String(params["sessionId"] ?? ""))
+            const data = String(params["data"] ?? "")
+            if (data !== "" && !session.done) session.handle.write(data)
+            return {}
+        }
+        if (method === "host.pty.resize") {
+            const session = this.#ptySession(String(params["sessionId"] ?? ""))
+            const cols = clampCols(params["cols"])
+            const rows = clampRows(params["rows"])
+            if (!session.done && (cols !== session.cols || rows !== session.rows)) {
+                session.cols = cols
+                session.rows = rows
+                try {
+                    session.handle.resize(cols, rows)
+                } catch {
+                    /* 进程可能已退出 */
+                }
+            }
+            return {}
+        }
+        if (method === "host.pty.kill") {
+            const session = this.#ptySession(String(params["sessionId"] ?? ""))
+            if (!session.done) {
+                try {
+                    session.handle.kill()
+                } catch {
+                    /* 已经退出 */
+                }
+            }
+            return {}
+        }
+        throw new PluginSandboxError(`不支持的 pty 方法：${method}`)
+    }
+
+    #ptySession(sessionId: string): PtySession {
+        const session = this.#ptySessions.get(sessionId)
+        if (session === undefined) {
+            throw new PluginSandboxError("PTY 会话不存在或已过期")
+        }
+        return session
+    }
+
+    async #ptySpawn(params: Record<string, unknown>): Promise<HostPtySession> {
+        const module = await loadNodePty()
+        const python = module === null ? await probePython() : null
+        if (module === null && python === null) {
+            throw new PluginSandboxError(
+                `没有可用的 PTY 后端：node-pty 与 python3 均不可用（${nodePtyError ?? "未安装"}）`,
+            )
+        }
+        const rawCwd = String(params["cwd"] ?? "")
+        const cwd = rawCwd === "" ? process.cwd() : resolve(rawCwd)
+        const stat = await statSafe(cwd)
+        if (!stat?.isDirectory()) {
+            throw new PluginSandboxError(`工作目录不存在或不是目录：${cwd}`)
+        }
+        const file = String(params["file"] ?? "").trim() || defaultShell()
+        const rawArgs = params["args"]
+        const args = Array.isArray(rawArgs)
+            ? rawArgs.filter((item): item is string => typeof item === "string")
+            : []
+        const extraEnv: Record<string, string> = {}
+        const rawEnv = params["env"]
+        if (rawEnv !== null && typeof rawEnv === "object" && !Array.isArray(rawEnv)) {
+            for (const [key, value] of Object.entries(rawEnv as Record<string, unknown>)) {
+                if (typeof value === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+                    extraEnv[key] = value
+                }
+            }
+        }
+        const cols = clampCols(params["cols"])
+        const rows = clampRows(params["rows"])
+
+        const env = {
+            ...process.env,
+            ...extraEnv,
+            TERM: "xterm-256color",
+            COLORTERM: "truecolor",
+        }
+        const onData: Array<(data: string) => void> = []
+        const onExit: Array<(code: number | null) => void> = []
+        let handle: PtyHandle
+        let backend: PtyBackendName
+
+        if (module !== null) {
+            // 首选：node-pty 原生模块
+            const pty = module.spawn(file, args, { name: "xterm-256color", cols, rows, cwd, env })
+            pty.onData((data) => {
+                for (const handler of onData) handler(data)
+            })
+            pty.onExit((event) => {
+                const code = typeof event.exitCode === "number" ? event.exitCode : null
+                for (const handler of onExit) handler(code)
+            })
+            handle = {
+                pid: pty.pid,
+                write: (data) => pty.write(data),
+                resize: (nextCols, nextRows) => pty.resize(nextCols, nextRows),
+                kill: () => pty.kill(),
+            }
+            backend = "node-pty"
+        } else {
+            // 回退：python3 自建 pty，控制命令走 stdin 的 JSON 行
+            const config = JSON.stringify({ shell: file, args, cwd, cols, rows, env: extraEnv })
+            const child = spawn(python as string, [PTY_BRIDGE_PATH, config], {
+                stdio: ["pipe", "pipe", "pipe"],
+                cwd,
+                env,
+                detached: process.platform !== "win32",
+            })
+            const send = (payload: Record<string, unknown>): void => {
+                if (child.stdin === null || child.stdin.destroyed) return
+                try {
+                    child.stdin.write(`${JSON.stringify(payload)}
+`)
+                } catch {
+                    /* 桥接已退出 */
+                }
+            }
+            child.stdout?.on("data", (chunk: Buffer) => {
+                const text = chunk.toString("utf8")
+                for (const handler of onData) handler(text)
+            })
+            child.stderr?.on("data", (chunk: Buffer) => {
+                // 桥接的报错也当终端输出，便于在控制台里看到
+                const text = chunk.toString("utf8")
+                for (const handler of onData) handler(text)
+            })
+            child.on("close", (code) => {
+                for (const handler of onExit) handler(typeof code === "number" ? code : null)
+            })
+            handle = {
+                pid: child.pid ?? 0,
+                write: (data) => send({ type: "input", data }),
+                resize: (nextCols, nextRows) =>
+                    send({ type: "resize", cols: nextCols, rows: nextRows }),
+                kill: () => {
+                    send({ type: "kill" })
+                    if (process.platform !== "win32" && typeof child.pid === "number") {
+                        try {
+                            process.kill(-child.pid, "SIGKILL")
+                            return
+                        } catch {
+                            /* 进程组已消失 */
+                        }
+                    }
+                    try {
+                        child.kill("SIGKILL")
+                    } catch {
+                        /* 已退出 */
+                    }
+                },
+            }
+            backend = "python-pty"
+        }
+
+        const session: PtySession = {
+            handle,
+            backend,
+            file,
+            cwd,
+            cols,
+            rows,
+            output: "",
+            delivered: 0,
+            done: false,
+            exitCode: null,
+        }
+        onData.push((data) => {
+            session.output += data
+            // 超上限时丢最旧的一半，同步回退已读游标
+            if (session.output.length > HOST_PTY_MAX_OUTPUT_CHARS) {
+                const drop = session.output.length - Math.floor(HOST_PTY_MAX_OUTPUT_CHARS / 2)
+                session.output = session.output.slice(drop)
+                session.delivered = Math.max(0, session.delivered - drop)
+            }
+        })
+        onExit.push((code) => {
+            session.done = true
+            session.exitCode = code
+        })
+
+        const sessionId = randomUUID()
+        this.#ptySessions.set(sessionId, session)
+        // 只保留最近的会话，避免长期使用后堆积
+        if (this.#ptySessions.size > HOST_PTY_MAX_SESSIONS) {
+            for (const [id, entry] of this.#ptySessions) {
+                if (this.#ptySessions.size <= HOST_PTY_MAX_SESSIONS) break
+                if (entry.done) this.#ptySessions.delete(id)
+            }
+        }
+        return { sessionId, pid: handle.pid, file, cwd, cols, rows }
+    }
+
+    #ptyPoll(sessionId: string): HostPtyChunk {
+        const session = this.#ptySession(sessionId)
+        const pending = session.output.slice(
+            session.delivered,
+            session.delivered + HOST_PTY_MAX_POLL_CHARS,
+        )
+        session.delivered += pending.length
+        return { chunk: pending, done: session.done, exitCode: session.exitCode }
+    }
+
     #hasHostApi(name: string): boolean {
         return this.#options.permissions.hostApi.includes(name)
     }
@@ -506,6 +1122,60 @@ export class PluginSandboxClient {
                 result = await this.#options.agent.stream(input, (event) => {
                     this.#notify("sandbox.agent.stream", { streamId, event })
                 })
+            } else if (request.method === "host.agent.validateWorkspace") {
+                this.#requireHostApi("agent")
+                if (this.#options.agent === undefined) {
+                    throw new PluginSandboxError("宿主没有 Agent 服务")
+                }
+                result = await this.#options.agent.validateWorkspace(String(params["path"] ?? ""))
+            } else if (request.method === "host.agent.pickDirectory") {
+                this.#requireHostApi("agent")
+                if (this.#options.agent === undefined) {
+                    throw new PluginSandboxError("宿主没有 Agent 服务")
+                }
+                result = await this.#options.agent.pickDirectory()
+            } else if (request.method === "host.agent.searchWorkspaceFiles") {
+                this.#requireHostApi("agent")
+                if (this.#options.agent === undefined) {
+                    throw new PluginSandboxError("宿主没有 Agent 服务")
+                }
+                result = await this.#options.agent.searchWorkspaceFiles(
+                    String(params["root"] ?? ""),
+                    String(params["query"] ?? ""),
+                )
+            } else if (request.method === "host.agent.interject") {
+                this.#requireHostApi("agent")
+                if (this.#options.agent === undefined) {
+                    throw new PluginSandboxError("宿主没有 Agent 服务")
+                }
+                result = await this.#options.agent.interject(
+                    String(params["sessionId"] ?? ""),
+                    String(params["message"] ?? ""),
+                )
+            } else if (request.method === "host.agent.respondApproval") {
+                this.#requireHostApi("agent")
+                if (this.#options.agent === undefined) {
+                    throw new PluginSandboxError("宿主没有 Agent 服务")
+                }
+                result = await this.#options.agent.respondApproval(
+                    String(params["approvalId"] ?? ""),
+                    params["approved"] === true,
+                )
+            } else if (request.method === "host.agent.respondAsk") {
+                this.#requireHostApi("agent")
+                if (this.#options.agent === undefined) {
+                    throw new PluginSandboxError("宿主没有 Agent 服务")
+                }
+                result = await this.#options.agent.respondAsk(
+                    String(params["askId"] ?? ""),
+                    String(params["answer"] ?? ""),
+                )
+            } else if (request.method.startsWith("host.models.")) {
+                this.#requireHostApi("models")
+                if (this.#options.models === undefined) {
+                    throw new PluginSandboxError("宿主没有模型配置服务")
+                }
+                result = await this.#handleModels(request.method, params)
             } else if (request.method === "host.http.createServer") {
                 this.#requireHostApi("http")
                 const serverId = String(params["serverId"] ?? "")
@@ -557,7 +1227,12 @@ export class PluginSandboxClient {
                             remoteAddress: req.socket.remoteAddress ?? null,
                         }
                         const requestId = nextRequestId("http-req")
-                        this.#httpResponses.set(requestId, { response: res })
+                        this.#httpResponses.set(requestId, {
+                            response: res,
+                            chunks: [],
+                            ready: false,
+                            ended: false,
+                        })
                         res.on("close", () => this.#httpResponses.delete(requestId))
                         const response = (await this.#request(
                             "plugin.http",
@@ -569,6 +1244,23 @@ export class PluginSandboxClient {
                             res.setHeader(key, value)
                         }
                         if (response.stream === true) {
+                            const pending = this.#httpResponses.get(requestId)
+                            if (pending !== undefined) {
+                                pending.ready = true
+                                for (const chunk of pending.chunks) {
+                                    try {
+                                        pending.response.write(chunk)
+                                    } catch {
+                                        this.#httpResponses.delete(requestId)
+                                        return
+                                    }
+                                }
+                                pending.chunks.length = 0
+                                if (pending.ended) {
+                                    this.#httpResponses.delete(requestId)
+                                    pending.response.end()
+                                }
+                            }
                             return
                         }
                         this.#httpResponses.delete(requestId)
@@ -687,6 +1379,12 @@ export class PluginSandboxClient {
                     )
                 }
                 result = {}
+            } else if (request.method.startsWith("host.pty.")) {
+                this.#requireHostApi("pty")
+                result = await this.#handlePty(request.method, params)
+            } else if (request.method.startsWith("host.exec.")) {
+                this.#requireHostApi("exec")
+                result = await this.#handleExec(request.method, params)
             } else if (request.method === "host.pluginData") {
                 this.#requireHostApi("fs")
                 const targetId = String(params["targetId"] ?? "")
@@ -826,9 +1524,16 @@ export class PluginSandboxClient {
             : createPluginFileApi(this.#pluginDataDir)
         const path = String(params["path"] ?? "")
         const action = method.replace(/^host\.(fs|workspaceFs)\./, "")
-        if (workspace && !this.#options.permissions.workspaceWrite) {
-            if (["writeText", "writeBytes", "writeJson", "mkdir", "remove"].includes(action)) {
+        if (
+            workspace &&
+            ["writeText", "writeBytes", "writeJson", "mkdir", "remove"].includes(action)
+        ) {
+            if (!this.#options.permissions.workspaceWrite) {
                 throw new PluginSandboxError("插件没有 workspace 写权限")
+            }
+            const context = this.#activeContext
+            if (context !== null && context.permission === "read-only") {
+                throw new PluginSandboxError("当前 Agent 权限是 read-only，不能修改工作区文件")
             }
         }
         switch (action) {
@@ -951,6 +1656,20 @@ export class PluginSandboxClient {
         }
         this.#closed = true
         this.#kill()
+        // 先收掉仍在跑的进程，再清监听，避免成了孤儿
+        for (const session of this.#execSessions.values()) {
+            if (!session.done) killSession(session)
+        }
+        this.#execSessions.clear()
+        for (const session of this.#ptySessions.values()) {
+            if (session.done) continue
+            try {
+                session.handle.kill()
+            } catch {
+                /* 已经退出 */
+            }
+        }
+        this.#ptySessions.clear()
         for (const unsubscribe of this.#eventUnsubscribes.values()) {
             unsubscribe()
         }
@@ -997,6 +1716,10 @@ export class PluginSandboxClient {
             [
                 join(PROJECT_ROOT, "src", "sandbox", "protocol.ts"),
                 join(this.#hostSdkDir, "src", "sandbox", "protocol.ts"),
+            ],
+            [
+                join(PROJECT_ROOT, "src", "sandbox", "rpc-timeouts.ts"),
+                join(this.#hostSdkDir, "src", "sandbox", "rpc-timeouts.ts"),
             ],
             [
                 join(PROJECT_ROOT, "src", "sandbox", "plugin-host.ts"),

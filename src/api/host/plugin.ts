@@ -6,6 +6,9 @@
 import type { Logger } from "pino"
 
 import type { HostFileApi } from "./fs.ts"
+import type { HostModelsApi } from "./models.ts"
+import type { HostExecApi } from "./exec.ts"
+import type { HostPtyApi } from "./pty.ts"
 
 import type { AppSetting } from "../../config/types.ts"
 import type { ResolvedPaths } from "../../platform/path.ts"
@@ -137,4 +140,10 @@ export interface PluginApi {
     http: HostHttpApi
     /** 与 Agent 会话交互 */
     agent: HostAgentApi
+    /** 宿主进程执行（需 hostApi: exec 权限） */
+    exec: HostExecApi
+    /** 宿主伪终端（需 hostApi: pty 权限；依赖可选的 node-pty） */
+    pty: HostPtyApi
+    /** 自定义供应商与模型切换（需 hostApi: models 权限） */
+    models: HostModelsApi
 }

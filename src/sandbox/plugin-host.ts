@@ -10,7 +10,33 @@ import type { Logger } from "pino"
 
 import type { Host, HostOSInfo, HostPluginStatus, HostStatus } from "../api/host/host.ts"
 import type { HostFileApi, HostFileEntry, HostFileStat } from "../api/host/fs.ts"
-import type { HostAgentApi, HostAgentChatInput, HostAgentStreamEvent } from "../api/host/agent.ts"
+import type {
+    HostExecApi,
+    HostExecChunk,
+    HostExecRunOptions,
+    HostExecSession,
+} from "../api/host/exec.ts"
+import type {
+    HostModelProviderInput,
+    HostModelsApi,
+    HostModelsFetchResult,
+    HostModelsState,
+    HostModelsStateResult,
+} from "../api/host/models.ts"
+import type {
+    HostPtyApi,
+    HostPtyAvailability,
+    HostPtyChunk,
+    HostPtySession,
+    HostPtySpawnOptions,
+} from "../api/host/pty.ts"
+import type {
+    HostAgentApi,
+    HostAgentChatInput,
+    HostAgentStreamEvent,
+    HostWorkspaceCheck,
+    HostWorkspaceFilesResult,
+} from "../api/host/agent.ts"
 import type {
     HostHttpApi,
     HttpHandler,
@@ -67,6 +93,7 @@ import {
     type RpcMessage,
     type RpcRequest,
 } from "./protocol.ts"
+import { RPC_TIMEOUT_MS } from "./rpc-timeouts.ts"
 
 interface HostSnapshotData {
     readonly status: HostStatus
@@ -113,30 +140,50 @@ const pending = new Map<
     {
         resolve: (value: unknown) => void
         reject: (error: Error) => void
-        timer: NodeJS.Timeout
+        timer: NodeJS.Timeout | null
     }
 >()
 
-function bridgeRequest(method: string, params: unknown, timeoutMs = 30_000): Promise<unknown> {
+function bridgeRequest(
+    method: string,
+    params: unknown,
+    timeoutMs: number | null = RPC_TIMEOUT_MS.default,
+): Promise<unknown> {
     const id = nextRequestId("child")
     return new Promise<unknown>((resolveRequest, rejectRequest) => {
-        const timer = setTimeout(() => {
-            pending.delete(id)
-            rejectRequest(new Error(`host RPC 超时：${method}`))
-        }, timeoutMs)
-        timer.unref()
+        // timeoutMs 为 null 时不挂定时器：长任务 RPC（例如 agent.stream）由运行过程自身结束
+        const timer =
+            timeoutMs === null
+                ? null
+                : setTimeout(() => {
+                      pending.delete(id)
+                      rejectRequest(new Error(`host RPC 超时：${method}`))
+                  }, timeoutMs)
+        timer?.unref()
+        const clearTimer = (): void => {
+            if (timer !== null) {
+                clearTimeout(timer)
+            }
+        }
         pending.set(id, {
             resolve: (value) => {
-                clearTimeout(timer)
+                clearTimer()
                 resolveRequest(value)
             },
             reject: (error) => {
-                clearTimeout(timer)
+                clearTimer()
                 rejectRequest(error)
             },
             timer,
         })
-        writeFrame({ v: 1, type: "request", id, method, params, timeoutMs })
+        writeFrame({
+            v: 1,
+            type: "request",
+            id,
+            method,
+            params,
+            ...(timeoutMs === null ? {} : { timeoutMs }),
+        })
     })
 }
 
@@ -204,25 +251,174 @@ const websocketHandlers = new Map<string, WebSocketHandler>()
 const wsMessages = new Map<string, Array<(data: string) => void>>()
 const wsCloses = new Map<string, Array<(code: number, reason: string) => void>>()
 
+function remoteExec(): HostExecApi {
+    return {
+        async run(options: HostExecRunOptions): Promise<HostExecSession> {
+            return (await bridgeRequest("host.exec.run", {
+                command: options.command,
+                cwd: options.cwd,
+                env: options.env ?? {},
+                timeoutMs: options.timeoutMs,
+            })) as HostExecSession
+        },
+        async poll(sessionId: string): Promise<HostExecChunk> {
+            return (await bridgeRequest("host.exec.poll", { sessionId })) as HostExecChunk
+        },
+        async stop(sessionId: string): Promise<void> {
+            await bridgeRequest("host.exec.stop", { sessionId })
+        },
+    }
+}
+
+function remotePty(): HostPtyApi {
+    return {
+        async available(): Promise<HostPtyAvailability> {
+            const result = (await bridgeRequest("host.pty.available", {})) as {
+                available?: boolean
+                backend?: string
+                reason?: string
+            }
+            const backend =
+                result.backend === "node-pty" || result.backend === "python-pty"
+                    ? result.backend
+                    : undefined
+            return {
+                available: result.available === true,
+                backend,
+                reason: typeof result.reason === "string" ? result.reason : undefined,
+            }
+        },
+        async spawn(options: HostPtySpawnOptions): Promise<HostPtySession> {
+            return (await bridgeRequest("host.pty.spawn", {
+                file: options.file ?? "",
+                args: options.args ?? [],
+                cwd: options.cwd,
+                env: options.env ?? {},
+                cols: options.cols,
+                rows: options.rows,
+            })) as HostPtySession
+        },
+        async poll(sessionId: string): Promise<HostPtyChunk> {
+            return (await bridgeRequest("host.pty.poll", { sessionId })) as HostPtyChunk
+        },
+        async write(sessionId: string, data: string): Promise<void> {
+            await bridgeRequest("host.pty.write", { sessionId, data })
+        },
+        async resize(sessionId: string, cols: number, rows: number): Promise<void> {
+            await bridgeRequest("host.pty.resize", { sessionId, cols, rows })
+        },
+        async kill(sessionId: string): Promise<void> {
+            await bridgeRequest("host.pty.kill", { sessionId })
+        },
+    }
+}
+
 function remoteAgent(): HostAgentApi {
     return {
         async chat(input: HostAgentChatInput) {
             return await bridgeRequest(
                 "host.agent.chat",
                 input as unknown as Record<string, unknown>,
-                180_000,
+                RPC_TIMEOUT_MS.agentChat,
             )
         },
         async stream(input: HostAgentChatInput, onEvent: (event: HostAgentStreamEvent) => void) {
             const streamId = nextRequestId("agent-stream")
             agentStreamHandlers.set(streamId, onEvent)
             try {
-                return await bridgeRequest("host.agent.stream", { streamId, input }, 180_000)
+                // 一轮 Agent 可能跑很久（多步工具调用），不设 RPC 上限
+                return await bridgeRequest(
+                    "host.agent.stream",
+                    { streamId, input },
+                    RPC_TIMEOUT_MS.agentStream,
+                )
             } finally {
                 agentStreamHandlers.delete(streamId)
             }
         },
+        async validateWorkspace(path: string) {
+            return (await bridgeRequest("host.agent.validateWorkspace", {
+                path,
+            })) as HostWorkspaceCheck
+        },
+        async pickDirectory() {
+            return (await bridgeRequest("host.agent.pickDirectory", {})) as HostWorkspaceCheck
+        },
+        async searchWorkspaceFiles(root: string, query: string) {
+            return (await bridgeRequest("host.agent.searchWorkspaceFiles", {
+                root,
+                query,
+            })) as HostWorkspaceFilesResult
+        },
+        async interject(sessionId: string, message: string) {
+            return (await bridgeRequest("host.agent.interject", {
+                sessionId,
+                message,
+            })) as boolean
+        },
+        async respondApproval(approvalId: string, approved: boolean) {
+            return (await bridgeRequest("host.agent.respondApproval", {
+                approvalId,
+                approved,
+            })) as boolean
+        },
+        async respondAsk(askId: string, answer: string) {
+            return (await bridgeRequest("host.agent.respondAsk", {
+                askId,
+                answer,
+            })) as boolean
+        },
     } as HostAgentApi
+}
+
+function remoteModels(): HostModelsApi {
+    return {
+        async state(): Promise<HostModelsState> {
+            return (await bridgeRequest("host.models.state", {})) as HostModelsState
+        },
+        async setActive(
+            providerId: string,
+            model: string | null,
+            reasoning?: string | null,
+        ): Promise<HostModelsState> {
+            return (await bridgeRequest("host.models.setActive", {
+                providerId,
+                model,
+                reasoning,
+            })) as HostModelsState
+        },
+        async saveProvider(input: HostModelProviderInput): Promise<HostModelsStateResult> {
+            return (await bridgeRequest(
+                "host.models.saveProvider",
+                input as unknown as Record<string, unknown>,
+            )) as HostModelsStateResult
+        },
+        async removeProvider(id: string): Promise<HostModelsStateResult> {
+            return (await bridgeRequest("host.models.removeProvider", {
+                id,
+            })) as HostModelsStateResult
+        },
+        async fetchModels(id: string, apiKey?: string): Promise<HostModelsFetchResult> {
+            const payload: Record<string, unknown> = { id }
+            if (apiKey !== undefined) {
+                payload["apiKey"] = apiKey
+            }
+            return (await bridgeRequest(
+                "host.models.fetchModels",
+                payload,
+                RPC_TIMEOUT_MS.modelsFetch,
+            )) as HostModelsFetchResult
+        },
+        async saveKey(id: string, apiKey: string): Promise<HostModelsStateResult> {
+            return (await bridgeRequest("host.models.saveKey", {
+                id,
+                apiKey,
+            })) as HostModelsStateResult
+        },
+        async clearKey(id: string): Promise<HostModelsState> {
+            return (await bridgeRequest("host.models.clearKey", { id })) as HostModelsState
+        },
+    }
 }
 
 function remoteHttp(): HostHttpApi {
@@ -533,6 +729,9 @@ async function bootstrap(params: ConfigurePayload): Promise<{
         } as never,
         http: remoteHttp(),
         agent: remoteAgent(),
+        models: remoteModels(),
+        exec: remoteExec(),
+        pty: remotePty(),
     }
 
     const module = (await withHookOwner(pluginId, async () => {

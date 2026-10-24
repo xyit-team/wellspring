@@ -33,6 +33,8 @@ export interface AgentCodeRequest {
     readonly outputLimitBytes?: number
     readonly access?: SandboxAccess
     readonly network?: boolean
+    /** 模型给出的提权理由 */
+    readonly justification?: string
 }
 
 export interface AgentCodeResult {
