@@ -411,6 +411,10 @@ test("web 插件：页面外壳、静态资源与主题 cookie", { timeout: 20_0
         assert.match(cssBody, /\.sidebar-fold \{/)
         assert.match(cssBody, /\.sidebar-fold-value/)
         assert.match(cssBody, /\.workspace-body\[hidden\]/)
+        // 窄屏未聚焦时输入框收起一行
+        assert.match(cssBody, /\.composer\.is-collapsed textarea \{[^}]*min-height: 0/)
+        assert.match(cssBody, /\.composer\.is-collapsed \{[^}]*padding: var\(--space-1\)/)
+        assert.match(cssBody, /\.composer\.is-collapsed \.composer-highlight-inner/)
         assert.match(cssBody, /\.sidebar-foot-body\[hidden\]/)
         assert.match(cssBody, /\.foot-fold/)
         // 窄屏：composer-bar 不换行时发送按钮会溢出 composer，被 .app 的 overflow 裁掉
@@ -456,6 +460,10 @@ test("web 插件：页面外壳、静态资源与主题 cookie", { timeout: 20_0
         assert.match(scriptBody, /function mentionRanges\(/)
         assert.match(scriptBody, /function formatMention\(/)
         assert.match(scriptBody, /function renderComposerHighlight\(/)
+        assert.match(scriptBody, /function composerCollapsed\(/)
+        assert.match(scriptBody, /function autoGrow\(/)
+        assert.match(scriptBody, /composerInput\.addEventListener\("focus"/)
+        assert.match(scriptBody, /composerInput\.addEventListener\("blur"/)
         assert.match(scriptBody, /function renderWorkspaceFold\(/)
         assert.match(scriptBody, /function toggleWorkspaceFold\(/)
         assert.match(scriptBody, /WORKSPACE_FOLD_KEY/)
