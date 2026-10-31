@@ -41,7 +41,7 @@
     },
     "scripts": {
         "start": "node src/index.ts",
-        "test": "node --test test",
+        "test": "node scripts/run-tests.mjs",
         "typecheck": "tsc --noEmit",
         "format": "oxfmt",
         "format:check": "oxfmt --check",
