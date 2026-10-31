@@ -139,7 +139,8 @@ jobs:
                   grep -q "@xyit/wellspring" /tmp/version.txt
 
             - name: 演练（不发布）
-              if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
+              # 版本已经发布过时 npm publish --dry-run 也会被 registry 拒绝，因此先看 exists
+              if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run && steps.exists.outputs.skip != '1' }}
               # 同样会跑 prepack（构建），因此打印的是实际要发布的内容清单
               run: npm publish --dry-run --access public
 
