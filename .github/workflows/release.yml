@@ -84,6 +84,10 @@ jobs:
                       echo "${out} 不应包含 node_modules"
                       exit 1
                     fi
+                    if unzip -Z1 "$out" | grep -qE '^(\.ui-review|frontend/dist)/'; then
+                      echo "${out} 不应包含 .ui-review 或 frontend/dist"
+                      exit 1
+                    fi
                     echo "${out}"
                     count=$((count + 1))
                   done
@@ -100,8 +104,8 @@ jobs:
 
     release:
         needs: package
-        # 推标签时自动创建；手动触发默认只上传 artifact
-        if: ${{ github.event_name == 'push' || inputs.create-release }}
+        # 推标签时自动创建；手动触发默认只上传 artifact，且只能在 tag ref 上建 Release
+        if: ${{ (github.event_name == 'push' || inputs.create-release) && startsWith(github.ref, 'refs/tags/') }}
         runs-on: ubuntu-24.04
         timeout-minutes: 10
         permissions:
