@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { startHttpHostPlugin } from "./helpers/http-host.ts"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -46,6 +47,7 @@ function paths(): ResolvedPaths {
 test("web 插件：首次设置密码、登录、与 Agent 聊天", { timeout: 20_000 }, async () => {
     const resolved = paths()
     configureHost({ paths: resolved })
+    await startHttpHostPlugin(resolved)
     const output = { text: "" } as ElogStream & { text: string }
     output.write = (text: string) => {
         output.text += text
@@ -64,7 +66,7 @@ test("web 插件：首次设置密码、登录、与 Agent 聊天", { timeout: 2
         limits: { timeoutMs: 10_000, memoryMB: 256, pids: 32, outputLimitBytes: 4096 },
         logger: pino({ level: "silent" }),
         permissions: {
-            hostApi: ["logger", "fs", "http", "agent", "event"],
+            hostApi: ["logger", "fs", "http", "agent", "event", "workspaces"],
             workspaceRead: false,
             workspaceWrite: false,
         },
@@ -102,6 +104,9 @@ test("web 插件：首次设置密码、登录、与 Agent 聊天", { timeout: 2
                 }
             },
             async interject() {
+                return false
+            },
+            async stop() {
                 return false
             },
             async respondApproval(approvalId: string, approved: boolean) {

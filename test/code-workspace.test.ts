@@ -11,7 +11,6 @@ import {
     detectIndent,
     fuzzyScore,
     normalizePath,
-    parseWorkspaceIndex,
     rankFiles,
     relativeInside,
 } from "../plugins/wellspring-code/src/workspace.ts"
@@ -103,33 +102,6 @@ test("createScopedFs 把子目录映射为独立工作区", async () => {
     await scoped.writeText("created.txt", "scoped")
     assert.equal(await base.readText("nested/created.txt"), "scoped")
     assert.equal(relativeInside(root, join(root, "nested")), "nested")
-})
-
-test("parseWorkspaceIndex 兼容 v2 / v1 并忽略非法条目", () => {
-    const v2 = parseWorkspaceIndex({
-        v: 2,
-        workspaces: [
-            { id: "a", name: "Alpha", root: "/tmp/alpha", conversationCount: 2 },
-            { id: "a", name: "Dup", root: "/tmp/dup" },
-            { id: "", name: "Empty", root: "/tmp/empty" },
-            { id: "b", root: "/tmp/beta", conversationCount: -1 },
-            { nope: true },
-        ],
-    })
-    assert.equal(v2.length, 2)
-    assert.deepEqual(
-        v2.map((record) => [record.id, record.name, record.conversationCount]),
-        [
-            ["a", "Alpha", 2],
-            ["b", "beta", 0],
-        ],
-    )
-    assert.equal(v2[1]?.root, "/tmp/beta")
-
-    const v1 = parseWorkspaceIndex([{ id: "only", name: "Only", root: "/tmp/only" }])
-    assert.equal(v1.length, 1)
-    assert.equal(parseWorkspaceIndex(null).length, 0)
-    assert.equal(parseWorkspaceIndex({ workspaces: "nope" }).length, 0)
 })
 
 test("WorkspaceService 列举目录：目录在前，带完整相对路径", async () => {

@@ -144,6 +144,10 @@ async function runApprovalTurn(approved: boolean): Promise<{ reply: string; requ
                 currentPermission: "read-only",
                 requestedPermission: "workspace-write",
                 justification: "需要写入构建产物",
+                network: true,
+                background: true,
+                stdin: "y\n",
+                timeoutMs: 4000,
             })
             return { success: allowed, data: { content: allowed ? "approved" : "denied" } }
         },
@@ -176,6 +180,12 @@ async function runApprovalTurn(approved: boolean): Promise<{ reply: string; requ
     assert.equal(request.command, "node")
     assert.equal(request.requestedPermission, "workspace-write")
     assert.equal(request.justification, "需要写入构建产物")
+    /* 审批界面要展示这些：argv 是真正执行的东西，其余决定这次调用还能做什么 */
+    assert.deepEqual(request.argv, ["-e", "console.log(1)"])
+    assert.equal(request.network, true)
+    assert.equal(request.background, true)
+    assert.equal(request.stdin, "y\n")
+    assert.equal(request.timeoutMs, 4000)
     assert.equal(await service.respondApproval(request.approvalId, approved), true)
     const result = await streamPromise
     assert.equal(result.reply, "完成")

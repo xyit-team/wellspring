@@ -48,10 +48,14 @@ function paths(): ResolvedPaths {
 }
 
 const PLUGIN_SOURCE = [
-    'import { EventEntity, eventBus, getHost, onMessage } from "wellspring/api/host/index.ts"',
+    'import { EventEntity, eventBus, getHost, onMessage, onSessionStart } from "wellspring/api/host/index.ts"',
     "",
     "onMessage(({ phase, prompt }) => {",
     '    if (phase === "before") prompt.push("sandbox-rule")',
+    "})",
+    "",
+    "onSessionStart(({ prompt }) => {",
+    '    prompt.push("first-turn-rule")',
     "})",
     "",
     "export function setup() {",
@@ -165,6 +169,7 @@ test("PluginSandboxClient 命令/钩子/fs/host/event 往返", { timeout: 20_000
             ["hello", "fs-roundtrip", "host-info", "publish"],
         )
         assert.ok(ready.hooks.includes("onMessage"))
+        assert.ok(ready.hooks.includes("onSessionStart"))
 
         const exitCode = await client.runCommand("hello", ["a", "b"], pluginDir, false)
         assert.equal(exitCode, 3)
@@ -205,6 +210,16 @@ test("PluginSandboxClient 命令/钩子/fs/host/event 往返", { timeout: 20_000
             prompt: [],
         })) as { prompt: string[] }
         assert.deepEqual(hookResult.prompt, ["sandbox-rule"])
+
+        const sessionStartResult = (await client.runHook("onSessionStart", {
+            sessionId: "s",
+            mode: "chat",
+            turn: 1,
+            input: "hi",
+            cwd: "/workspace",
+            prompt: [],
+        })) as { prompt: string[] }
+        assert.deepEqual(sessionStartResult.prompt, ["first-turn-rule"])
     } finally {
         await client.close()
     }
@@ -938,6 +953,9 @@ test("sandbox 插件通过 host agent 与 Agent 交互", { timeout: 20_000 }, as
                 }
             },
             async interject() {
+                return false
+            },
+            async stop() {
                 return false
             },
             async respondApproval(approvalId: string, approved: boolean) {

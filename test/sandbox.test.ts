@@ -7,7 +7,11 @@ import { after, before, test } from "node:test"
 import { DEFAULT_SETTINGS } from "../src/config/defaults.ts"
 import type { ResolvedPaths } from "../src/platform/path.ts"
 import { DirectBackend } from "../src/sandbox/backends/direct.ts"
-import { buildBwrapLaunch, buildBwrapPluginLaunch } from "../src/sandbox/backends/bwrap.ts"
+import {
+    buildBwrapLaunch,
+    buildBwrapPluginLaunch,
+    resolveNodeRuntime,
+} from "../src/sandbox/backends/bwrap.ts"
 import { flushSandboxAudit } from "../src/sandbox/audit.ts"
 import { SandboxManager } from "../src/sandbox/manager.ts"
 
@@ -83,14 +87,24 @@ test("bwrap launch spec：namespace、只读 workspace、可写 scratch、无网
     const prlimitIndex = spec.args.indexOf("/usr/bin/prlimit")
     assert.ok(prlimitIndex > 0)
     assert.ok(spec.args.includes("--nproc=16"))
-    assert.ok(spec.args.includes("--cpu=5"))
-    // node 命令使用 NODE_OPTIONS 限制堆，不用 --as 破坏 V8
-    assert.ok(spec.args.includes("NODE_OPTIONS"))
+    // 不再用 RLIMIT_CPU / RLIMIT_AS：超时交给 supervisor，物理内存交给 cgroup
+    assert.ok(!spec.args.some((arg) => arg.startsWith("--cpu=")))
     assert.ok(!spec.args.some((arg) => arg.startsWith("--as=")))
+    assert.ok(spec.args.includes("NODE_OPTIONS"))
     assert.ok(spec.args.includes("--max-old-space-size=128"))
+    const runtime = resolveNodeRuntime()
+    const pathIndex = spec.args.indexOf("PATH")
+    assert.ok(pathIndex > 0)
+    assert.ok(
+        (spec.args[pathIndex + 1] ?? "").startsWith(`${runtime.pathEntry}:`),
+        "PATH 指向挂载进来的 node/bin",
+    )
+    if (runtime.prefix !== null) {
+        assert.ok(spec.args.includes(runtime.prefix), "完整 node 前缀整体挂载")
+    }
 })
 
-test("bwrap launch spec：非 node 命令使用 --as 内存限制", () => {
+test("bwrap launch spec：非 node 命令也不再使用 --as", () => {
     const spec = buildBwrapLaunch({
         workspaceDir: workspace,
         scratchDir: join(root, "scratch2"),
@@ -100,7 +114,8 @@ test("bwrap launch spec：非 node 命令使用 --as 内存限制", () => {
         env: { PATH: "/usr/bin:/bin" },
         limits: { timeoutMs: 2_000, memoryMB: 64, pids: 8, outputLimitBytes: 1024 },
     })
-    assert.ok(spec.args.includes("--as=67108864"))
+    assert.ok(!spec.args.some((arg) => arg.startsWith("--as=")))
+    assert.ok(!spec.args.some((arg) => arg.startsWith("--cpu=")))
     assert.ok(spec.args.includes("--chdir"))
     assert.equal(spec.args[spec.args.indexOf("--chdir") + 1], "/workspace")
 })
@@ -163,6 +178,25 @@ test("bwrap plugin launch：插件只读、host SDK 只读、Node permission 开
     assert.ok(spec.args.includes("--allow-fs-read=/host"))
     assert.ok(!spec.args.includes("--allow-fs-write=/plugin"))
     assert.ok(spec.args.includes("--nproc=16"))
+    assert.ok(spec.args.includes(resolveNodeRuntime().nodePath), "插件用挂载后的 node 路径")
+})
+
+test("resolveNodeRuntime：完整发行版挂前缀，裸二进制退回单文件", () => {
+    const full = resolveNodeRuntime(
+        "/opt/node-v24/bin/node",
+        (path) => path === "/opt/node-v24/lib/node_modules/npm",
+    )
+    assert.deepEqual(full, {
+        prefix: "/opt/node-v24",
+        nodePath: "/opt/wellspring/bin/node",
+        pathEntry: "/opt/wellspring/bin",
+    })
+    const bare = resolveNodeRuntime("/usr/local/bin/node", () => false)
+    assert.deepEqual(bare, {
+        prefix: null,
+        nodePath: "/opt/wellspring/node",
+        pathEntry: "/opt/wellspring",
+    })
 })
 
 test("manager 全权限执行绕过 sandbox", async () => {
@@ -174,6 +208,8 @@ test("manager 全权限执行绕过 sandbox", async () => {
     })
     assert.equal(result.access, "danger-full-access")
     assert.equal(result.backend, "direct")
+    assert.equal(result.memoryLimit, "none", "direct 后端不挂 cgroup")
+    assert.equal(result.oomKilled, false)
 })
 
 test("manager 执行命令并收集 stdout/stderr/退出码", async () => {

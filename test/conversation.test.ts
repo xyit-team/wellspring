@@ -16,6 +16,7 @@ import {
     onAgentRunAsync,
     onAgentRunSync,
     onMessage,
+    onSessionStart,
 } from "../src/api/host/hooks.ts"
 import { Result } from "../src/api/result/result.ts"
 import { DEFAULT_SETTINGS } from "../src/config/defaults.ts"
@@ -161,7 +162,11 @@ test("executeTurn 写入会话与流式 chunk", async () => {
     assert.equal(result.getData()?.reply, "hello")
     assert.equal(result.getData()?.turn, 1)
     assert.equal(result.getData()?.steps, 1)
-    assert.deepEqual(result.getData()?.usage, { inputTokens: 2, outputTokens: 2 })
+    assert.deepEqual(result.getData()?.usage, {
+        inputTokens: 2,
+        outputTokens: 2,
+        contextTokens: 2,
+    })
 
     const reopened = await store.open("conv-1", cwd)
     assert.deepEqual(
@@ -200,6 +205,168 @@ test("executeTurn 写入会话与流式 chunk", async () => {
         secondRequest.messages?.map((message) => message.role),
         ["user", "assistant", "user"],
     )
+})
+
+test("用量记录缓存命中与上下文占用", async () => {
+    const cacheUsage = {
+        id: "chatcmpl_1",
+        object: "chat.completion.chunk",
+        created: 0,
+        model: "test-model",
+        choices: [],
+        usage: {
+            prompt_tokens: 100,
+            completion_tokens: 5,
+            total_tokens: 105,
+            prompt_cache_hit_tokens: 80,
+            prompt_cache_miss_tokens: 20,
+        },
+    }
+    const client = createClient(
+        async () =>
+            new Response(
+                `${[chunk({ content: "hi" }), chunk({}, "stop"), cacheUsage]
+                    .map((part) => `data: ${JSON.stringify(part)}\n\n`)
+                    .join("")}data: [DONE]\n\n`,
+                { status: 200, headers: { "content-type": "text/event-stream" } },
+            ),
+    )
+    const ctx = context(client)
+    const store = new SessionStore(join(root, "sessions"))
+    const session = await store.create({ cwd, model: "test-model", id: "conv-usage-cache" })
+
+    const result = await executeTurn({
+        ctx,
+        client,
+        store,
+        session,
+        mode: "chat",
+        input: "hi",
+        model: "test-model",
+        stream: false,
+        display: false,
+    })
+
+    assert.equal(result.isSuccess(), true)
+    assert.deepEqual(result.getData()?.usage, {
+        inputTokens: 100,
+        outputTokens: 5,
+        cacheReadTokens: 80,
+        contextTokens: 100,
+    })
+
+    const reopened = await store.open("conv-usage-cache", cwd)
+    const assistant = reopened.events.find((event) => event.type === "assistant/message")
+    assert.ok(assistant !== undefined)
+    assert.deepEqual(assistant.data["usage"], {
+        inputTokens: 100,
+        outputTokens: 5,
+        cacheReadTokens: 80,
+        contextTokens: 100,
+    })
+})
+
+test("多步轮次汇总缓存命中，上下文取最后一步", { timeout: 20_000 }, async () => {
+    let callCount = 0
+    const toolCallArgs = JSON.stringify({
+        command: process.execPath,
+        argv: ["-e", "console.log('ok')"],
+    })
+    const stepUsage = (inputTokens: number, cacheReadTokens: number, completionTokens: number) => ({
+        id: "chatcmpl_1",
+        object: "chat.completion.chunk",
+        created: 0,
+        model: "test-model",
+        choices: [],
+        usage: {
+            prompt_tokens: inputTokens,
+            completion_tokens: completionTokens,
+            total_tokens: inputTokens + completionTokens,
+            prompt_cache_hit_tokens: cacheReadTokens,
+        },
+    })
+    const fetchImpl: NonNullable<CreateOpenAIClientOptions["fetch"]> = async () => {
+        callCount += 1
+        if (callCount === 1) {
+            return sse([
+                {
+                    id: "chatcmpl_1",
+                    object: "chat.completion.chunk",
+                    created: 0,
+                    model: "test-model",
+                    choices: [
+                        {
+                            index: 0,
+                            delta: {
+                                tool_calls: [
+                                    {
+                                        index: 0,
+                                        id: "call_1",
+                                        type: "function",
+                                        function: { name: "execute_code", arguments: toolCallArgs },
+                                    },
+                                ],
+                            },
+                            finish_reason: null,
+                        },
+                    ],
+                },
+                chunk({}, "tool_calls"),
+                stepUsage(100, 80, 5),
+            ])
+        }
+        return sse([chunk({ content: "最终回答" }), chunk({}, "stop"), stepUsage(160, 128, 7)])
+    }
+
+    const client = createClient(fetchImpl)
+    const settings = {
+        ...DEFAULT_SETTINGS,
+        sandbox: { ...DEFAULT_SETTINGS.sandbox, mode: "best-effort" as const },
+    }
+    const ctx = context(client, settings)
+    const store = new SessionStore(join(root, "sessions"))
+    const session = await store.create({ cwd, model: "test-model", id: "conv-agent-usage" })
+    ctx.agentTools.register("test", {
+        name: "execute_code",
+        introduction: { params: { command: "命令" }, content: "执行" },
+        call: async () => ({ success: true, data: { content: "exitCode: 0" } }),
+    })
+
+    const result = await executeTurn({
+        ctx,
+        client,
+        store,
+        session,
+        mode: "run",
+        input: "执行",
+        model: "test-model",
+        stream: false,
+        display: false,
+        allowExec: true,
+    })
+    assert.equal(result.isSuccess(), true)
+    assert.deepEqual(result.getData()?.usage, {
+        inputTokens: 260,
+        outputTokens: 12,
+        cacheReadTokens: 208,
+        contextTokens: 160,
+    })
+
+    const reopened = await store.open("conv-agent-usage", cwd)
+    const messages = reopened.events.filter((event) => event.type === "assistant/message")
+    assert.equal(messages.length, 2)
+    assert.deepEqual(messages[0]?.data["usage"], {
+        inputTokens: 100,
+        outputTokens: 5,
+        cacheReadTokens: 80,
+        contextTokens: 100,
+    })
+    assert.deepEqual(messages[1]?.data["usage"], {
+        inputTokens: 160,
+        outputTokens: 7,
+        cacheReadTokens: 128,
+        contextTokens: 160,
+    })
 })
 
 test("对话生命周期触发 before/after 钩子", async () => {
@@ -263,6 +430,94 @@ test("对话生命周期触发 before/after 钩子", async () => {
         for (const unregister of unregisters) {
             unregister()
         }
+    }
+})
+
+test("onSessionStart：只在会话第一轮触发并注入 system prompt", async () => {
+    const requests: unknown[] = []
+    const client = createClient(successFetch(requests))
+    const ctx = context(client)
+    const store = new SessionStore(join(root, "sessions"))
+    const session = await store.create({ cwd, model: "test-model", id: "conv-session-start" })
+
+    const turns: number[] = []
+    const off = onSessionStart(({ turn, prompt }) => {
+        turns.push(turn)
+        prompt.push("first-turn-rule")
+    })
+    try {
+        const first = await executeTurn({
+            ctx,
+            client,
+            store,
+            session,
+            mode: "chat",
+            input: "hi",
+            model: "test-model",
+            stream: false,
+            display: false,
+        })
+        assert.equal(first.isSuccess(), true)
+        const second = await executeTurn({
+            ctx,
+            client,
+            store,
+            session,
+            mode: "chat",
+            input: "again",
+            model: "test-model",
+            stream: false,
+            display: false,
+        })
+        assert.equal(second.isSuccess(), true)
+
+        assert.deepEqual(turns, [1], "第二轮的 turn=2 不再触发")
+        const firstRequest = requests[0] as {
+            messages?: Array<{ role: string; content: string }>
+        }
+        assert.deepEqual(firstRequest.messages?.[0], {
+            role: "system",
+            content: "first-turn-rule",
+        })
+        const secondRequest = requests[1] as {
+            messages?: Array<{ role: string; content: string }>
+        }
+        assert.equal(secondRequest.messages?.[0]?.role, "user", "第二轮没有注入 system")
+    } finally {
+        off()
+    }
+})
+
+test("onSessionStart：run 模式的第一轮也触发", async () => {
+    const requests: unknown[] = []
+    const client = createClient(successFetch(requests))
+    const ctx = context(client)
+    const store = new SessionStore(join(root, "sessions"))
+    const session = await store.create({ cwd, model: "test-model", id: "conv-session-start-run" })
+
+    const turns: number[] = []
+    const off = onSessionStart(({ mode, turn, prompt }) => {
+        turns.push(turn)
+        prompt.push(`run-rule:${mode}`)
+    })
+    try {
+        const result = await executeTurn({
+            ctx,
+            client,
+            store,
+            session,
+            mode: "run",
+            input: "do it",
+            model: "test-model",
+            stream: false,
+            display: false,
+        })
+        assert.equal(result.isSuccess(), true)
+        assert.deepEqual(turns, [1])
+        const request = requests[0] as { messages?: Array<{ role: string; content: string }> }
+        assert.deepEqual(request.messages?.[0], { role: "system", content: "run-rule:run" })
+    } finally {
+        off()
     }
 })
 

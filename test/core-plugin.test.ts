@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { after, before, test } from "node:test"
@@ -7,6 +7,7 @@ import { after, before, test } from "node:test"
 import pino from "pino"
 
 import { DEFAULT_SETTINGS } from "../src/config/defaults.ts"
+import { emitSessionStart } from "../src/api/host/hooks.ts"
 import type { ResolvedPaths } from "../src/platform/path.ts"
 import { DirectBackend } from "../src/sandbox/backends/direct.ts"
 import { AgentToolRegistry } from "../src/plugin/agent-tools.ts"
@@ -83,6 +84,35 @@ test("wellspring-core 注册全部 Agent 工具", { timeout: 20_000 }, async () 
         ],
     )
 
+    // onSessionStart：core 插件把运行环境与工具列表注入 system prompt
+    const prompt: string[] = []
+    await emitSessionStart({
+        sessionId: "core-session",
+        mode: "run",
+        turn: 1,
+        input: "hi",
+        cwd: process.cwd(),
+        time: Date.now(),
+        timeZone: "Asia/Shanghai",
+        model: "test-model",
+        permission: "workspace-write",
+        tools: [
+            { name: "read", description: "读取文件" },
+            { name: "ask", description: "向用户提问" },
+        ],
+        prompt,
+    })
+    assert.equal(prompt.length, 1)
+    const injected = prompt[0] ?? ""
+    assert.match(injected, /## 会话环境/)
+    assert.ok(injected.includes(`- 工作目录：${process.cwd()}`))
+    assert.match(injected, /- 模型：test-model/)
+    assert.match(injected, /- 沙箱权限：workspace-write/)
+    assert.match(injected, /Asia\/Shanghai/)
+    assert.match(injected, /## 可用工具/)
+    assert.match(injected, /- read：读取文件/)
+    assert.match(injected, /- ask：向用户提问/)
+
     const relative = ".tmp/core-read.txt"
     await mkdir(join(process.cwd(), ".tmp"), { recursive: true })
     await writeFile(join(process.cwd(), relative), "alpha\nbeta\n")
@@ -99,7 +129,8 @@ test("wellspring-core 注册全部 Agent 工具", { timeout: 20_000 }, async () 
     await writeFile(deleteFile, "删除我\n")
     const deleted = await deleteTool.tool.call({ path: ".tmp/core-delete.txt" })
     assert.equal(deleted.success, true)
-    assert.match(String(deleted.data["content"]), /已删除文件/)
+    assert.match(String(deleted.data["content"]), /已把文件移到回收站/)
+    assert.match(String(deleted.data["content"]), /core-delete\.txt/)
     assert.equal(
         await readFile(deleteFile, "utf8").then(
             () => true,
@@ -107,6 +138,24 @@ test("wellspring-core 注册全部 Agent 工具", { timeout: 20_000 }, async () 
         ),
         false,
     )
+    // 原文件进回收站：内容保留，meta.json 记录原路径
+    const trashRootDir = join(root, "data", "plugin-data", "wellspring-core", "trash")
+    const deletedTrash = String(deleted.data["trashPath"] ?? "")
+    assert.match(deletedTrash, /plugin-data[/\\]wellspring-core[/\\]trash[/\\]/)
+    assert.equal(deleted.data["trashRoot"], trashRootDir)
+    assert.deepEqual((await readdir(deletedTrash)).sort(), ["files", "meta.json"])
+    assert.equal(
+        await readFile(join(deletedTrash, "files", ".tmp", "core-delete.txt"), "utf8"),
+        "删除我\n",
+    )
+    const deletedMeta = JSON.parse(await readFile(join(deletedTrash, "meta.json"), "utf8")) as {
+        path: string
+        type: string
+        files: number
+    }
+    assert.equal(deletedMeta.path, ".tmp/core-delete.txt")
+    assert.equal(deletedMeta.type, "file")
+    assert.equal(deletedMeta.files, 1)
 
     const nestedDir = join(process.cwd(), ".tmp", "core-delete-dir")
     await mkdir(nestedDir, { recursive: true })
@@ -119,12 +168,19 @@ test("wellspring-core 注册全部 Agent 工具", { timeout: 20_000 }, async () 
         recursive: true,
     })
     assert.equal(removedDir.success, true)
+    assert.match(String(removedDir.data["content"]), /已把目录移到回收站/)
     assert.equal(
         await readFile(nestedDir, "utf8").then(
             () => true,
             () => false,
         ),
         false,
+    )
+    // 目录整棵进回收站
+    const dirTrash = String(removedDir.data["trashPath"] ?? "")
+    assert.equal(
+        await readFile(join(dirTrash, "files", ".tmp", "core-delete-dir", "nested.txt"), "utf8"),
+        "x",
     )
 
     const missingDelete = await deleteTool.tool.call({ path: ".tmp/no-such-file" })
@@ -141,6 +197,7 @@ test("wellspring-core 注册全部 Agent 工具", { timeout: 20_000 }, async () 
     })
     const guardFile = join(process.cwd(), ".tmp", "core-delete-guard.txt")
     await writeFile(guardFile, "keep")
+    const trashBeforeGuard = await readdir(trashRootDir)
     await assert.rejects(
         () =>
             withAgentToolContext(
@@ -164,6 +221,7 @@ test("wellspring-core 注册全部 Agent 工具", { timeout: 20_000 }, async () 
         ),
         true,
     )
+    assert.deepEqual(await readdir(trashRootDir), trashBeforeGuard)
 
     const missing = await agentTools.get("query_task")?.tool.call({ task_id: "nope" })
     assert.equal(missing?.success, false)
@@ -271,8 +329,8 @@ test("wellspring-core 注册全部 Agent 工具", { timeout: 20_000 }, async () 
         },
         async () =>
             await execute.tool.call({
-                command: process.execPath,
-                argv: ["-e", "console.log('core')"],
+                command: "/bin/sh",
+                argv: ["-c", "echo core"],
                 sandbox_permissions: "workspace-write",
                 network: false,
                 background: false,
@@ -293,8 +351,8 @@ test("wellspring-core 注册全部 Agent 工具", { timeout: 20_000 }, async () 
         },
         async () =>
             await execute.tool.call({
-                command: process.execPath,
-                argv: ["-e", "setTimeout(() => {}, 60_000)"],
+                command: "/bin/sleep",
+                argv: ["60"],
                 background: true,
             }),
     )
@@ -343,8 +401,8 @@ test("宿主 capabilities 在 Agent 上下文中执行代码", { timeout: 20_000
         },
         async () =>
             await capabilities.executeCode({
-                command: process.execPath,
-                argv: ["-e", "console.log('cap')"],
+                command: "/bin/sh",
+                argv: ["-c", "echo cap"],
             }),
     )
     assert.equal(executeResult.exitCode, 0)
@@ -377,8 +435,8 @@ test("后台任务查询与停止", { timeout: 20_000 }, async () => {
         },
         async () =>
             await capabilities.startBackgroundCode({
-                command: process.execPath,
-                argv: ["-e", "setTimeout(() => {}, 60_000)"],
+                command: "/bin/sleep",
+                argv: ["60"],
             }),
     )
     const running = capabilities.queryTask(task.taskId)
@@ -422,10 +480,13 @@ test("capabilities 接受更宽 access", { timeout: 20_000 }, async () => {
         },
         async () =>
             await capabilities.executeCode({
-                command: process.execPath,
-                argv: ["-e", "console.log('write')"],
+                command: "/bin/sh",
+                argv: ["-c", "echo write"],
                 access: "workspace-write",
                 justification: "构建产物需要写入工作区",
+                network: true,
+                stdin: "y\n",
+                timeoutMs: 5000,
             }),
     )
     assert.equal(executeResult.access, "workspace-write")
@@ -433,4 +494,15 @@ test("capabilities 接受更宽 access", { timeout: 20_000 }, async () => {
     assert.equal(approvalRequest?.["justification"], "构建产物需要写入工作区")
     assert.equal(approvalRequest?.["currentPermission"], "read-only")
     assert.equal(approvalRequest?.["requestedPermission"], "workspace-write")
+    /*
+     * 审批界面要展示参数，所以这些字段必须一路透传到插件：
+     * argv 是真正危险的部分（command 只是可执行文件名），
+     * 网络、标准输入、超时则决定这次调用还能做什么。
+     */
+    assert.deepEqual(approvalRequest?.["argv"], ["-c", "echo write"])
+    assert.equal(approvalRequest?.["network"], true)
+    assert.equal(approvalRequest?.["stdin"], "y\n")
+    assert.equal(approvalRequest?.["timeoutMs"], 5000)
+    // executeCode 是前台执行，不该带 background 标记
+    assert.equal(approvalRequest?.["background"], undefined)
 })

@@ -6,7 +6,7 @@ import { toolArgs, toolLabel, toolSummary } from "../src/display/tool-label.ts"
 test("工具中文名：与网页工具行一致", () => {
     assert.equal(toolLabel("execute_code"), "执行命令")
     assert.equal(toolLabel("read"), "读取文件")
-    assert.equal(toolLabel("delete_file"), "删除文件")
+    assert.equal(toolLabel("delete_file"), "移入回收站")
     assert.equal(toolLabel("web_search"), "搜索网页")
     assert.equal(toolLabel("web_fetch"), "抓取网页")
     assert.equal(toolLabel("query_task"), "查询任务")

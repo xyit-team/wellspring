@@ -15,12 +15,16 @@ import { DEFAULT_SETTINGS } from "../src/config/defaults.ts"
 import { initElog, type ElogStream } from "../src/logger/elog4js.ts"
 import { withConsoleGuard } from "../src/plugin/console-guard.ts"
 import { installPlugin } from "../src/plugin/install.ts"
-import { loadPlugins as loadPluginsCore, type LoadPluginsOptions } from "../src/plugin/loader.ts"
+import {
+    getPluginRuntime,
+    loadPlugins as loadPluginsCore,
+    type LoadPluginsOptions,
+} from "../src/plugin/loader.ts"
 import { DirectBackend } from "../src/sandbox/backends/direct.ts"
 import { createPluginFileApi } from "../src/plugin/fs.ts"
 import { AgentToolRegistry } from "../src/plugin/agent-tools.ts"
 import { PluginRegistry } from "../src/plugin/registry.ts"
-import { setPluginEnabled } from "../src/plugin/state.ts"
+import { readPluginState, setPluginEnabled } from "../src/plugin/state.ts"
 import { scaffoldPlugin } from "../src/plugin/scaffold.ts"
 import { resolve } from "node:path"
 import type { ResolvedPaths } from "../src/platform/path.ts"
@@ -400,9 +404,43 @@ test("plugin new 生成的模板可安装、可加载、可触发顶层钩子", 
     assert.match(prompt.join("\n"), /Wellspring 里的助手/)
 })
 
-test("仓库官方示例插件可安装并加载", async () => {
+test("示例插件可安装并加载", async () => {
     const dataDir = join(root, "example-data")
-    const example = resolve(import.meta.dirname, "../plugins/hello-plugin")
+    const example = join(root, "example-source", "hello-plugin")
+    await mkdir(example, { recursive: true })
+    await writeFile(
+        join(example, "package.json"),
+        JSON.stringify({
+            name: "hello-plugin",
+            version: "0.1.0",
+            type: "module",
+            main: "index.ts",
+            wellspring: { apiVersion: 1 },
+        }),
+    )
+    await writeFile(
+        join(example, "index.ts"),
+        [
+            "export function setup() {",
+            "    return {",
+            '        id: "hello-plugin",',
+            '        name: "Hello Plugin",',
+            '        version: "0.1.0",',
+            '        status: "ok",',
+            "        commands: [",
+            "            {",
+            '                name: "hello",',
+            '                summary: "示例命令",',
+            "                run: (ctx) => {",
+            '                    ctx.output.info("hello")',
+            "                    return 0",
+            "                },",
+            "            },",
+            "        ],",
+            "    }",
+            "}",
+        ].join("\n"),
+    )
     const installed = await installPlugin(example, tempPaths(dataDir))
     assert.equal(installed.id, "hello-plugin")
 
@@ -776,4 +814,223 @@ test("插件 Agent 工具重名时后加载插件失败", async () => {
     assert.equal(plugins.filter((plugin) => plugin.status === "failed").length, 1)
     assert.equal(agentTools.list().length, 1)
     await rm(dataDir, { recursive: true, force: true })
+})
+
+/* ── 热启用 / 热禁用 ─────────────────────────────────────── */
+
+async function writeSourcePlugin(dataDir: string, dirName: string, source: string): Promise<void> {
+    const pluginDir = join(dataDir, "plugins", dirName)
+    await mkdir(pluginDir, { recursive: true })
+    await writeFile(
+        join(pluginDir, "package.json"),
+        JSON.stringify({
+            name: dirName,
+            version: "1.0.0",
+            type: "module",
+            main: "index.ts",
+            wellspring: { apiVersion: 1 },
+        }),
+    )
+    await writeFile(join(pluginDir, "index.ts"), source)
+}
+
+test("热禁用/热启用：命令注册与宿主状态即时更新", async () => {
+    const dataDir = join(root, "hot-data-basic")
+    await writePlugin(dataDir, "demo-plugin")
+    const paths = tempPaths(dataDir)
+    const registry = new PluginRegistry()
+    const { logger } = fakeLogger()
+    await loadPlugins({ paths, config: DEFAULT_SETTINGS, logger, registry })
+
+    const runtime = getPluginRuntime(paths)
+    assert.notEqual(runtime, null)
+    assert.ok(registry.resolve("hello") !== undefined)
+
+    const disabled = await runtime!.hotDisable("demo-plugin")
+    assert.equal(disabled.ok, true)
+    assert.equal(disabled.changed, true)
+    assert.equal(registry.resolve("hello"), undefined)
+    assert.equal(
+        getHost()
+            .getPlugins()
+            .find((plugin) => plugin.id === "demo-plugin")
+            ?.getStatus(),
+        "disabled",
+    )
+    assert.ok((await readPluginState(paths)).has("demo-plugin"))
+
+    const enabled = await runtime!.hotEnable("demo-plugin")
+    assert.equal(enabled.ok, true)
+    assert.equal(enabled.changed, true)
+    assert.ok(registry.resolve("hello") !== undefined)
+    assert.equal(
+        getHost()
+            .getPlugins()
+            .find((plugin) => plugin.id === "demo-plugin")
+            ?.getStatus(),
+        "ok",
+    )
+    assert.equal((await readPluginState(paths)).has("demo-plugin"), false)
+})
+
+test("热禁用：被依赖时拒绝，并返回依赖方", async () => {
+    const dataDir = join(root, "hot-data-deps")
+    await writePlugin(dataDir, "demo-plugin")
+    await writeSourcePlugin(
+        dataDir,
+        "dep-plugin",
+        [
+            "export function setup() {",
+            "    return {",
+            '        id: "dep-plugin",',
+            '        name: "Dep Plugin",',
+            '        version: "1.0.0",',
+            '        status: "ok",',
+            '        deps: ["demo-plugin"],',
+            '        commands: [{ name: "dep-cmd", summary: "dep", run: () => 0 }],',
+            "    }",
+            "}",
+        ].join("\n"),
+    )
+    const paths = tempPaths(dataDir)
+    const registry = new PluginRegistry()
+    const { logger } = fakeLogger()
+    await loadPlugins({ paths, config: DEFAULT_SETTINGS, logger, registry })
+
+    const runtime = getPluginRuntime(paths)
+    const blocked = await runtime!.hotDisable("demo-plugin")
+    assert.equal(blocked.ok, false)
+    assert.deepEqual(blocked.dependents, ["dep-plugin"])
+    assert.match(blocked.error ?? "", /被依赖/)
+
+    const depDisabled = await runtime!.hotDisable("dep-plugin")
+    assert.equal(depDisabled.ok, true)
+    const demoDisabled = await runtime!.hotDisable("demo-plugin")
+    assert.equal(demoDisabled.ok, true)
+})
+
+test("热禁用：wellspring-web 被拒绝，只能走重启流程", async () => {
+    const dataDir = join(root, "hot-data-web")
+    await writeSourcePlugin(
+        dataDir,
+        "web-plugin",
+        [
+            "export function setup() {",
+            "    return {",
+            '        id: "wellspring-web",',
+            '        name: "Wellspring Web",',
+            '        version: "1.0.0",',
+            '        status: "ok",',
+            "        deps: [],",
+            '        commands: [{ name: "web-cmd", summary: "web", run: () => 0 }],',
+            "    }",
+            "}",
+        ].join("\n"),
+    )
+    const paths = tempPaths(dataDir)
+    const registry = new PluginRegistry()
+    const { logger } = fakeLogger()
+    await loadPlugins({ paths, config: DEFAULT_SETTINGS, logger, registry })
+
+    const runtime = getPluginRuntime(paths)
+    const result = await runtime!.hotDisable("wellspring-web")
+    assert.equal(result.ok, false)
+    assert.match(result.error ?? "", /不支持热禁用/)
+})
+
+test("热启用：触发该插件的 init 钩子", async () => {
+    const dataDir = join(root, "hot-data-hook")
+    await writeSourcePlugin(
+        dataDir,
+        "hook-plugin",
+        [
+            'import { onInit } from "wellspring/api/host/index.ts"',
+            "let api",
+            "export function setup() {",
+            "    return {",
+            '        id: "hook-plugin",',
+            '        name: "Hook Plugin",',
+            '        version: "1.0.0",',
+            '        status: "ok",',
+            "        deps: [],",
+            '        commands: [{ name: "hook-cmd", summary: "hook", run: () => 0 }],',
+            "        init(value) { api = value },",
+            "    }",
+            "}",
+            'onInit(async () => { await api.fs.writeText("init-hook.txt", "ok") })',
+        ].join("\n"),
+    )
+    const paths = tempPaths(dataDir)
+    const registry = new PluginRegistry()
+    const { logger } = fakeLogger()
+    await loadPlugins({ paths, config: DEFAULT_SETTINGS, logger, registry })
+
+    // 冷加载由 start 命令统一触发 init 钩子；测试里没触发
+    const hookFile = join(dataDir, "plugin-data", "hook-plugin", "init-hook.txt")
+    await assert.rejects(async () => await readFile(hookFile, "utf8"))
+
+    const runtime = getPluginRuntime(paths)
+    assert.equal((await runtime!.hotDisable("hook-plugin")).ok, true)
+    const enabled = await runtime!.hotEnable("hook-plugin")
+    assert.equal(enabled.ok, true)
+    assert.equal(await readFile(hookFile, "utf8"), "ok")
+})
+
+test("热启用：init 阶段就能读取依赖插件的数据", async () => {
+    const dataDir = join(root, "hot-data-depdata")
+    const depData = join(dataDir, "plugin-data", "dep-plugin")
+    await mkdir(depData, { recursive: true })
+    await writeFile(join(depData, "data.txt"), "hello-dep", "utf8")
+    await writeSourcePlugin(
+        dataDir,
+        "dep-plugin",
+        [
+            "export function setup() {",
+            "    return {",
+            '        id: "dep-plugin",',
+            '        name: "Dep Plugin",',
+            '        version: "1.0.0",',
+            '        status: "ok",',
+            "        deps: [],",
+            '        commands: [{ name: "dep-cmd", summary: "dep", run: () => 0 }],',
+            "    }",
+            "}",
+        ].join("\n"),
+    )
+    await writeSourcePlugin(
+        dataDir,
+        "dep-reader",
+        [
+            "let api",
+            "export function setup() {",
+            "    return {",
+            '        id: "dep-reader",',
+            '        name: "Dep Reader",',
+            '        version: "1.0.0",',
+            '        status: "ok",',
+            '        deps: ["dep-plugin"],',
+            "        init: async (value) => {",
+            "            api = value",
+            '            const fs = await api.pluginData("dep-plugin")',
+            '            const text = fs === null ? "null" : await fs.readText("data.txt")',
+            '            await api.fs.writeText("seen.txt", text)',
+            "        },",
+            "    }",
+            "}",
+        ].join("\n"),
+    )
+    const paths = tempPaths(dataDir)
+    const registry = new PluginRegistry()
+    const { logger } = fakeLogger()
+    await loadPlugins({ paths, config: DEFAULT_SETTINGS, logger, registry })
+
+    const seenFile = join(dataDir, "plugin-data", "dep-reader", "seen.txt")
+    assert.equal(await readFile(seenFile, "utf8"), "hello-dep")
+
+    await rm(seenFile)
+    const runtime = getPluginRuntime(paths)
+    assert.equal((await runtime!.hotDisable("dep-reader")).ok, true)
+    const enabled = await runtime!.hotEnable("dep-reader")
+    assert.equal(enabled.ok, true)
+    assert.equal(await readFile(seenFile, "utf8"), "hello-dep")
 })

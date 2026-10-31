@@ -22,3 +22,10 @@ test("plugin-host 的 agent.stream 使用无上限策略", async () => {
     )
     assert.doesNotMatch(source, /"host\.agent\.stream"[^)]*180_000/)
 })
+
+test("execute_code 的 RPC 超时覆盖沙箱命令的最长时限", async () => {
+    // 沙箱 timeoutMs 上限 600s：RPC 必须更长，否则长命令会先报「host RPC 超时」
+    assert.ok(RPC_TIMEOUT_MS.sandboxExec > 600_000)
+    const source = await readFile(join(projectRoot, "src", "sandbox", "plugin-host.ts"), "utf8")
+    assert.match(source, /"host\.capabilities\.executeCode",[\s\S]*?RPC_TIMEOUT_MS\.sandboxExec/)
+})

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { startHttpHostPlugin } from "./helpers/http-host.ts"
 import { existsSync, readFileSync } from "node:fs"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -72,6 +73,7 @@ async function startPlugin(config: Record<string, unknown> = { port: 0 }): Promi
     }
     initElog({ stdout: output, stderr: output, color: false, json: false })
     configureHost({ paths: paths(), os: { cwd: workspace } })
+    await startHttpHostPlugin(paths())
     const nextClient = new PluginSandboxClient({
         pluginId: "wellspring-code",
         pluginName: "Wellspring Code",
@@ -85,7 +87,7 @@ async function startPlugin(config: Record<string, unknown> = { port: 0 }): Promi
         limits: { timeoutMs: 15_000, memoryMB: 256, pids: 32, outputLimitBytes: 16_384 },
         logger: pino({ level: "silent" }),
         permissions: {
-            hostApi: ["logger", "fs", "http", "event", "getHost", "exec", "pty"],
+            hostApi: ["logger", "fs", "http", "event", "getHost", "exec", "pty", "workspaces"],
             workspaceRead: true,
             workspaceWrite: true,
         },
@@ -116,27 +118,18 @@ before(async () => {
     await writeFile(join(subWorkspace, "hello.md"), "# 子工作区\n")
     await writeFile(join(subWorkspace, "src", "nested.ts"), "export const nested = 1\n")
 
-    // wellspring-web 的工作区索引：主工作区、子工作区与一个当前实例访问不到的路径
-    const webDataDir = join(paths().dataDir, "plugin-data", "wellspring-web")
-    await mkdir(webDataDir, { recursive: true })
+    // 宿主工作区注册表：主工作区、子工作区与一个当前实例访问不到的路径
+    await mkdir(paths().dataDir, { recursive: true })
     await writeFile(
-        join(webDataDir, "workspaces.json"),
+        join(paths().dataDir, "workspaces.json"),
         JSON.stringify({
-            v: 2,
+            v: 1,
             workspaces: [
-                {
-                    id: "ws-main",
-                    name: "主工作区",
-                    root: workspace,
-                    conversationCount: 3,
-                    createdAt: 1,
-                    lastSeenAt: 10,
-                },
+                { id: "ws-main", name: "主工作区", root: workspace, createdAt: 1, lastSeenAt: 10 },
                 {
                     id: "ws-sub",
                     name: "子工作区",
                     root: subWorkspace,
-                    conversationCount: 1,
                     createdAt: 1,
                     lastSeenAt: 20,
                 },
@@ -144,7 +137,6 @@ before(async () => {
                     id: "ws-outside",
                     name: "外部工作区",
                     root: "/etc",
-                    conversationCount: 0,
                     createdAt: 1,
                     lastSeenAt: 30,
                 },
@@ -194,16 +186,42 @@ test("页面与静态资源：严格 CSP、ETag 与无内联脚本", async () =>
     // 终端高度拖拽条
     assert.match(html, /id="terminal-resizer"/)
     assert.match(html, /role="separator" aria-orientation="horizontal"/)
+    // 差异比较窗口
+    assert.match(html, /id="diff-view"/)
+    assert.match(html, /id="diff-view-body"/)
+    assert.match(html, /id="diff-close"/)
+    assert.match(html, /id="diff-open-file"/)
+    // 暂存按钮；正常状态不显示说明文案
+    assert.match(html, /id="scm-hint" hidden/)
+    assert.match(html, /id="scm-stage-all"/)
+    assert.match(html, /id="scm-unstage-all"/)
+    // 只读 Git 面板
+    assert.match(html, /id="scm-badge"/)
+    assert.match(html, /id="btn-refresh-scm"/)
+    assert.match(html, /id="scm-groups"/)
+    assert.match(html, /data-view="scm"/)
     // 默认未设密码：直接进应用，设置里有访问密码面板
     assert.match(html, /data-auth-state="none"/)
     assert.match(html, /data-auth-configured="false"/)
     assert.match(html, /id="password-save"/)
     assert.match(html, /id="password-current"/)
+    // 查找替换：Ctrl+H 展开替换行
+    assert.match(html, /id="find-replace-row"/)
+    assert.match(html, /id="replace-input"/)
+    assert.match(html, /id="replace-one"/)
+    assert.match(html, /id="replace-all"/)
+    assert.match(html, /id="find-toggle-replace"/)
     // 自动补全浮层：listbox 挂在代码视图里，textarea 通过 aria 关联
     assert.match(html, /id="autocomplete"/)
     assert.match(html, /id="autocomplete-list"/)
     assert.match(html, /aria-controls="autocomplete"/)
     assert.match(html, /aria-autocomplete="list"/)
+    // 语法诊断：活动栏入口、侧栏问题面板、状态栏计数
+    assert.match(html, /data-view="problems"/)
+    assert.match(html, /id="problems-list"/)
+    assert.match(html, /id="problems-badge"/)
+    assert.match(html, /id="status-diagnostics"/)
+    assert.match(html, /id="diagnostics-count"/)
     // 移动端：软键盘由隐藏 textarea 承接，视口高度交给 visualViewport
     assert.match(html, /id="terminal-capture"/)
     assert.match(html, /interactive-widget=resizes-content/)
@@ -242,6 +260,282 @@ test("高亮层与 textarea 共用同一套字体度量", () => {
     )
     assert.match(CLIENT_STYLES, /\.code-input \{[^}]*line-height: var\(--line-height\)/)
     assert.match(CLIENT_STYLES, /\.code-layer \{[^}]*line-height: var\(--line-height\)/)
+})
+
+test("镜像层与上色分开调度，按住退格时文字跟上按键", () => {
+    // textarea 是 color: transparent，可见文字来自 .code-layer；上色要全文分词，
+    // 只能按停顿合并。两者共用重置式计时器时，键盘重复会不停清掉计时器，
+    // 画面停在旧内容上直到松手
+    assert.match(EDITOR_JS, /function syncLayerText\(/)
+    assert.match(EDITOR_JS, /requestAnimationFrame\(function \(\) \{[\s\S]{0,220}syncLayerText\(\)/)
+    const schedule = EDITOR_JS.slice(
+        EDITOR_JS.indexOf("function scheduleHighlight"),
+        EDITOR_JS.indexOf("function syncScroll"),
+    )
+    assert.ok(schedule.includes("syncLayerText()"), "计时器之外要有每帧同步")
+    assert.ok(
+        schedule.indexOf("requestAnimationFrame") < schedule.indexOf("clearTimeout"),
+        "每帧同步不能被计时器重置影响",
+    )
+    assert.ok(
+        (EDITOR_JS.match(/clearTimeout\(highlightTimer\)/g) ?? []).length >= 1,
+        "上色计时器要能被重置与取消",
+    )
+})
+
+test("大文件高亮只渲染视口附近的行", () => {
+    // 整篇文档几十万字符时，DOM 里堆几万个 span 再换 innerHTML，浏览器要重排整篇文本
+    // （4000 行实测一次输入后要 1s 才能重新上色）。改成只渲染视口上下几百行。
+    assert.match(EDITOR_JS, /VIEWPORT_CONTEXT_LINES = 240/)
+    assert.match(EDITOR_JS, /VIEWPORT_BUFFER_LINES = 160/)
+    assert.match(EDITOR_JS, /LINE_VIEW_BUFFER = 120/)
+    assert.match(EDITOR_JS, /function highlightRange\(\) \{/)
+    assert.match(EDITOR_JS, /function renderSliceView\(\) \{[\s\S]{0,400}highlightRange\(\)/)
+    // 行范围按 lineStarts 切，末尾不带换行
+    assert.match(EDITOR_JS, /range\.starts\[range\.end\] - 1 : value\.length/)
+    // 层用 transform 平移到行首/行号位置（层自身没有 padding）
+    assert.match(EDITOR_JS, /paddingLeft\(\) - ta\.scrollLeft/)
+    assert.match(EDITOR_JS, /paddingTop\(\) \+ viewStart \* lineHeight - ta\.scrollTop/)
+    // 滚动时已经覆盖就不重渲染，只平移
+    assert.match(EDITOR_JS, /function viewCoversVisible\(\)/)
+    assert.match(EDITOR_JS, /if \(!viewCoversVisible\(\)\) scheduleViewportRender\(\)/)
+    // 全量分片渲染已经移除
+    assert.doesNotMatch(EDITOR_JS, /renderChunkedHighlight/)
+    assert.doesNotMatch(EDITOR_JS, /hl-rest/)
+    // 组合输入期间不再每帧重建镜像层 / 上色 / 缩略图
+    const schedule = EDITOR_JS.slice(
+        EDITOR_JS.indexOf("function scheduleHighlight"),
+        EDITOR_JS.indexOf("function syncScroll"),
+    )
+    assert.match(schedule, /if \(composing\) return/)
+    assert.match(EDITOR_JS, /function drawMinimap\(\) \{[\s\S]{0,80}composing/)
+    // 光标行列改用行索引二分，不再对大文件做整串切片
+    assert.match(EDITOR_JS, /var caret = lineColumnAt\(end\)/)
+})
+
+test("C 家族按行增量着色：只重算改动的行", () => {
+    // 行首状态 + 每行着色结果缓存；改一行只重分词一行、只更新这一行 DOM，
+    // 跨行结构变化（块注释/模板字符串）才沿行状态向后传播。
+    assert.match(HIGHLIGHT_JS, /function tokenizeCFamilyLine\(line, startState, language\)/)
+    assert.match(HIGHLIGHT_JS, /var LINE_STATE_BLOCK_COMMENT = 1/)
+    assert.match(HIGHLIGHT_JS, /var LINE_STATE_STRING = 2/)
+    assert.match(EDITOR_JS, /function incrementalLanguage\(language\)/)
+    assert.match(EDITOR_JS, /var lineCache = null/)
+    assert.match(EDITOR_JS, /function tokenizeCacheLine\(starts\)/)
+    assert.match(EDITOR_JS, /function applyLineCacheEdit\(diff, value, starts\)/)
+    // 普通输入：状态收敛后直接认定后续行还有效，只分词改动行
+    assert.match(
+        EDITOR_JS,
+        /info\.previousNextState === info\.state[\s\S]{0,80}cache\.tokenizedTo = cache\.lineCount/,
+    )
+    // 渲染用行元素，改行只改对应元素的 innerHTML
+    assert.match(EDITOR_JS, /node\.className = "view-line"/)
+    assert.match(EDITOR_JS, /function buildLineViewNodes\(start, end\)/)
+    assert.match(EDITOR_JS, /lineViewNodes\[line - start\]/)
+    assert.match(CLIENT_STYLES, /\.code-layer \.view-line \{[^}]*display: block/)
+    // 增量路径不需要「先铺纯文本再防抖上色」
+    assert.match(
+        EDITOR_JS,
+        /incrementalLanguage\(model === null \? "" : model\.language\)\) \{[\s\S]{0,620}requestAnimationFrame/,
+    )
+})
+
+test("C 家族行分词：分类与跨行状态", () => {
+    const helpers = new Function(
+        HIGHLIGHT_JS +
+            "\nreturn { tokenize: tokenizeCFamilyLine, code: LINE_STATE_CODE, block: LINE_STATE_BLOCK_COMMENT, string: LINE_STATE_STRING }",
+    )() as {
+        tokenize: (line: string, state: number, language: string) => { html: string; state: number }
+        code: number
+        block: number
+        string: number
+    }
+
+    const line = helpers.tokenize('const value = "abc" // note', helpers.code, "typescript")
+    assert.match(line.html, /tok-keyword">const/)
+    assert.match(line.html, /tok-variable">value/)
+    assert.match(line.html, /tok-string">&quot;abc&quot;/)
+    assert.match(line.html, /tok-comment">\/\/ note/)
+    assert.equal(line.state, helpers.code)
+
+    const call = helpers.tokenize("obj.run(0x1f) + 42.5", helpers.code, "typescript")
+    assert.match(call.html, /tok-variable">obj/)
+    assert.match(call.html, /tok-function">run/)
+    assert.match(call.html, /tok-number">0x1f/)
+    assert.match(call.html, /tok-number">42.5/)
+
+    // 块注释跨行：第二行整行是注释，第三行闭合后恢复正常分词
+    const first = helpers.tokenize("/* start", helpers.code, "typescript")
+    assert.equal(first.state, helpers.block)
+    assert.match(first.html, /tok-comment/)
+    const middle = helpers.tokenize("middle", helpers.block, "typescript")
+    assert.equal(middle.state, helpers.block)
+    assert.match(middle.html, /^<span class="tok-comment">middle<\/span>$/)
+    const last = helpers.tokenize("end */ const x = 1", helpers.block, "typescript")
+    assert.equal(last.state, helpers.code)
+    assert.match(last.html, /tok-comment">end \*\//)
+    assert.match(last.html, /tok-keyword">const/)
+
+    // 模板字符串跨行
+    const open = helpers.tokenize("const s = `abc", helpers.code, "typescript")
+    assert.equal(open.state, helpers.string)
+    const inside = helpers.tokenize("def", helpers.string, "typescript")
+    assert.equal(inside.state, helpers.string)
+    assert.match(inside.html, /^<span class="tok-string">def<\/span>$/)
+    const close = helpers.tokenize("ghi` + 1", helpers.string, "typescript")
+    assert.equal(close.state, helpers.code)
+    assert.match(close.html, /tok-string">ghi`/)
+    assert.match(close.html, /tok-number">1/)
+
+    // HTML 必须转义
+    const escaped = helpers.tokenize("a < b && c > d", helpers.code, "typescript")
+    assert.ok(
+        escaped.html.includes("&lt;") &&
+            escaped.html.includes("&gt;") &&
+            escaped.html.includes("&amp;"),
+    )
+})
+
+test("文本差异换算成需要重分词的行范围（纯函数）", () => {
+    const helpers = new Function(
+        HIGHLIGHT_JS +
+            EDITOR_JS +
+            "\nreturn { changedLineRange: changedLineRange, lineIndexOfOffset: lineIndexOfOffset }",
+    )() as {
+        changedLineRange: (
+            oldValue: string,
+            newValue: string,
+            oldLineCount: number,
+            newLineCount: number,
+        ) => { startLine: number; oldEndLine: number; newEndLine: number }
+        lineIndexOfOffset: (value: string, offset: number) => number
+    }
+    const base = "aaa\nbbb\nccc"
+    assert.deepEqual(helpers.changedLineRange(base, "aaa\nbbX\nccc", 3, 3), {
+        startLine: 1,
+        oldEndLine: 2,
+        newEndLine: 2,
+    })
+    // 行内插入字符
+    assert.deepEqual(helpers.changedLineRange(base, "aaa\nbbbb\nccc", 3, 3), {
+        startLine: 1,
+        oldEndLine: 2,
+        newEndLine: 2,
+    })
+    // 插入换行：影响两行
+    assert.deepEqual(helpers.changedLineRange(base, "aaa\nbb\nb\nccc", 3, 4), {
+        startLine: 1,
+        oldEndLine: 2,
+        newEndLine: 3,
+    })
+    // 删除一整行：换算时可能多带一行（多重算一行无害，少算才会留下旧颜色）
+    assert.deepEqual(helpers.changedLineRange(base, "aaa\nccc", 3, 2), {
+        startLine: 1,
+        oldEndLine: 3,
+        newEndLine: 2,
+    })
+    // 文件末尾追加
+    assert.deepEqual(helpers.changedLineRange(base, base + "\nddd", 3, 4), {
+        startLine: 2,
+        oldEndLine: 3,
+        newEndLine: 4,
+    })
+    assert.equal(helpers.lineIndexOfOffset(base, 0), 0)
+    assert.equal(helpers.lineIndexOfOffset(base, 4), 1)
+    assert.equal(helpers.lineIndexOfOffset(base, base.length), 2)
+})
+
+test("中文组合输入快路径", () => {
+    assert.match(EDITOR_JS, /var imeFastPathDisabled = false/)
+    assert.match(EDITOR_JS, /function beginComposition\(\) \{[\s\S]{0,400}isLargeDocument\(value\)/)
+    assert.match(EDITOR_JS, /document\.execCommand\("insertText", false, inserted\)/)
+})
+
+test("中文组合输入：大文件把 textarea 缩成光标行", () => {
+    // 原生 textarea 装几千行时，Chromium 每次 IME 组合更新都要重排整篇文本，
+    // 光标越靠文档后段越慢（4000 行可到秒级）。这里照 VS Code 的思路：
+    // 组合期间 textarea 只装光标所在行，贴到该行位置，正文继续由高亮层显示。
+    assert.match(EDITOR_JS, /var IME_CONTEXT_CHARS = 240/)
+    assert.match(EDITOR_JS, /var IME_TRAILING_CHARS = 1200/)
+    assert.match(EDITOR_JS, /function beginComposition\(\) \{[\s\S]{0,400}isLargeDocument\(value\)/)
+    assert.match(
+        EDITOR_JS,
+        /function positionComposition\(\) \{[\s\S]{0,1400}ta\.style\.height = lineHeight \+ "px"/,
+    )
+    // 组合期间读正文都走 composition.full，不能把单行 textarea 当全文
+    assert.match(EDITOR_JS, /function documentText\(\) \{[\s\S]{0,140}composition\.full/)
+    assert.match(EDITOR_JS, /function getValue\(\) \{\s*return compositionDocument\(\)/)
+    const inputHandler = EDITOR_JS.slice(
+        EDITOR_JS.indexOf('ta.addEventListener("input"'),
+        EDITOR_JS.indexOf('ta.addEventListener("click"'),
+    )
+    assert.match(inputHandler, /if \(composing\)[\s\S]{0,320}compositionDocument\(\)/)
+    // 组合结束还原全文，并把这次输入作为一次可撤销的插入重放（value 赋值会清空原生撤销栈）
+    assert.match(EDITOR_JS, /document\.execCommand\("insertText", false, inserted\)/)
+    // 小文件 / 只读 / 带选区退回原来的原生行为
+    assert.match(EDITOR_JS, /compositionstart[\s\S]{0,500}layer\.classList\.add\("is-hidden"\)/)
+    // 输入法拒绝「组合期间换 value」时连续两次失败就永久退回原生路径
+    assert.match(EDITOR_JS, /var imeFastPathDisabled = false/)
+    assert.match(EDITOR_JS, /if \(imeFastPathDisabled\) return false/)
+    assert.match(EDITOR_JS, /imeFastPathFailures >= 2\) imeFastPathDisabled = true/)
+    // 高亮层里的当前行用同底色遮罩盖掉，避免和单行 textarea 重字
+    assert.match(CLIENT_STYLES, /\.ime-line-cover \{[^}]*background: var\(--bg-editor\)/)
+    assert.match(CLIENT_STYLES, /\.code-view\.is-ime-composing \.code-input \{[^}]*z-index: 4/)
+    // 保存、记忆浏览位置必须读编辑器全文，而不是组合期间的单行 textarea
+    assert.match(CLIENT_SCRIPT, /function editorContent\(\)/)
+    assert.match(CLIENT_SCRIPT, /app\.active\.content = editorContent\(\)/)
+})
+
+test("组合输入正文重组（纯函数）", () => {
+    const helpers = new Function(
+        HIGHLIGHT_JS +
+            EDITOR_JS +
+            "\nreturn { composeDocument: composeDocument, composedInsertedText: composedInsertedText }",
+    )() as {
+        composeDocument: (
+            full: string,
+            lineStart: number,
+            lineEnd: number,
+            windowStart: number,
+            windowEnd: number,
+            windowText: string,
+        ) => string
+        composedInsertedText: (
+            windowText: string,
+            caretInWindow: number,
+            committedEnd: number,
+        ) => string
+    }
+
+    const full = "const a = 1\nconst b = 2\nconst c = 3"
+    const lineStart = full.indexOf("const b")
+    const lineEnd = full.indexOf("\n", lineStart)
+    assert.equal(
+        helpers.composeDocument(full, lineStart, lineEnd, lineStart, lineEnd, "const b = 22"),
+        "const a = 1\nconst b = 22\nconst c = 3",
+    )
+    // 最后一行没有换行
+    const lastStart = full.lastIndexOf("const c")
+    assert.equal(
+        helpers.composeDocument(
+            full,
+            lastStart,
+            full.length,
+            lastStart,
+            full.length,
+            "const c = 33",
+        ),
+        "const a = 1\nconst b = 2\nconst c = 33",
+    )
+    // 空行里组合
+    assert.equal(helpers.composeDocument("a\n\nb", 2, 2, 2, 2, "你好"), "a\n你好\nb")
+    // 超长行只替换窗口，窗口外的字符必须原样保留
+    const long = "ab\n0123456789\ncd"
+    assert.equal(helpers.composeDocument(long, 3, 13, 5, 9, "XX"), "ab\n01XX6789\ncd")
+    // 提交文本只取 textarea 里输入法真的插进去的那一段
+    assert.equal(helpers.composedInsertedText("abcdef", 2, 4), "cd")
+    assert.equal(helpers.composedInsertedText("abc", 3, 3), "")
+    assert.equal(helpers.composedInsertedText("abc", 3, 1), "")
 })
 
 test("自动补全：前缀位置、文档词与候选排序", () => {
@@ -336,6 +630,56 @@ test("自动补全：前缀位置、文档词与候选排序", () => {
     assert.match(CLIENT_STYLES, /\.autocomplete \{/)
     assert.match(CLIENT_STYLES, /\.completion-probe \{/)
     assert.match(CLIENT_STYLES, /\.autocomplete-match \{/)
+    // 语法分析：结构检查、问题面板、行内波浪线
+    assert.match(CLIENT_SCRIPT, /function analyzeSyntax\(/)
+    assert.match(CLIENT_SCRIPT, /function scheduleDiagnostics\(/)
+    assert.match(CLIENT_SCRIPT, /function renderProblemsList\(/)
+    assert.match(CLIENT_SCRIPT, /function renderDiagnostics\(/)
+    assert.match(CLIENT_SCRIPT, /setDiagnostics: setDiagnostics/)
+    assert.match(CLIENT_STYLES, /\.diagnostic-mark::after/)
+    assert.match(CLIENT_STYLES, /\.problem-item \{/)
+    // 括号配对与缩进参考线
+    assert.match(CLIENT_SCRIPT, /function bracketMatchAt\(/)
+    assert.match(CLIENT_SCRIPT, /function renderBracketMatch\(/)
+    assert.match(CLIENT_SCRIPT, /function drawIndentGuides\(/)
+    assert.match(CLIENT_STYLES, /\.bracket-mark \{/)
+    assert.match(CLIENT_STYLES, /\.indent-canvas \{/)
+    assert.match(CLIENT_STYLES, /--indent-guide/)
+    // 符号搜索与转到定义
+    assert.match(CLIENT_SCRIPT, /function openSymbolSearch\(/)
+    assert.match(CLIENT_SCRIPT, /function renderSymbolQuickList\(/)
+    assert.match(CLIENT_SCRIPT, /function goToDefinition\(/)
+    assert.match(CLIENT_SCRIPT, /wordAtCaret/)
+    assert.match(CLIENT_SCRIPT, /lower === "g" && event\.shiftKey/)
+    assert.match(CLIENT_SCRIPT, /"symbol-search"/)
+    // 查找替换
+    assert.match(CLIENT_SCRIPT, /function openFindReplace\(/)
+    assert.match(CLIENT_SCRIPT, /function replaceCurrent\(/)
+    assert.match(CLIENT_SCRIPT, /function replaceAllMatches\(/)
+    assert.match(CLIENT_SCRIPT, /Ctrl\+H/)
+    assert.match(CLIENT_STYLES, /\.find-row \{/)
+    // 工作区符号搜索
+    assert.match(CLIENT_SCRIPT, /function openWorkspaceSymbols\(/)
+    assert.match(CLIENT_SCRIPT, /function renderWorkspaceSymbols\(/)
+    assert.match(CLIENT_SCRIPT, /\/api\/symbols/)
+    assert.match(CLIENT_SCRIPT, /"workspace-symbols"/)
+    // 只读 Git 面板
+    assert.match(CLIENT_SCRIPT, /function loadScmStatus\(/)
+    assert.match(CLIENT_SCRIPT, /function renderScm\(/)
+    assert.match(CLIENT_SCRIPT, /function openScmDiff\(/)
+    assert.match(CLIENT_SCRIPT, /function showDiffTab\(/)
+    assert.match(CLIENT_SCRIPT, /function buildDiffRows\(/)
+    assert.match(CLIENT_SCRIPT, /function renderDiffTab\(/)
+    assert.match(CLIENT_SCRIPT, /\/api\/git\/status/)
+    assert.match(CLIENT_SCRIPT, /function stageScmPaths\(/)
+    assert.match(CLIENT_SCRIPT, /hint\.hidden = hintText === ""/)
+    assert.match(CLIENT_SCRIPT, /iconSvg\(staged === true \? "minus" : "plus"/)
+    assert.match(CLIENT_SCRIPT, /\/api\/git\/stage/)
+    assert.match(CLIENT_SCRIPT, /\/api\/git\/unstage/)
+    assert.match(CLIENT_STYLES, /\.scm-item \{/)
+    assert.match(CLIENT_STYLES, /\.diff-view-row \{/)
+    assert.match(CLIENT_STYLES, /\.diff-view-hunk \{/)
+    assert.match(CLIENT_STYLES, /\.tree-scm \{/)
 })
 
 test("缩略图：短文件按固定行距渲染，点击底部停在最后一行", () => {
@@ -550,12 +894,13 @@ test("终端：顶部拖拽条可调高度并持久化", () => {
 })
 
 test("图标精灵使用 Lucide，保留自有 logo", () => {
-    assert.equal((ICON_SPRITE.match(/<symbol /g) ?? []).length, 37)
+    assert.equal((ICON_SPRITE.match(/<symbol /g) ?? []).length, 38)
     assert.ok(ICON_SPRITE.includes('id="i-logo"'))
     assert.ok(ICON_SPRITE.includes('id="i-search"'))
     assert.ok(ICON_SPRITE.includes('id="i-sun"'))
     assert.ok(ICON_SPRITE.includes('id="i-moon"'))
     assert.ok(ICON_SPRITE.includes('id="i-git-branch"'))
+    assert.ok(ICON_SPRITE.includes('id="i-minus"'))
 })
 
 test("客户端脚本可以编译，样式表与静态资源清单完整", () => {
@@ -636,7 +981,7 @@ test("启动后向 wellspring-web 注册侧栏入口", () => {
     assert.equal(entry.meta["to"], `127.0.0.1:${port}`)
 })
 
-test("GET /api/workspaces 读取 wellspring-web 工作区索引", async () => {
+test("GET /api/workspaces 读取宿主工作区注册表", async () => {
     const response = await fetch(`${base}/api/workspaces`)
     assert.equal(response.status, 200)
     const data = (await response.json()) as {
@@ -661,10 +1006,10 @@ test("GET /api/workspaces 读取 wellspring-web 工作区索引", async () => {
     const outside = data.workspaces.find((entry) => entry.id === "ws-outside")
     assert.equal(main?.active, true)
     assert.equal(main?.accessible, true)
-    assert.equal(main?.conversationCount, 3)
+    assert.equal(main?.conversationCount, 0)
     assert.equal(sub?.accessible, true)
     assert.equal(outside?.accessible, false)
-    assert.equal(outside?.source, "web")
+    assert.equal(outside?.source, "host")
     assert.match(outside?.root ?? "", /^\/etc/)
 })
 
@@ -759,6 +1104,105 @@ test("x-workspace-id 请求头按客户端隔离当前工作区", async () => {
         body: JSON.stringify({ id: "ws-main" }),
     })
     assert.equal(restore.status, 200)
+})
+
+test("GET /api/symbols 返回工作区符号索引", async () => {
+    const response = await fetch(`${base}/api/symbols?q=hello`)
+    assert.equal(response.status, 200)
+    const data = (await response.json()) as {
+        query: string
+        symbols: Array<{ path: string; name: string; kind: string; line: number }>
+        total: number
+        truncated: boolean
+        scanned: number
+    }
+    assert.equal(data.query, "hello")
+    assert.ok(data.scanned > 0)
+    assert.equal(data.truncated, false)
+    const hello = data.symbols.find((symbol) => symbol.path === "src/main.ts")
+    assert.ok(hello !== undefined)
+    assert.equal(hello?.name, "hello")
+    assert.equal(hello?.line, 1)
+
+    // 查询不区分大小写，Markdown 标题也能搜到
+    const heading = (await (await fetch(`${base}/api/symbols?q=wellspring`)).json()) as {
+        symbols: Array<{ path: string; name: string; kind: string }>
+    }
+    assert.ok(
+        heading.symbols.some(
+            (symbol) =>
+                symbol.path === "README.md" &&
+                symbol.name === "Wellspring" &&
+                symbol.kind === "heading",
+        ),
+    )
+
+    // 空查询返回前若干个符号，limit 生效
+    const all = (await (await fetch(`${base}/api/symbols?limit=1`)).json()) as {
+        symbols: unknown[]
+        total: number
+    }
+    assert.equal(all.symbols.length, 1)
+    assert.ok(all.total >= 2)
+
+    const none = (await (await fetch(`${base}/api/symbols?q=zzz-not-found`)).json()) as {
+        symbols: unknown[]
+        total: number
+    }
+    assert.deepEqual(none.symbols, [])
+    assert.equal(none.total, 0)
+})
+
+test("GET /api/git/status 与 /api/git/diff 只读接口", async () => {
+    const status = await fetch(`${base}/api/git/status`)
+    assert.equal(status.status, 200)
+    const data = (await status.json()) as {
+        available: boolean
+        repo: boolean
+        branch: string
+        changes: unknown[]
+        error: string
+    }
+    // 临时工作区不在 git 仓库里；git 不可用时 available=false，否则 repo=false
+    assert.equal(data.repo, false)
+    assert.deepEqual(data.changes, [])
+    assert.equal(typeof data.error, "string")
+    assert.ok(data.available === true || data.available === false)
+    if (data.available === false) {
+        assert.match(data.error, /git/i)
+    }
+
+    const missing = await fetch(`${base}/api/git/diff`)
+    assert.equal(missing.status, 400)
+    const diff = await fetch(`${base}/api/git/diff?path=src%2Fmain.ts`)
+    assert.equal(diff.status, 200)
+    const diffBody = (await diff.json()) as { repo: boolean; content: string; error: string }
+    assert.equal(diffBody.repo, false)
+    assert.equal(diffBody.content, "")
+})
+
+test("POST /api/git/stage|unstage 的校验与错误处理", async () => {
+    const post = async (path: string, body: unknown) =>
+        await fetch(`${base}${path}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+        })
+
+    assert.equal((await post("/api/git/stage", {})).status, 400)
+    assert.equal((await post("/api/git/stage", { paths: [] })).status, 400)
+    assert.equal((await post("/api/git/stage", { paths: [1] })).status, 400)
+    assert.equal((await post("/api/git/stage", { paths: ["/etc/passwd"] })).status, 400)
+    assert.equal((await post("/api/git/stage", { paths: ["../outside"] })).status, 400)
+    assert.equal((await post("/api/git/unstage", { paths: ["src/main.ts"] })).status, 200)
+
+    // 临时工作区不是 git 仓库：接口正常返回 ok:false
+    const response = await post("/api/git/stage", { paths: ["src/main.ts"] })
+    assert.equal(response.status, 200)
+    const body = (await response.json()) as { repo: boolean; ok: boolean; error: string }
+    assert.equal(body.repo, false)
+    assert.equal(body.ok, false)
+    assert.equal(typeof body.error, "string")
 })
 
 test("GET /api/file 读取文本与二进制、拒绝超大文件与路径穿越", async () => {

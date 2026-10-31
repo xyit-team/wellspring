@@ -19,6 +19,7 @@ import { initElog, type ElogStream } from "../src/logger/elog4js.ts"
 import type { ResolvedPaths } from "../src/platform/path.ts"
 import { DirectBackend } from "../src/sandbox/backends/direct.ts"
 import { PluginSandboxClient, shutdownAllSandboxPlugins } from "../src/sandbox/plugin-client.ts"
+import { startHttpHostPlugin } from "./helpers/http-host.ts"
 
 const projectRoot = join(import.meta.dirname, "..")
 let root = ""
@@ -45,6 +46,7 @@ before(async () => {
     root = await mkdtemp(join(tmpdir(), "wellspring-web-shutdown-"))
     const resolved = paths()
     configureHost({ paths: resolved })
+    await startHttpHostPlugin(resolved)
     const output = { text: "" } as ElogStream & { text: string }
     output.write = (text: string) => {
         output.text += text
@@ -87,7 +89,16 @@ before(async () => {
         limits: { timeoutMs: 10_000, memoryMB: 256, pids: 32, outputLimitBytes: 8192 },
         logger,
         permissions: {
-            hostApi: ["logger", "fs", "http", "agent", "event", "getHost", "shutdown"],
+            hostApi: [
+                "logger",
+                "fs",
+                "http",
+                "agent",
+                "event",
+                "getHost",
+                "shutdown",
+                "workspaces",
+            ],
             workspaceRead: false,
             workspaceWrite: false,
         },
@@ -114,13 +125,10 @@ after(async () => {
 
 test("页面包含「关闭 Wellspring」按钮与关闭后的提示", async () => {
     const html = await (await fetch(`${base}/`)).text()
-    assert.match(html, /id="shutdown-open"/)
-    assert.match(html, /关闭 Wellspring/)
-    assert.match(html, /id="shutdown-screen"/)
-    assert.match(html, /Wellspring 已关闭/)
-    const script = await (await fetch(`${base}/assets/app.js`)).text()
-    assert.match(script, /function closeWellspring\(/)
-    assert.match(script, /function showShutdownScreen\(/)
+    assert.match(html, /<script type="module" src="\/assets\/app-vue\.js"><\/script>/)
+    const script = await (await fetch(`${base}/assets/app-vue.js`)).text()
+    assert.match(script, /关闭 Wellspring/)
+    assert.match(script, /Wellspring 已关闭/)
     assert.match(script, /\/api\/shutdown/)
 })
 
@@ -149,4 +157,37 @@ test("关闭接口需要登录，确认后触发宿主优雅关闭", async () =>
     // 关闭是响应返回后延迟触发的
     await new Promise((resolve) => setTimeout(resolve, 500))
     assert.equal(shutdownRequests, 1)
+})
+
+test("关闭时不会被 SSE 长连接卡住", { timeout: 20_000 }, async () => {
+    // 前一个用例已设置密码，这里直接登录拿 cookie
+    const login = await fetch(`${base}/api/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password: "secret123" }),
+    })
+    assert.equal(login.status, 200)
+    const cookie = login.headers.get("set-cookie")?.split(";")[0] ?? ""
+
+    const controller = new AbortController()
+    const sse = await fetch(`${base}/api/addons/stream`, {
+        headers: { cookie, accept: "text/event-stream" },
+        signal: controller.signal,
+    })
+    assert.equal(sse.status, 200)
+    const reader = sse.body?.getReader()
+    assert.ok(reader)
+    // 读一次确认流已经建立，并让连接保持打开
+    await Promise.race([reader.read(), new Promise((resolve) => setTimeout(resolve, 1_000))])
+
+    const started = Date.now()
+    await Promise.race([
+        emitShutdownHooks(),
+        new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("关闭被 SSE 长连接卡住")), 5_000),
+        ),
+    ])
+    assert.ok(Date.now() - started < 5_000)
+    controller.abort()
+    await reader.cancel().catch(() => undefined)
 })

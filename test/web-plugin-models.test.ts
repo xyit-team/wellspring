@@ -21,6 +21,7 @@ import { initElog, type ElogStream } from "../src/logger/elog4js.ts"
 import type { ResolvedPaths } from "../src/platform/path.ts"
 import { DirectBackend } from "../src/sandbox/backends/direct.ts"
 import { PluginSandboxClient, shutdownAllSandboxPlugins } from "../src/sandbox/plugin-client.ts"
+import { startHttpHostPlugin } from "./helpers/http-host.ts"
 
 const projectRoot = join(import.meta.dirname, "..")
 let root = ""
@@ -51,6 +52,7 @@ before(async () => {
     delete process.env["OPENAI_API_KEY"]
     const resolved = paths()
     configureHost({ paths: resolved })
+    await startHttpHostPlugin(resolved)
     const output = { text: "" } as ElogStream & { text: string }
     output.write = (text: string) => {
         output.text += text
@@ -117,7 +119,7 @@ before(async () => {
         limits: { timeoutMs: 10_000, memoryMB: 256, pids: 32, outputLimitBytes: 8192 },
         logger,
         permissions: {
-            hostApi: ["logger", "fs", "http", "agent", "models", "event", "getHost"],
+            hostApi: ["logger", "fs", "http", "agent", "models", "event", "getHost", "workspaces"],
             workspaceRead: false,
             workspaceWrite: false,
         },
@@ -171,20 +173,16 @@ async function request(
 
 test("页面包含模型切换入口与供应商弹窗", async () => {
     const html = await (await fetch(`${base}/`)).text()
-    assert.match(html, /id="model-btn"/)
-    assert.match(html, /id="model-menu"/)
-    assert.match(html, /id="providers-open"/)
-    assert.match(html, /id="models-dialog"/)
-    assert.match(html, /id="provider-name"/)
-    assert.match(html, /id="provider-baseurl"/)
-    assert.match(html, /id="provider-save"/)
-    const script = await (await fetch(`${base}/assets/app.js`)).text()
+    assert.match(html, /<script type="module" src="\/assets\/app-vue\.js"><\/script>/)
+    const script = await (await fetch(`${base}/assets/app-vue.js`)).text()
+    assert.match(script, /model-btn/)
+    assert.match(script, /model-menu/)
+    assert.match(script, /模型与供应商/)
+    assert.match(script, /provider-name/)
+    assert.match(script, /models-context/)
     assert.match(script, /\/api\/models/)
-    assert.match(script, /function loadModels\(/)
-    assert.match(script, /function switchModel\(/)
-    assert.match(script, /function saveProviderForm\(/)
-    assert.match(script, /function renderModelMenu\(/)
-    assert.match(script, /function chooseModel\(/)
+    assert.match(script, /\/api\/models\/context/)
+    assert.match(script, /推理等级/)
 })
 
 test("模型接口：新增供应商、切模型、Key 状态、删除", async () => {

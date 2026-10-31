@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { startHttpHostPlugin } from "./helpers/http-host.ts"
 import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -14,6 +15,7 @@ import { initElog, type ElogStream } from "../src/logger/elog4js.ts"
 import type { ResolvedPaths } from "../src/platform/path.ts"
 import { DirectBackend } from "../src/sandbox/backends/direct.ts"
 import { PluginSandboxClient, shutdownAllSandboxPlugins } from "../src/sandbox/plugin-client.ts"
+import { resetWorkspaceRegistry } from "../src/workspace/registry.ts"
 
 const projectRoot = join(import.meta.dirname, "..")
 let root = ""
@@ -63,6 +65,7 @@ function paths(): ResolvedPaths {
 async function startWebPlugin(): Promise<string> {
     const resolved = paths()
     configureHost({ paths: resolved })
+    await startHttpHostPlugin(resolved)
     const output = { text: "" } as ElogStream & { text: string }
     output.write = (text: string) => {
         output.text += text
@@ -81,7 +84,7 @@ async function startWebPlugin(): Promise<string> {
         limits: { timeoutMs: 10_000, memoryMB: 256, pids: 32, outputLimitBytes: 4096 },
         logger: pino({ level: "silent" }),
         permissions: {
-            hostApi: ["logger", "fs", "http", "agent", "event", "getHost"],
+            hostApi: ["logger", "fs", "http", "agent", "event", "getHost", "workspaces"],
             workspaceRead: false,
             workspaceWrite: false,
         },
@@ -120,6 +123,9 @@ async function startWebPlugin(): Promise<string> {
                 }
             },
             async interject() {
+                return false
+            },
+            async stop() {
                 return false
             },
             async respondApproval(approvalId: string, approved: boolean) {
@@ -231,6 +237,12 @@ interface ConversationView {
         text: string
         turn?: number
         steps?: number
+        usage?: {
+            inputTokens: number | null
+            outputTokens: number | null
+            cacheReadTokens?: number
+            contextTokens?: number
+        }
         stopped?: boolean
         interrupted?: boolean
         process?: ProcessView[]
@@ -315,6 +327,12 @@ test("工作区：手动添加、会话落盘、跨重启保留", { timeout: 30_
                     model: "deepseek-chat",
                     turn: 3,
                     steps: 5,
+                    usage: {
+                        inputTokens: 100,
+                        outputTokens: 5,
+                        cacheReadTokens: 80,
+                        contextTokens: 100,
+                    },
                     process: [
                         { kind: "reasoning", text: "先读文件再回答。", at: 0, open: true },
                         {
@@ -418,6 +436,13 @@ test("工作区：手动添加、会话落盘、跨重启保留", { timeout: 30_
         assert.equal(conversations.conversations[0]?.serverSessionId, "sess-a")
         assert.equal(conversations.conversations[0]?.messages[1]?.turn, 3, "轮次持久化")
         assert.equal(conversations.conversations[0]?.messages[1]?.steps, 5, "步数持久化")
+        // token 用量（含缓存命中与上下文占用）随会话保存，刷新后统计不丢
+        assert.deepEqual(conversations.conversations[0]?.messages[1]?.usage, {
+            inputTokens: 100,
+            outputTokens: 5,
+            cacheReadTokens: 80,
+            contextTokens: 100,
+        })
         // 会话级模型 / 推理 / 权限随会话保存，跨重启不丢
         assert.equal(conversations.conversations[0]?.provider, "openai")
         assert.equal(conversations.conversations[0]?.model, "deepseek-chat")
@@ -994,18 +1019,64 @@ test("未分组：移除工作区后会话保留并可继续", { timeout: 20_000
     }
 })
 
-test("工作区：JSON 损坏时不影响插件启动", { timeout: 20_000 }, async () => {
-    const pluginDataDir = join(root, "data", "plugin-data", "wellspring-web")
-    await writeFile(join(pluginDataDir, "workspaces.json"), "{ broken json", "utf8")
+test("工作区：宿主索引 JSON 损坏时不影响插件启动", { timeout: 20_000 }, async () => {
+    const registryFile = join(root, "data", "workspaces.json")
+    await mkdir(join(root, "data"), { recursive: true })
+    await writeFile(registryFile, "{ broken json", "utf8")
+    // 模拟新进程：清掉测试进程里缓存的注册表，强制重新读盘
+    resetWorkspaceRegistry()
     const base = await startWebPlugin()
     try {
         const cookie = await authenticate(base)
         const list = (await (
             await request(base, cookie, "/api/workspaces")
         ).json()) as WorkspaceView
-        assert.deepEqual(list.workspaces, [], "损坏的索引按空列表处理")
-        const backup = await readFile(join(pluginDataDir, "workspaces.json.broken"), "utf8")
+        assert.deepEqual(list.workspaces, [], "损坏的宿主索引按空列表处理")
+        const backup = await readFile(`${registryFile}.broken`, "utf8")
         assert.match(backup, /broken json/, "损坏文件已备份")
+    } finally {
+        await stopWebPlugin()
+    }
+})
+
+test("工作区：旧 wellspring-web 索引迁移到宿主注册表", { timeout: 20_000 }, async () => {
+    // 清掉宿主注册表，模拟升级前只有插件数据目录里的旧索引
+    await rm(join(root, "data", "workspaces.json"), { force: true })
+    const legacyDir = join(root, "data", "plugin-data", "wellspring-web")
+    const migratedRoot = join(root, "legacy-migrated")
+    await mkdir(migratedRoot, { recursive: true })
+    await mkdir(legacyDir, { recursive: true })
+    await writeFile(
+        join(legacyDir, "workspaces.json"),
+        JSON.stringify({
+            v: 2,
+            workspaces: [
+                {
+                    id: "legacy-migrated-0123456789",
+                    name: "迁移项目",
+                    root: migratedRoot,
+                    conversationCount: 2,
+                    createdAt: 1,
+                    lastSeenAt: 2,
+                },
+            ],
+        }),
+        "utf8",
+    )
+    resetWorkspaceRegistry()
+    const base = await startWebPlugin()
+    try {
+        const cookie = await authenticate(base)
+        const list = (await (
+            await request(base, cookie, "/api/workspaces")
+        ).json()) as WorkspaceView
+        assert.equal(list.workspaces.length, 1)
+        assert.equal(list.workspaces[0]?.name, "迁移项目")
+        assert.equal(list.workspaces[0]?.root, migratedRoot)
+        const hostRegistry = JSON.parse(
+            await readFile(join(root, "data", "workspaces.json"), "utf8"),
+        ) as { workspaces: Array<{ root: string }> }
+        assert.equal(hostRegistry.workspaces[0]?.root, migratedRoot, "迁移结果写进宿主注册表")
     } finally {
         await stopWebPlugin()
     }

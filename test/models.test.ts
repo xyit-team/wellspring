@@ -356,6 +356,12 @@ test("CLI：config 切换供应商/模型，key --provider 操作自定义供应
     const output = { text: "" }
     const ctx = makeContext(settings, output)
 
+    /** 同一进程连续跑多条 config 命令时按文件重读；真实 CLI 每条命令都是新进程 */
+    async function freshConfigContext(): Promise<CommandContext> {
+        const loaded = await loadSettings(join(paths().configDir, SETTING_FILE_NAME))
+        return { ...ctx, settings: loaded.getData() ?? ctx.settings }
+    }
+
     const configSet = await runConfigCommand(ctx, ["set", "models.activeProvider", "deepseek"])
     // 只读命令上下文里的 settingsFile 指向临时目录，写入会成功
     assert.equal(configSet.result.isSuccess(), true)
@@ -370,6 +376,60 @@ test("CLI：config 切换供应商/模型，key --provider 操作自定义供应
     assert.equal(modelSet.result.isSuccess(), true)
     const active = await runConfigCommand(ctx, ["get", "models.activeModel"])
     assert.equal(active.result.isSuccess(), true)
+
+    // 网络代理：CLI 也能设置（网页设置用的是同一份 app-setting.json）
+    let proxyCtx = await freshConfigContext()
+    const proxySet = await runConfigCommand(proxyCtx, [
+        "set",
+        "network.proxy",
+        "http://127.0.0.1:7890",
+    ])
+    assert.equal(proxySet.result.isSuccess(), true)
+    let proxySettings = (await loadSettings(join(paths().configDir, SETTING_FILE_NAME))).getData()
+    assert.deepEqual(proxySettings?.network.proxy, {
+        type: "http",
+        url: "http://127.0.0.1:7890",
+        noProxy: [],
+    })
+
+    proxyCtx = await freshConfigContext()
+    const noProxySet = await runConfigCommand(proxyCtx, [
+        "set",
+        "network.noProxy",
+        "localhost, 127.0.0.1",
+    ])
+    assert.equal(noProxySet.result.isSuccess(), true)
+    proxySettings = (await loadSettings(join(paths().configDir, SETTING_FILE_NAME))).getData()
+    assert.deepEqual(proxySettings?.network.proxy?.noProxy, ["localhost", "127.0.0.1"])
+
+    proxyCtx = await freshConfigContext()
+    const proxyGet = await runConfigCommand(proxyCtx, ["get", "network.proxy"])
+    assert.equal(proxyGet.result.isSuccess(), true)
+    assert.deepEqual(proxyGet.result.getData(), {
+        key: "network.proxy",
+        value: {
+            type: "http",
+            url: "http://127.0.0.1:7890",
+            noProxy: ["localhost", "127.0.0.1"],
+        },
+    })
+
+    proxyCtx = await freshConfigContext()
+    const badProxy = await runConfigCommand(proxyCtx, [
+        "set",
+        "network.proxy",
+        "socks5://127.0.0.1:1080",
+    ])
+    assert.equal(badProxy.result.isSuccess(), false)
+
+    proxyCtx = await freshConfigContext()
+    const clearProxy = await runConfigCommand(proxyCtx, ["set", "network.proxy", "none"])
+    assert.equal(clearProxy.result.isSuccess(), true)
+    proxySettings = (await loadSettings(join(paths().configDir, SETTING_FILE_NAME))).getData()
+    assert.equal(proxySettings?.network.proxy, null)
+    proxyCtx = await freshConfigContext()
+    const orphanNoProxy = await runConfigCommand(proxyCtx, ["set", "network.noProxy", "internal"])
+    assert.equal(orphanNoProxy.result.isSuccess(), false)
 
     // 插件私有配置：plugins.<id>.<field> 透传到 <configDir>/plugins/<id>.json
     const pluginSet = await runConfigCommand(ctx, ["set", "plugins.wellspring-web.host", "0.0.0.0"])

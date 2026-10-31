@@ -1,10 +1,14 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { MARKDOWN_JS } from "../plugins/wellspring-web/src/assets/markdown.ts"
-import { createMarkdownRenderer } from "./helpers/mini-dom.ts"
+import { mdRender } from "../plugins/wellspring-web/frontend/src/logic/markdown.ts"
+import { createMiniDom } from "./helpers/mini-dom.ts"
 
-const render = createMarkdownRenderer(MARKDOWN_JS)
+const dom = createMiniDom()
+const render = (text: string): string => {
+    ;(globalThis as unknown as { document: unknown }).document = dom.document
+    return dom.serialize(mdRender(text, 0))
+}
 
 test("markdown：标题、段落、行内样式与链接", () => {
     const html = render("# 标题\n\n段落 **加粗** _斜体_ `code` [文档](https://example.com/docs)")

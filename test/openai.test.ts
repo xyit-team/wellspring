@@ -290,6 +290,70 @@ test("chat 走 Chat Completions API", async () => {
     })
 })
 
+test("chat 解析缓存命中与推理 token", async () => {
+    const fetchImpl: FetchImpl = async () =>
+        jsonResponse({
+            id: "chatcmpl_cache",
+            object: "chat.completion",
+            created: 0,
+            model: "test-model",
+            choices: [
+                {
+                    index: 0,
+                    message: { role: "assistant", content: "pong" },
+                    finish_reason: "stop",
+                },
+            ],
+            usage: {
+                prompt_tokens: 120,
+                completion_tokens: 30,
+                total_tokens: 150,
+                prompt_tokens_details: { cached_tokens: 96 },
+                completion_tokens_details: { reasoning_tokens: 12 },
+            },
+        })
+
+    const client = OpenAIClient.create({ apiKey: "test-key", settings, fetch: fetchImpl }).getData()
+    assert.ok(client !== null)
+    const result = await client.chat([{ role: "user", content: "ping" }])
+    assert.equal(result.isSuccess(), true)
+    assert.deepEqual(result.getData(), {
+        text: "pong",
+        model: "test-model",
+        id: "chatcmpl_cache",
+        inputTokens: 120,
+        outputTokens: 30,
+        cacheReadTokens: 96,
+        reasoningTokens: 12,
+    })
+})
+
+test("chatStream 解析 usage 里的缓存命中", async () => {
+    const sse =
+        'data: {"id":"c1","object":"chat.completion.chunk","model":"test-model","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n' +
+        'data: {"id":"c1","object":"chat.completion.chunk","model":"test-model","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_cache_hit_tokens":80}}\n\n' +
+        "data: [DONE]\n\n"
+    const fetchImpl: FetchImpl = async () =>
+        new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } })
+    const client = OpenAIClient.create({ apiKey: "test-key", settings, fetch: fetchImpl }).getData()
+    assert.ok(client !== null)
+
+    const result = await client.chatStream([{ role: "user", content: "hi" }])
+    assert.equal(result.isSuccess(), true)
+    const data = result.getData()
+    assert.ok(data !== null)
+    assert.equal(data.reply.inputTokens, 100)
+    assert.equal(data.reply.outputTokens, 5)
+    assert.equal(data.reply.cacheReadTokens, 80)
+    const usageChunk = data.chunks.find(
+        (record) => record.type === "chunk" && record.chunk["type"] === "usage",
+    )
+    assert.deepEqual(
+        (usageChunk?.chunk["usage"] as { cacheReadTokens?: number } | undefined)?.cacheReadTokens,
+        80,
+    )
+})
+
 test("chat 内容为空返回 emptyOutput", async () => {
     const fetchImpl: FetchImpl = async () =>
         jsonResponse({
