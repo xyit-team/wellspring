@@ -1,0 +1,141 @@
+# 自动发布 npm：@xyit/wellspring
+#
+# 入口两个：
+#   1. 推 v* 标签时自动发布（如 v1.0.0）
+#   2. 手动触发（Actions 页面或 gh workflow run publish-npm.yml）：dry-run 默认 true，只演练
+#
+# 授权优先用 npm Trusted Publishing（OIDC），不需要长期 token：
+#   npmjs.com -> @xyit/wellspring -> Settings -> Trusted Publisher -> GitHub Actions
+#   仓库填 <owner>/<repo>，工作流文件名填 publish-npm.yml
+#   npm 认的是「触发这次运行的入口工作流」，所以本文件改名后要同步改 npm 侧配置；
+#   被别的文件用 workflow_call 调用时拿不到正确的 OIDC，会回 404。
+#   还没配 Trusted Publishing 时，也可以新建仓库 Secret：NPM_TOKEN（npm Automation token，带 publish 权限），
+#   并取消「发布」步骤下面 env 的注释。
+#
+# 发布包不包含 plugins/，但包含 dist/（编译产物）和 src/（宿主运行 sandbox 插件需要的 TS SDK）。
+# 发布前会构建、核对标签版本、检查该版本是否已发布，并把 tarball 装进空项目跑一次冒烟。
+
+name: publish-npm
+
+on:
+    push:
+        tags: ["v*"]
+    workflow_dispatch:
+        inputs:
+            dry-run:
+                description: 只打包演练，不真正发布
+                type: boolean
+                default: true
+
+permissions:
+    contents: read
+    id-token: write # Trusted Publishing / provenance 需要
+
+# 发版不能并发：同一时刻只让一个 run 碰 npm
+concurrency:
+    group: publish-npm
+    cancel-in-progress: false
+
+jobs:
+    publish:
+        runs-on: ubuntu-24.04 # 固定镜像版本，构建环境不随 ubuntu-latest 迁移而变
+        timeout-minutes: 20
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: pnpm/action-setup@v4
+              with:
+                  version: 12.14.0
+
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: 24
+                  registry-url: https://registry.npmjs.org/
+                  cache: pnpm
+
+            - name: 安装依赖（严格按 lockfile）
+              run: pnpm install --frozen-lockfile
+
+            - name: 类型检查
+              run: pnpm typecheck
+
+            - name: 格式检查
+              run: pnpm format:check
+
+            - name: 测试
+              run: pnpm test
+
+            - name: 构建
+              run: pnpm build
+
+            - name: 核对发布内容
+              run: |
+                  set -euo pipefail
+                  # npm 把清单写在 stderr，因此需要 2>&1
+                  npm pack --dry-run 2>&1 | tee /tmp/pack.txt
+                  grep -q "dist/index.js" /tmp/pack.txt
+                  grep -q "src/index.ts" /tmp/pack.txt
+                  grep -q "src/sandbox/pty-bridge.py" /tmp/pack.txt
+                  if grep -q "plugins/" /tmp/pack.txt; then
+                    echo "发布包里不应包含 plugins/"
+                    exit 1
+                  fi
+                  grep -E "total files|package size|unpacked size" /tmp/pack.txt
+
+            # 推标签进来的那条路：发出去的版本号必须与标签一致
+            - name: 核对标签与 package.json 的版本
+              if: github.event_name == 'push'
+              run: |
+                  set -e
+                  tag="${{ github.ref_name }}"
+                  version="v$(node -p "require('./package.json').version")"
+                  if [ "$tag" != "$version" ]; then
+                    echo "标签是 $tag，但 package.json 里是 $version。"
+                    echo "先改版本号并提交，再用同名标签。"
+                    exit 1
+                  fi
+                  echo "版本对得上：$tag"
+
+            - name: 检查该版本是否已经发布
+              id: exists
+              # 重复推同一个标签时 npm 不接受重复版本，先查一次，避免留一条失败记录
+              run: |
+                  set -euo pipefail
+                  name="$(node -p "require('./package.json').name")"
+                  version="$(node -p "require('./package.json').version")"
+                  if npm view "${name}@${version}" version >/dev/null 2>&1; then
+                    echo "${name}@${version} 已经发布过，跳过发布"
+                    echo "skip=1" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "${name}@${version} 还没发布过，继续"
+                  fi
+
+            - name: 装 tarball 冒烟
+              # 装的是 tarball 而不是源码目录：Node 拒绝处理 node_modules 下的 .ts，
+              # 只有装成包跑一遍才能验证真实的发布形态
+              run: |
+                  set -euo pipefail
+                  rm -rf /tmp/wellspring-pack /tmp/consumer
+                  mkdir -p /tmp/wellspring-pack
+                  npm pack --pack-destination /tmp/wellspring-pack 2>&1 | tee /tmp/pack-real.txt >/dev/null
+                  tgz="$(ls /tmp/wellspring-pack/*.tgz)"
+                  mkdir -p /tmp/consumer
+                  cd /tmp/consumer
+                  npm init -y >/dev/null
+                  npm install --omit=optional --no-audit --no-fund "$tgz"
+                  ./node_modules/.bin/wellspring version | tee /tmp/version.txt
+                  grep -q "@xyit/wellspring" /tmp/version.txt
+
+            - name: 演练（不发布）
+              if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
+              # 同样会跑 prepack（构建），因此打印的是实际要发布的内容清单
+              run: npm publish --dry-run --access public
+
+            - name: 发布
+              # 推标签时直接发；手动触发时只有把 dry-run 关掉才发。已发布过的版本跳过
+              if: ${{ (github.event_name == 'push' || !inputs.dry-run) && steps.exists.outputs.skip != '1' }}
+              # prepack 会自动跑 npm run build，因此这里不必再构建一次
+              run: npm publish --provenance --access public
+              # 用 Trusted Publishing 时不需要 token；改用仓库 Secret 时取消下面两行注释
+              # env:
+              #   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
