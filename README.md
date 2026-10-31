@@ -325,6 +325,17 @@ node src/index.ts plugin list
 - 自动安装会执行依赖包的生命周期脚本，只安装可信来源的插件；
 - 网页 `/plugins` 上传 zip 走同一条安装逻辑，单个 zip 上限 10 MB；安装依赖需要网络，耗时取决于依赖大小。
 
+### 发版产物
+
+推 `v*` 标签会触发两个工作流：
+
+- `publish-npm.yml`：类型检查、全量测试、构建、tarball 冒烟后发布 npm；
+- `release.yml`：把 `plugins/*/` 打包成 `<插件名>-<版本>.zip`（不含 `node_modules`，附带根 LICENSE），
+  连同 `SHA256SUMS` 一起附到同名 GitHub Release。
+
+Release 里的插件 zip 可以直接用 `wellspring plugin install <zip>` 或网页「插件管理」上传安装；
+依赖会按插件 `package.json` 的 `packageManager` 在安装端自动安装。
+
 ### 入口与生命周期
 
 ```ts

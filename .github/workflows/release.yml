@@ -1,0 +1,136 @@
+# 发布时把 plugins/ 下的官方插件打成 zip，附到 GitHub Release。
+#
+# 入口：
+#   1. 推 v* 标签：自动打包并创建/更新同名 Release
+#   2. 手动触发：只打包上传 workflow artifact；勾选 create-release 时也写 Release
+#
+# zip 内容：
+#   - package.json / index.ts 等文件在 zip 根目录，wellspring plugin install 可直接安装
+#   - 带根目录 LICENSE
+#   - 不含 node_modules / .ui-review / frontend/dist；依赖由安装端按 packageManager 自动安装
+#
+# npm 包发布由 publish-npm.yml 负责，本工作流只产 Release 产物。
+
+name: release
+
+on:
+    push:
+        tags: ["v*"]
+    workflow_dispatch:
+        inputs:
+            create-release:
+                description: 手动触发时也创建/更新 Release
+                type: boolean
+                default: false
+
+permissions:
+    contents: read
+
+concurrency:
+    group: release-${{ github.ref }}
+    cancel-in-progress: false
+
+jobs:
+    package:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: 26
+
+            - name: 核对标签与 package.json 的版本
+              if: github.event_name == 'push'
+              run: |
+                  set -e
+                  tag="${{ github.ref_name }}"
+                  version="v$(node -p "require('./package.json').version")"
+                  if [ "$tag" != "$version" ]; then
+                    echo "标签是 $tag，但 package.json 里是 $version"
+                    exit 1
+                  fi
+                  echo "版本对得上：$tag"
+
+            - name: 打包官方插件
+              run: |
+                  set -euo pipefail
+                  rm -rf release
+                  mkdir -p release
+                  count=0
+                  for dir in plugins/*/; do
+                    test -f "${dir}package.json" || continue
+                    name="$(node -p "require('./${dir}package.json').name")"
+                    version="$(node -p "require('./${dir}package.json').version")"
+                    out="release/${name}-${version}.zip"
+                    (
+                      cd "$dir"
+                      zip -qr "$out" . \
+                        -x 'node_modules/*' '*/node_modules/*' \
+                           '.git/*' '*/.git/*' \
+                           '*/.ui-review/*' \
+                           '*/frontend/dist/*' \
+                           '*.log'
+                    )
+                    # 插件目录里没有根 LICENSE，统一带上仓库的 MIT 许可证
+                    zip -q -j "$out" LICENSE
+                    if ! unzip -Z1 "$out" | grep -qx 'package.json'; then
+                      echo "${out} 缺少根目录 package.json"
+                      exit 1
+                    fi
+                    if unzip -Z1 "$out" | grep -q 'node_modules/'; then
+                      echo "${out} 不应包含 node_modules"
+                      exit 1
+                    fi
+                    echo "${out}"
+                    count=$((count + 1))
+                  done
+                  test "$count" -gt 0
+                  sha256sum release/*.zip > release/SHA256SUMS
+                  cat release/SHA256SUMS
+                  ls -lh release
+
+            - uses: actions/upload-artifact@v7
+              with:
+                  name: release-plugins-${{ github.sha }}
+                  path: release/*
+                  if-no-files-found: error
+
+    release:
+        needs: package
+        # 推标签时自动创建；手动触发默认只上传 artifact
+        if: ${{ github.event_name == 'push' || inputs.create-release }}
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        permissions:
+            contents: write
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: actions/download-artifact@v7
+              with:
+                  name: release-plugins-${{ github.sha }}
+                  path: assets
+
+            - name: 创建或更新 Release 并附上插件 zip
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  TAG: ${{ github.ref_name }}
+              run: |
+                  set -euo pipefail
+                  repo="$GITHUB_REPOSITORY"
+                  files=(assets/*.zip assets/SHA256SUMS)
+                  for file in "${files[@]}"; do
+                    test -f "$file" || { echo "缺少产物：$file"; exit 1; }
+                  done
+                  ls -lh "${files[@]}"
+                  if gh release view "$TAG" -R "$repo" >/dev/null 2>&1; then
+                    gh release upload "$TAG" "${files[@]}" -R "$repo" --clobber
+                  else
+                    gh release create "$TAG" -R "$repo" \
+                      --title "$TAG" \
+                      --generate-notes \
+                      "${files[@]}"
+                  fi
+                  gh release view "$TAG" -R "$repo" --json url --jq .url
