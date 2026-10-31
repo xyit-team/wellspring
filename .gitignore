@@ -8,4 +8,6 @@ __pycache__/
 /plugins/**/node_modules/
 /plugins/**/.ui-review/
 /plugins/**/frontend/dist/
+/bin/
 /dist/
+/bin/

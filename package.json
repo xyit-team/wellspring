@@ -23,6 +23,7 @@
         "dist",
         "src",
         "scripts",
+        "bin",
         "README.md",
         "LICENSE"
     ],
@@ -53,7 +54,8 @@
         "build:web-ui": "node plugins/wellspring-web/scripts/build-ui.mjs",
         "typecheck:web-ui": "node plugins/wellspring-web/scripts/check-ui.mjs",
         "build": "tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs",
-        "prepack": "npm run build"
+        "prepack": "npm run build",
+        "seatbelt:build": "node scripts/build-seatbelt.mjs"
     },
     "dependencies": {
         "cli-highlight": "^2.1.11",

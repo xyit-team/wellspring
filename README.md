@@ -44,6 +44,32 @@ node-gyp 下载 Node 头文件可能失败（`gyp ERR! InvalidArgumentError: inv
 pnpm pty:build   # 用本机 Node 自带的 include/node 头文件编译，跳过 node-gyp 的下载
 ```
 
+macOS 上的 Seatbelt 沙箱有一个可选的原生 launcher。不构建也能用（退回 `/usr/bin/sandbox-exec`），
+但该 CLI 自 macOS 10.10 起 deprecated：
+
+```bash
+pnpm seatbelt:build          # 只构建当前架构
+pnpm seatbelt:build --all    # arm64 与 x64
+```
+
+产物在 `bin/darwin-<arch>/seatbelt-run`：直调 `libsandbox` 的 `sandbox_init` 再 `execve`，
+目标命令必须是绝对路径，不经过 PATH 解析。
+
+### 验证沙箱边界
+
+```bash
+node scripts/verify-sandbox.ts              # 自动挑后端
+node scripts/verify-sandbox.ts --backend seatbelt
+node scripts/verify-sandbox.ts --json       # 附带机器可读结果
+```
+
+跑一组探针（读系统文件 / 读沙箱外私有文件 / 写 workspace / 写 scratch / 写沙箱外 / 写 `/dev/null` /
+出网 / 建硬链接）× 两种 `access` 模式，把期望与实际对成表。退出码 `0` 全部符合预期，`1` 有偏差，
+`2` 环境不可用（macOS 无 Seatbelt launcher，或 Linux 不允许非特权 user namespace）。
+
+这张表是 `enforcement` / `enforcementNotes` 的数据来源：后端自报的 `full` 必须能被实测支撑，
+自报 `full` 却测出偏差时脚本会单独点出“声明与实测不符”。
+
 ## 快速开始
 
 ```bash
@@ -227,9 +253,16 @@ await api.capabilities.webFetch("https://example.com")
 - `sandbox.mode`：`off` / `strict` / `best-effort`；`strict` 找不到 OS 后端时拒绝 Agent 代码执行，`best-effort` 才降级
 - `sandbox.access`：`read-only` / `workspace-write` / `danger-full-access`；默认 `read-only`
 - `--permission <mode>`：单轮覆盖 `sandbox.access`；REPL 里 `/permission [mode]`
-- `sandbox.backend`：`auto` / `bwrap` / `nsjail`
-- Windows / macOS 没有 bwrap：插件使用 Node permission model 作为受限 sandbox（只限制文件读写，不隔离网络与进程）；
-  Agent 的 `execute_code` 仍需要 Linux bwrap，非 Linux 上请把 `sandbox.mode` 设为 `best-effort`（会降级为 direct）
+- `sandbox.backend`：`auto` / `bwrap` / `seatbelt` / `nsjail`（`nsjail` 尚未实现）
+    - `auto`：Linux 用 `bwrap`，macOS 用 `seatbelt`；显式指定后端时**不跨后端回退**（要 `bwrap` 就只在 `bwrap` 上失败）
+    - `bwrap`：Linux，mount / PID / network namespace，报 `full`
+    - `seatbelt`：macOS，SBPL profile。launcher 优先随包的 `bin/darwin-<arch>/seatbelt-run`
+      （`pnpm seatbelt:build` 构建），退回 `/usr/bin/sandbox-exec`（自 macOS 10.10 起 deprecated），
+      两者都没有时 fail-closed。报 `partial`
+- 执行结果的 `enforcement` / `enforcementNotes` 是后端自报的实际强度与缺口；`partial` 不等于失败，
+  但需要绝对边界的调用方只能接受 `full`
+- Windows 没有内核级后端：插件使用 Node permission model 作为受限 sandbox（只限制文件读写，不隔离网络与进程）；
+  Agent 的 `execute_code` 在 Windows 上仍无 OS 隔离，请把 `sandbox.mode` 设为 `best-effort`（会降级为 direct）
 - `sandbox.defaultTimeoutMs`、`defaultMemoryMB`、`outputLimitBytes`：Agent 代码执行的默认限制。
   `defaultTimeoutMs` 是唯一的超时来源（宿主 timer 杀进程，不再用 RLIMIT_CPU）；`defaultMemoryMB` 是物理内存上限，
   通过 systemd user scope 的 cgroup v2 `memory.max`（并关闭 swap）实施；宿主没有 systemd user manager 时
@@ -626,7 +659,8 @@ const files = await ctx.workspaceFs.list("src")
 - `${workspace}` 默认只读，写 workspace 需放进 `fs.write`
 - 没有可用 OS 后端时插件加载失败；插件不做 direct 降级
 - `sandbox.mode: off` 时插件全部拒绝加载
-- Linux 后端为 `bwrap`；当前环境若不允许非特权 user namespace，strict 会拒绝加载
+- 插件后端：Linux 为 `bwrap`，macOS 为 `seatbelt`，Windows 退回 Node permission model
+- Linux 当前环境若不允许非特权 user namespace，strict 会拒绝加载
 
 ### 插件的 HTTP 服务
 
