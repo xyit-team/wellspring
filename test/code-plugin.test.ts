@@ -304,7 +304,7 @@ test("C 家族按行增量着色：只重算改动的行", () => {
     // 普通输入：状态收敛后直接认定后续行还有效，只分词改动行
     assert.match(
         EDITOR_JS,
-        /info\.previousNextState === info\.state[\s\S]{0,80}cache\.tokenizedTo = cache\.lineCount/,
+        /lineStateEquals\(info\.previousNextState, info\.state\)[\s\S]{0,80}cache\.tokenizedTo = cache\.lineCount/,
     )
     // 渲染用行元素，改行只改对应元素的 innerHTML
     assert.match(EDITOR_JS, /node\.className = "view-line"/)
@@ -316,6 +316,47 @@ test("C 家族按行增量着色：只重算改动的行", () => {
         EDITOR_JS,
         /incrementalLanguage\(model === null \? "" : model\.language\)\) \{[\s\S]{0,620}requestAnimationFrame/,
     )
+})
+
+test("Markdown 行分词：块引用尖括号不重复转义，围栏状态可增量维护", () => {
+    const helpers = new Function(
+        HIGHLIGHT_JS +
+            "\nreturn { tokenize: tokenizeMarkdownLine, highlight: highlightMarkdown, state: markdownLineState }",
+    )() as {
+        tokenize: (
+            line: string,
+            state: { fence: string; language: string },
+        ) => { html: string; state: { fence: string; language: string } }
+        highlight: (code: string) => string
+        state: (fence: string, language: string) => { fence: string; language: string }
+    }
+
+    const quote = helpers.highlight("> 引用")
+    assert.match(quote, /tok-comment">&gt;<\/span> 引用/)
+    assert.doesNotMatch(quote, /&amp;gt;/, "不能把 &gt; 再转义成 &amp;gt;")
+
+    let state = helpers.state("", "")
+    const heading = helpers.tokenize("# 标题", state)
+    assert.match(heading.html, /tok-keyword">#<\/span> 标题/)
+    assert.equal(heading.state.fence, "")
+    state = heading.state
+
+    const open = helpers.tokenize("```ts", state)
+    assert.match(open.html, /tok-fence">```ts/)
+    assert.equal(open.state.fence, "`")
+    assert.equal(open.state.language, "ts")
+
+    const code = helpers.tokenize("const x = 1", open.state)
+    assert.match(code.html, /const x = 1/)
+    assert.equal(code.state.fence, "`")
+
+    const close = helpers.tokenize("```", code.state)
+    assert.match(close.html, /tok-fence">```/)
+    assert.equal(close.state.fence, "")
+
+    // 编辑器把 Markdown 也接进了行缓存增量路径
+    assert.match(EDITOR_JS, /language === "markdown" && typeof tokenizeMarkdownLine === "function"/)
+    assert.match(EDITOR_JS, /function lineStateEquals\(left, right\)/)
 })
 
 test("C 家族行分词：分类与跨行状态", () => {

@@ -760,6 +760,63 @@ function highlightInlineMarkdown(line) {
     return output
 }
 
+/** Markdown 行首状态：代码围栏的标记字符与语言；普通行两者都为空 */
+function markdownLineState(fence, language) {
+    return { fence: fence, language: language }
+}
+
+/** 单行 Markdown 分词，供编辑器行缓存使用；与 highlightMarkdown 的规则保持一致 */
+function tokenizeMarkdownLine(text, state) {
+    var fence = state !== null && typeof state === "object" ? String(state.fence || "") : ""
+    var language =
+        state !== null && typeof state === "object" ? String(state.language || "") : ""
+    if (fence !== "") {
+        var closeFence = /^\s*(\u0060{3,}|~{3,})\s*$/.exec(text)
+        if (closeFence !== null && closeFence[1].charAt(0) === fence.charAt(0)) {
+            return { html: wrapToken("fence", text), state: markdownLineState("", "") }
+        }
+        var codeHtml = language === "" ? escapeHtml(text) : highlightCode(text, language)
+        return { html: codeHtml, state: markdownLineState(fence, language) }
+    }
+    var openFence = /^\s*(?:>\s*)*(?:[-*+]\s+)?(\u0060{3,}|~{3,})\s*([\w+#-]*)/.exec(text)
+    if (openFence !== null) {
+        return {
+            html: wrapToken("fence", text),
+            state: markdownLineState(openFence[1].charAt(0), (openFence[2] || "").toLowerCase()),
+        }
+    }
+    var heading = /^(#{1,6})\s+(.*)$/.exec(text)
+    if (heading !== null) {
+        return {
+            html: wrapToken("keyword", heading[1]) + " " + highlightInlineMarkdown(heading[2]),
+            state: markdownLineState("", ""),
+        }
+    }
+    if (/^\s*(?:---+|\*\*\*+|___+)\s*$/.test(text)) {
+        return { html: wrapToken("punct", text), state: markdownLineState("", "") }
+    }
+    if (/^\s*>/.test(text)) {
+        return {
+            html:
+                wrapToken("comment", ">") +
+                highlightInlineMarkdown(text.replace(/^\s*>/, "")),
+            state: markdownLineState("", ""),
+        }
+    }
+    var listItem = /^(\s*)([-*+]|\d+\.)\s+(.*)$/.exec(text)
+    if (listItem !== null) {
+        return {
+            html:
+                listItem[1] +
+                wrapToken("keyword", listItem[2]) +
+                " " +
+                highlightInlineMarkdown(listItem[3]),
+            state: markdownLineState("", ""),
+        }
+    }
+    return { html: highlightInlineMarkdown(text), state: markdownLineState("", "") }
+}
+
 function highlightMarkdown(code) {
     var lines = code.split("\n")
     var output = []
@@ -801,7 +858,7 @@ function highlightMarkdown(code) {
             continue
         }
         if (/^\s*>/.test(line)) {
-            output.push(wrapToken("comment", "&gt;") + highlightInlineMarkdown(line.replace(/^\s*>/, "")))
+            output.push(wrapToken("comment", ">") + highlightInlineMarkdown(line.replace(/^\s*>/, "")))
             continue
         }
         var listItem = /^(\s*)([-*+]|\d+\.)\s+(.*)$/.exec(line)

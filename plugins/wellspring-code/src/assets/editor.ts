@@ -676,11 +676,28 @@ function createEditor(options) {
      */
 
     function incrementalLanguage(language) {
+        if (language === "markdown" && typeof tokenizeMarkdownLine === "function") {
+            return true
+        }
         return (
             typeof tokenizeCFamilyLine === "function" &&
             typeof C_FAMILIES === "object" &&
             C_FAMILIES[language] !== undefined
         )
+    }
+
+    /** 行状态既可能是 C 家族的整数，也可能是 Markdown 的状态对象 */
+    function lineStateEquals(left, right) {
+        if (left === right) return true
+        if (
+            left !== null &&
+            right !== null &&
+            typeof left === "object" &&
+            typeof right === "object"
+        ) {
+            return left.fence === right.fence && left.language === right.language
+        }
+        return false
     }
 
     function resetLineCache(language, value, starts) {
@@ -694,7 +711,8 @@ function createEditor(options) {
             repaintedTo: 0
         }
         for (var index = 0; index < lineCache.state.length; index += 1) lineCache.state[index] = -1
-        lineCache.state[0] = LINE_STATE_CODE
+        lineCache.state[0] =
+            language === "markdown" ? { fence: "", language: "" } : LINE_STATE_CODE
         lineViewNodes = []
         lineViewMode = false
         pendingLineChange = null
@@ -709,14 +727,19 @@ function createEditor(options) {
         var endOffset = line + 1 < starts.length ? starts[line + 1] - 1 : value.length
         var text = endOffset > startOffset ? value.slice(startOffset, endOffset) : ""
         var state = cache.state[line]
-        if (
-            state !== LINE_STATE_CODE &&
-            state !== LINE_STATE_BLOCK_COMMENT &&
-            state !== LINE_STATE_STRING
-        ) {
-            state = LINE_STATE_CODE
+        var result
+        if (cache.language === "markdown" && typeof tokenizeMarkdownLine === "function") {
+            result = tokenizeMarkdownLine(text, state)
+        } else {
+            if (
+                state !== LINE_STATE_CODE &&
+                state !== LINE_STATE_BLOCK_COMMENT &&
+                state !== LINE_STATE_STRING
+            ) {
+                state = LINE_STATE_CODE
+            }
+            result = tokenizeCFamilyLine(text, state, cache.language)
         }
-        var result = tokenizeCFamilyLine(text, state, cache.language)
         var previousNextState = cache.state[line + 1]
         cache.html[line] = result.html
         cache.state[line + 1] = result.state
@@ -738,7 +761,11 @@ function createEditor(options) {
             var info = tokenizeCacheLine(starts)
             if (cache.tokenizedTo >= cache.lineCount) break
             var nextHtml = cache.html[cache.tokenizedTo]
-            if (nextHtml !== undefined && nextHtml !== null && info.previousNextState === info.state) {
+            if (
+                nextHtml !== undefined &&
+                nextHtml !== null &&
+                lineStateEquals(info.previousNextState, info.state)
+            ) {
                 cache.tokenizedTo = cache.lineCount
                 break
             }
@@ -978,7 +1005,7 @@ function createEditor(options) {
         positionViewLayer()
     }
 
-    /* C 家族有行状态缓存：只需重分词改动的行，下一帧就能带着颜色更新，不需要防抖。
+    /* C 家族与 Markdown 有行状态缓存：只需重分词改动的行，下一帧就能带着颜色更新，不需要防抖。
        其余语言没有行状态，只能整片重分词：每帧先铺纯文本保证内容跟上，停顿后再上色。 */
     function scheduleHighlight() {
         if (composing) return
