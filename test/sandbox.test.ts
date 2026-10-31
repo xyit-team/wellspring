@@ -5,15 +5,19 @@ import { join } from "node:path"
 import { after, before, test } from "node:test"
 
 import { DEFAULT_SETTINGS } from "../src/config/defaults.ts"
+import { platform as currentPlatform } from "../src/platform/os.ts"
 import type { ResolvedPaths } from "../src/platform/path.ts"
 import { DirectBackend } from "../src/sandbox/backends/direct.ts"
 import {
+    BwrapBackend,
     buildBwrapLaunch,
     buildBwrapPluginLaunch,
     resolveNodeRuntime,
 } from "../src/sandbox/backends/bwrap.ts"
+import { NodePermissionBackend } from "../src/sandbox/backends/node-permission.ts"
+import { SeatbeltBackend } from "../src/sandbox/backends/seatbelt.ts"
 import { flushSandboxAudit } from "../src/sandbox/audit.ts"
-import { SandboxManager } from "../src/sandbox/manager.ts"
+import { candidateBackends, SandboxManager } from "../src/sandbox/manager.ts"
 
 let root = ""
 let workspace = ""
@@ -333,4 +337,77 @@ test("maxConcurrent 限制并发执行数量", { timeout: 20_000 }, async () => 
     ])
     const lines = (await readFile(log, "utf8")).trim().split("\n")
     assert.deepEqual(lines, ["start:0", "end:0", "start:1", "end:1"])
+})
+
+test("后端能力位与真实机制一致", () => {
+    const bwrap = new BwrapBackend()
+    assert.equal(bwrap.pathStyle, "mount", "bwrap 有独立挂载视图")
+    assert.equal(bwrap.memoryLimit, true, "bwrap 走 cgroup v2")
+    assert.equal(bwrap.enforcement("workspace-write"), "full")
+    assert.deepEqual(bwrap.enforcementNotes("workspace-write"), [])
+
+    /* 没有 cgroup 的后端不能顶替 memoryLimit，否则结果里的 memoryLimit 会撒谎 */
+    assert.equal(new SeatbeltBackend().memoryLimit, false)
+    assert.equal(new DirectBackend().memoryLimit, false)
+
+    assert.equal(new SeatbeltBackend().pathStyle, "host", "Seatbelt 没有挂载命名空间")
+    assert.equal(new DirectBackend().enforcement("read-only"), "none")
+    assert.ok(new DirectBackend().enforcementNotes("read-only").length > 0)
+    assert.equal(new NodePermissionBackend().enforcement("workspace-write"), "partial")
+})
+
+test("candidateBackends：auto 按平台挑，显式指定不跨后端回退", () => {
+    assert.deepEqual(
+        candidateBackends("auto", "macos").map((item) => item.name),
+        ["seatbelt"],
+    )
+    assert.deepEqual(
+        candidateBackends("auto", "linux").map((item) => item.name),
+        ["bwrap"],
+    )
+    assert.deepEqual(
+        candidateBackends("bwrap", "macos").map((item) => item.name),
+        ["bwrap"],
+    )
+    assert.deepEqual(
+        candidateBackends("seatbelt", "linux").map((item) => item.name),
+        ["seatbelt"],
+    )
+    assert.deepEqual(candidateBackends("nsjail", "linux"), [])
+})
+
+test("执行结果透出 enforcement 与缺口说明", async () => {
+    const result = await manager().runAgentCode({
+        command: process.execPath,
+        argv: ["-e", "0"],
+        workspaceDir: workspace,
+    })
+    assert.equal(result.enforcement, "none", "direct 后端必须自报无隔离")
+    assert.ok(result.enforcementNotes.length > 0)
+    assert.match(result.enforcementNotes.join("\n"), /无隔离/)
+})
+
+test("seatbelt 在非 macOS 上 fail-closed，strict 不静默降级", async (t) => {
+    if (currentPlatform === "macos") {
+        t.skip("仅在非 macOS 上验证拒绝路径")
+        return
+    }
+    const status = await new SeatbeltBackend({
+        deps: { platform: "linux", exists: () => false, selfTest: () => false },
+    }).probe()
+    assert.equal(status.available, false)
+    assert.match(status.reason ?? "", /仅 macOS/)
+
+    const strict = new SandboxManager({
+        settings: { ...DEFAULT_SETTINGS.sandbox, mode: "strict", backend: "seatbelt" },
+        paths: paths(),
+    })
+    await assert.rejects(
+        strict.runAgentCode({
+            command: process.execPath,
+            argv: ["-e", "0"],
+            workspaceDir: workspace,
+        }),
+        /sandbox 不可用|没有可用/,
+    )
 })

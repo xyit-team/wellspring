@@ -47,6 +47,10 @@ export interface AgentCodeResult {
     readonly stderr: string
     readonly truncated: boolean
     readonly timedOut: boolean
+    /** 本次 access 的实际强度，缺口见 enforcementNotes */
+    readonly enforcement: SandboxEnforcement
+    /** partial / none 的具体缺口 */
+    readonly enforcementNotes: readonly string[]
     /** 物理内存限制方式：cgroup = 已挂 systemd user scope 的 MemoryMax；none = 宿主不支持/未启用 */
     readonly memoryLimit: "cgroup" | "none"
     /** memoryLimit 为 none 时的原因 */
@@ -116,8 +120,32 @@ export interface AgentLaunchInput {
     readonly limits: SandboxLimits
 }
 
+/**
+ * 后端对某个 access 实际能保证的强度
+ *
+ * full = 承诺的每种文件效果都被强制，partial = 强制了其中一部分，none = 无隔离
+ * 需要绝对边界的调用方只接受 full
+ */
+export type SandboxEnforcement = "full" | "partial" | "none"
+
+/**
+ * 沙箱内的路径视图
+ *
+ * mount = 有独立挂载命名空间，沙箱内是 /workspace、/scratch 这类重映射路径
+ * host = 使用宿主真实路径，沙箱内外路径字符串一致
+ */
+export type SandboxPathStyle = "mount" | "host"
+
 export interface SandboxBackend {
     readonly name: string
+    /** 决定结果里的 artifactDir / sandboxDir 是沙箱内路径还是宿主路径 */
+    readonly pathStyle: SandboxPathStyle
+    /** 是否提供 cgroup v2 物理内存限制，与 pathStyle 无关 */
+    readonly memoryLimit: boolean
+    /** 该后端对给定 access 实际能保证的强度 */
+    enforcement(access: SandboxAccess): SandboxEnforcement
+    /** partial / none 的具体缺口，full 返回空数组 */
+    enforcementNotes(access: SandboxAccess): readonly string[]
     probe(): Promise<SandboxBackendStatus>
     buildAgentLaunch(input: AgentLaunchInput): LaunchSpec
     buildPluginLaunch(input: PluginLaunchInput): LaunchSpec

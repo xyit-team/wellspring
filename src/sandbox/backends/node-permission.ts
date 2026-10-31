@@ -6,6 +6,7 @@
  * 读写宿主任意文件。它不隔离网络与进程，所以只用于插件，不用于任意 Agent 命令。
  */
 
+import type { SandboxAccess } from "../../config/types.ts"
 import type {
     AgentLaunchInput,
     LaunchSpec,
@@ -39,6 +40,21 @@ export function buildNodePermissionPluginLaunch(input: PluginLaunchInput): Launc
 
 export class NodePermissionBackend implements SandboxBackend {
     readonly name = BACKEND_NAME
+    readonly pathStyle = "host" as const
+    readonly memoryLimit = false
+
+    /** 只收窄文件读写，仅在 Node 进程内生效 */
+    enforcement(_access: SandboxAccess): "full" | "partial" | "none" {
+        return "partial"
+    }
+
+    enforcementNotes(_access: SandboxAccess): readonly string[] {
+        return [
+            "fs: Node --permission 的文件读写白名单，不覆盖子进程",
+            "network: 不隔离",
+            "process: 不隔离",
+        ]
+    }
 
     async probe(): Promise<SandboxBackendStatus> {
         const supported = process.allowedNodeEnvironmentFlags.has("--permission")

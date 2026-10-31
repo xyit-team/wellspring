@@ -36,8 +36,10 @@ import type { AppSetting, SandboxSetting } from "../config/types.ts"
 import { getElog } from "../logger/elog4js.ts"
 import { ensureDir, readJsonIfExists } from "../platform/file.ts"
 import { getPaths, type ResolvedPaths } from "../platform/path.ts"
+import { isLinux, isMacOS } from "../platform/os.ts"
 import { BwrapBackend } from "../sandbox/backends/bwrap.ts"
 import { NodePermissionBackend } from "../sandbox/backends/node-permission.ts"
+import { SeatbeltBackend } from "../sandbox/backends/seatbelt.ts"
 import { PluginSandboxClient, type PluginSandboxPermissions } from "../sandbox/plugin-client.ts"
 import type { SandboxBackend } from "../sandbox/types.ts"
 import { AgentToolRegistry } from "./agent-tools.ts"
@@ -736,15 +738,36 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
     if (sandboxSetting.mode !== "off") {
         if (options.sandboxBackend !== undefined) {
             sandboxBackend = options.sandboxBackend
-        } else if (sandboxSetting.backend === "auto" || sandboxSetting.backend === "bwrap") {
-            const bwrap = new BwrapBackend()
-            const status = await bwrap.probe()
-            if (status.available) {
-                sandboxBackend = bwrap
-            } else if (sandboxSetting.backend === "auto" && process.platform !== "linux") {
+        } else {
+            /*
+             * 按 backend 配置展开候选：bwrap（Linux）与 Seatbelt（macOS）
+             * 显式指定不跨后端回退，auto 按平台挑
+             */
+            const candidates: SandboxBackend[] = []
+            if (sandboxSetting.backend === "bwrap" || sandboxSetting.backend === "auto") {
+                candidates.push(new BwrapBackend())
+            }
+            if (
+                sandboxSetting.backend === "seatbelt" ||
+                (sandboxSetting.backend === "auto" && isMacOS)
+            ) {
+                candidates.push(new SeatbeltBackend())
+            }
+            for (const candidate of candidates) {
+                const status = await candidate.probe()
+                if (status.available) {
+                    sandboxBackend = candidate
+                    break
+                }
+                options.logger?.warn(
+                    { backend: candidate.name, reason: status.reason },
+                    "插件 sandbox backend 不可用",
+                )
+            }
+            if (sandboxBackend === null && sandboxSetting.backend === "auto" && !isLinux) {
                 /*
-                 * Windows / macOS 没有 bwrap；用 Node permission model 作为插件 sandbox。
-                 * 它只限制文件读写，不隔离网络与进程，因此仅给插件用，不做 Agent 命令后端。
+                 * Windows 无内核级后端，退回 Node permission model
+                 * 只限制文件读写，仅给插件用，不做 Agent 命令后端
                  */
                 const nodePermission = new NodePermissionBackend()
                 const nodeStatus = await nodePermission.probe()

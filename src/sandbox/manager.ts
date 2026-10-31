@@ -6,11 +6,13 @@ import { createHash, randomUUID } from "node:crypto"
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, join, relative, resolve, sep } from "node:path"
 
-import type { SandboxAccess } from "../config/types.ts"
+import type { SandboxAccess, SandboxBackend as SandboxBackendName } from "../config/types.ts"
+import { platform as currentPlatform, type PlatformName } from "../platform/os.ts"
 
 import { auditSandbox } from "./audit.ts"
 import { BwrapBackend } from "./backends/bwrap.ts"
 import { DirectBackend } from "./backends/direct.ts"
+import { SeatbeltBackend } from "./backends/seatbelt.ts"
 import { createSandboxMemoryLimit, type MemoryLimitState } from "./memory-limit.ts"
 import { startSandboxProcess, type SandboxProcessHandle } from "./supervisor.ts"
 import {
@@ -100,6 +102,30 @@ async function collectArtifacts(
     return { artifacts: collected, artifactDir: destination }
 }
 
+/**
+ * 按配置与平台展开候选后端
+ *
+ * auto 只取当前平台的首选后端，显式指定（bwrap / seatbelt）不跨后端回退
+ */
+export function candidateBackends(
+    preferred: SandboxBackendName,
+    osPlatform: PlatformName,
+): readonly SandboxBackend[] {
+    switch (preferred) {
+        case "bwrap":
+            return [new BwrapBackend()]
+        case "seatbelt":
+            return [new SeatbeltBackend()]
+        case "nsjail":
+            /* 尚未实现：交给调用方显式报不可用 */
+            return []
+        case "auto":
+            return osPlatform === "macos" ? [new SeatbeltBackend()] : [new BwrapBackend()]
+        default:
+            return []
+    }
+}
+
 export class SandboxManager {
     readonly #options: SandboxManagerOptions
     #backend: SandboxBackend | null
@@ -117,7 +143,8 @@ export class SandboxManager {
         if (this.#backend !== null) {
             return await this.#backend.probe()
         }
-        if (this.#options.settings.backend === "nsjail") {
+        const preferred = this.#options.settings.backend
+        if (preferred === "nsjail") {
             return {
                 available: false,
                 backend: "nsjail",
@@ -125,7 +152,22 @@ export class SandboxManager {
                 version: null,
             }
         }
-        return await new BwrapBackend().probe()
+        let last: SandboxBackendStatus | null = null
+        for (const candidate of candidateBackends(preferred, currentPlatform)) {
+            const status = await candidate.probe()
+            if (status.available) {
+                return status
+            }
+            last = status
+        }
+        return (
+            last ?? {
+                available: false,
+                backend: preferred,
+                reason: "没有可用的 OS 级 sandbox 后端",
+                version: null,
+            }
+        )
     }
 
     async #resolveBackend(access: SandboxAccess): Promise<SandboxBackend> {
@@ -145,14 +187,11 @@ export class SandboxManager {
             }
 
             const preferred = settings.backend
-            const candidates: SandboxBackend[] = []
-            if (preferred === "auto" || preferred === "bwrap") {
-                candidates.push(new BwrapBackend())
-            }
             if (preferred === "nsjail") {
                 // nsjail 后端尚未实现，显式报告不可用
                 throw new SandboxUnavailableError("nsjail 后端尚未实现")
             }
+            const candidates = candidateBackends(preferred, currentPlatform)
 
             for (const candidate of candidates) {
                 const status = await candidate.probe()
@@ -269,7 +308,7 @@ export class SandboxManager {
         await ensureDirectory(join(scratchDir, "artifacts"))
 
         const env = baseEnv()
-        if (backend.name === "bwrap") {
+        if (backend.pathStyle === "mount") {
             env["HOME"] = "/scratch"
             env["TMPDIR"] = "/scratch/tmp"
             env["SCRATCH"] = "/scratch"
@@ -281,13 +320,12 @@ export class SandboxManager {
             env["WORKSPACE"] = workspaceDir
         }
 
-        const memoryLimit: MemoryLimitState | null =
-            backend.name === "bwrap"
-                ? await createSandboxMemoryLimit({
-                      bytes: limits.memoryMB * 1024 * 1024,
-                      timeoutMs: limits.timeoutMs,
-                  })
-                : null
+        const memoryLimit: MemoryLimitState | null = backend.memoryLimit
+            ? await createSandboxMemoryLimit({
+                  bytes: limits.memoryMB * 1024 * 1024,
+                  timeoutMs: limits.timeoutMs,
+              })
+            : null
         if (memoryLimit !== null && !memoryLimit.active && !this.#memoryLimitWarned) {
             this.#memoryLimitWarned = true
             this.#options.logger?.warn(
@@ -337,6 +375,7 @@ export class SandboxManager {
                         sandboxId,
                         backend: backend.name,
                         access,
+                        enforcement: backend.enforcement(access),
                         exitCode: processResult.exitCode,
                         timedOut: processResult.timedOut,
                         durationMs: processResult.durationMs,
@@ -357,6 +396,8 @@ export class SandboxManager {
                         sandboxId,
                         backend: backend.name,
                         access,
+                        enforcement: backend.enforcement(access),
+                        enforcementNotes: backend.enforcementNotes(access),
                         exitCode: processResult.exitCode,
                         signal: processResult.signal,
                         stdout: processResult.stdout,
@@ -372,10 +413,10 @@ export class SandboxManager {
                         artifactDir:
                             artifactDir === null
                                 ? null
-                                : backend.name === "bwrap"
+                                : backend.pathStyle === "mount"
                                   ? "/scratch/artifacts"
                                   : artifactDir,
-                        sandboxDir: backend.name === "bwrap" ? "/scratch" : sandboxDir,
+                        sandboxDir: backend.pathStyle === "mount" ? "/scratch" : sandboxDir,
                         hostArtifactDir: artifactDir,
                         hostSandboxDir: sandboxDir,
                     }

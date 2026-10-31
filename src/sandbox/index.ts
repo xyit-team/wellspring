@@ -1,5 +1,6 @@
 export * from "./backends/bwrap.ts"
 export * from "./backends/direct.ts"
+export * from "./backends/seatbelt.ts"
 export * from "./manager.ts"
 export * from "./supervisor.ts"
 export * from "./types.ts"

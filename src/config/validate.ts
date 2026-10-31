@@ -292,7 +292,12 @@ function validateNetwork(input: Record<string, unknown>): Result<NetworkSetting>
 }
 
 const SANDBOX_MODES: ReadonlySet<string> = new Set<SandboxMode>(["off", "strict", "best-effort"])
-const SANDBOX_BACKENDS: ReadonlySet<string> = new Set<SandboxBackend>(["auto", "bwrap", "nsjail"])
+const SANDBOX_BACKENDS: ReadonlySet<string> = new Set<SandboxBackend>([
+    "auto",
+    "bwrap",
+    "nsjail",
+    "seatbelt",
+])
 const SANDBOX_ACCESS: ReadonlySet<string> = new Set<SandboxAccess>([
     "read-only",
     "workspace-write",

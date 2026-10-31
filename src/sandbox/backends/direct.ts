@@ -3,6 +3,7 @@
  * 不提供 fs、网络、进程隔离；严格模式禁止使用。
  */
 
+import type { SandboxAccess } from "../../config/types.ts"
 import type {
     AgentLaunchInput,
     LaunchSpec,
@@ -13,6 +14,17 @@ import type {
 
 export class DirectBackend implements SandboxBackend {
     readonly name = "direct"
+    readonly pathStyle = "host" as const
+    readonly memoryLimit = false
+
+    /** 无隔离，任何 access 都是宿主直接执行 */
+    enforcement(_access: SandboxAccess): "full" | "partial" | "none" {
+        return "none"
+    }
+
+    enforcementNotes(_access: SandboxAccess): readonly string[] {
+        return ["无隔离：以宿主用户身份执行，文件、网络、进程不受限"]
+    }
 
     async probe(): Promise<SandboxBackendStatus> {
         return {

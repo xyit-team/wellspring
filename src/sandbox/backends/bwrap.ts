@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { dirname, join, relative, resolve, sep } from "node:path"
 
+import type { SandboxAccess } from "../../config/types.ts"
 import type {
     AgentLaunchInput,
     LaunchSpec,
@@ -198,6 +199,22 @@ export function buildBwrapPluginLaunch(input: PluginLaunchInput): LaunchSpec {
 
 export class BwrapBackend implements SandboxBackend {
     readonly name = "bwrap"
+    /* 根文件系统只读挂载后 --bind 工作区，沙箱内路径为重映射结果 */
+    readonly pathStyle = "mount" as const
+    /* 物理内存由 SandboxManager 挂 cgroup v2 memory.max */
+    readonly memoryLimit = true
+
+    /**
+     * 文件效果由 namespace 与只读挂载强制，报 full
+     * 网络与进程可见性不在 access 的承诺范围内
+     */
+    enforcement(access: SandboxAccess): "full" | "partial" | "none" {
+        return access === "danger-full-access" ? "none" : "full"
+    }
+
+    enforcementNotes(access: SandboxAccess): readonly string[] {
+        return access === "danger-full-access" ? ["绕开 bwrap，以宿主身份执行"] : []
+    }
 
     async probe(): Promise<SandboxBackendStatus> {
         if (!existsSync("/usr/bin/bwrap")) {
