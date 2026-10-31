@@ -12,6 +12,10 @@
     ],
     "license": "MIT",
     "author": "xyit-team",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/xyit-team/wellspring.git"
+    },
     "bin": {
         "wellspring": "./dist/index.js"
     },
