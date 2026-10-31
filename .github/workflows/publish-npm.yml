@@ -71,6 +71,10 @@ jobs:
               run: pnpm format:check
 
             - name: 测试
+              # GitHub 的 Node 24 在并发/异步上下文收尾时偶发
+              # InternalCallbackScope 原生断言；关掉 AsyncContextFrame 走稳定实现
+              env:
+                  NODE_OPTIONS: --no-async-context-frame
               run: pnpm test
 
             - name: 构建
