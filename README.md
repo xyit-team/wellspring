@@ -225,6 +225,8 @@ await api.capabilities.webFetch("https://example.com")
 - `sandbox.access`：`read-only` / `workspace-write` / `danger-full-access`；默认 `read-only`
 - `--permission <mode>`：单轮覆盖 `sandbox.access`；REPL 里 `/permission [mode]`
 - `sandbox.backend`：`auto` / `bwrap` / `nsjail`
+- Windows / macOS 没有 bwrap：插件使用 Node permission model 作为受限 sandbox（只限制文件读写，不隔离网络与进程）；
+  Agent 的 `execute_code` 仍需要 Linux bwrap，非 Linux 上请把 `sandbox.mode` 设为 `best-effort`（会降级为 direct）
 - `sandbox.defaultTimeoutMs`、`defaultMemoryMB`、`outputLimitBytes`：Agent 代码执行的默认限制。
   `defaultTimeoutMs` 是唯一的超时来源（宿主 timer 杀进程，不再用 RLIMIT_CPU）；`defaultMemoryMB` 是物理内存上限，
   通过 systemd user scope 的 cgroup v2 `memory.max`（并关闭 swap）实施；宿主没有 systemd user manager 时

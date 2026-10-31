@@ -37,6 +37,7 @@ import { getElog } from "../logger/elog4js.ts"
 import { ensureDir, readJsonIfExists } from "../platform/file.ts"
 import { getPaths, type ResolvedPaths } from "../platform/path.ts"
 import { BwrapBackend } from "../sandbox/backends/bwrap.ts"
+import { NodePermissionBackend } from "../sandbox/backends/node-permission.ts"
 import { PluginSandboxClient, type PluginSandboxPermissions } from "../sandbox/plugin-client.ts"
 import type { SandboxBackend } from "../sandbox/types.ts"
 import { AgentToolRegistry } from "./agent-tools.ts"
@@ -738,8 +739,23 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
         } else if (sandboxSetting.backend === "auto" || sandboxSetting.backend === "bwrap") {
             const bwrap = new BwrapBackend()
             const status = await bwrap.probe()
-            // 插件不做 direct 降级：没有 OS 后端就拒绝加载
-            sandboxBackend = status.available ? bwrap : null
+            if (status.available) {
+                sandboxBackend = bwrap
+            } else if (sandboxSetting.backend === "auto" && process.platform !== "linux") {
+                /*
+                 * Windows / macOS 没有 bwrap；用 Node permission model 作为插件 sandbox。
+                 * 它只限制文件读写，不隔离网络与进程，因此仅给插件用，不做 Agent 命令后端。
+                 */
+                const nodePermission = new NodePermissionBackend()
+                const nodeStatus = await nodePermission.probe()
+                if (nodeStatus.available) {
+                    sandboxBackend = nodePermission
+                    options.logger?.warn(
+                        { backend: nodePermission.name, reason: nodeStatus.reason },
+                        "使用受限插件 sandbox（Node permission model）",
+                    )
+                }
+            }
         }
     }
 

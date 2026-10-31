@@ -458,14 +458,47 @@ export class PluginSandboxClient {
         await this.#prepareHostSdk()
 
         const pluginEntryRel = relative(this.#options.pluginDir, this.#options.pluginEntry)
-        const env: Record<string, string> = {
-            PATH: "/usr/bin:/bin",
-            LANG: "C.UTF-8",
-            LC_ALL: "C.UTF-8",
-            TERM: "dumb",
-            HOME: "/tmp",
-            TMPDIR: "/tmp",
-        }
+        const pluginTempDir = join(this.#pluginDataDir, "tmp")
+        await mkdir(pluginTempDir, { recursive: true })
+        const env: Record<string, string> = isBwrap
+            ? {
+                  PATH: "/usr/bin:/bin",
+                  LANG: "C.UTF-8",
+                  LC_ALL: "C.UTF-8",
+                  TERM: "dumb",
+                  HOME: "/tmp",
+                  TMPDIR: "/tmp",
+              }
+            : {
+                  /*
+                   * Windows / macOS 的插件 sandbox（Node permission）使用宿主路径；
+                   * 只透传系统定位变量，不把 API Key 等敏感环境变量带进插件进程。
+                   */
+                  PATH:
+                      process.env["PATH"] ?? (process.platform === "win32" ? "" : "/usr/bin:/bin"),
+                  TERM: "dumb",
+                  HOME: this.#pluginDataDir,
+                  TMP: pluginTempDir,
+                  TEMP: pluginTempDir,
+                  TMPDIR: pluginTempDir,
+                  ...(process.platform === "win32"
+                      ? {
+                            USERPROFILE: process.env["USERPROFILE"] ?? this.#pluginDataDir,
+                            APPDATA: process.env["APPDATA"] ?? this.#pluginDataDir,
+                            LOCALAPPDATA: process.env["LOCALAPPDATA"] ?? this.#pluginDataDir,
+                            SystemRoot: process.env["SystemRoot"] ?? "C:\\Windows",
+                            SystemDrive: process.env["SystemDrive"] ?? "C:",
+                            ComSpec: process.env["ComSpec"] ?? "C:\\Windows\\System32\\cmd.exe",
+                            PATHEXT: process.env["PATHEXT"] ?? ".COM;.EXE;.BAT;.CMD",
+                            NUMBER_OF_PROCESSORS: process.env["NUMBER_OF_PROCESSORS"] ?? "1",
+                            PROCESSOR_ARCHITECTURE:
+                                process.env["PROCESSOR_ARCHITECTURE"] ?? "AMD64",
+                        }
+                      : {
+                            LANG: "C.UTF-8",
+                            LC_ALL: "C.UTF-8",
+                        }),
+              }
         const input: PluginLaunchInput = {
             pluginDir: this.#options.pluginDir,
             pluginEntryRel,
