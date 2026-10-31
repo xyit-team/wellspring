@@ -1,28 +1,55 @@
 {
-    "name": "wellspring",
+    "name": "@xyit/wellspring",
     "version": "1.0.0",
-    "description": "",
-    "keywords": [],
+    "description": "Wellspring 源泉 —— 插件式 Agent 平台与 CLI（Plugin-based AI agent platform and CLI）",
+    "keywords": [
+        "agent",
+        "ai",
+        "cli",
+        "llm",
+        "plugin",
+        "wellspring"
+    ],
     "license": "MIT",
-    "author": "",
+    "author": "xyit-team",
     "bin": {
-        "wellspring": "./src/index.ts"
+        "wellspring": "./dist/index.js"
     },
+    "files": [
+        "dist",
+        "src",
+        "scripts",
+        "README.md",
+        "LICENSE"
+    ],
     "type": "module",
-    "main": "src/index.ts",
-    "types": "./src/index.ts",
+    "main": "dist/index.js",
+    "types": "./dist/index.d.ts",
     "exports": {
-        ".": "./src/index.ts",
-        "./api/host": "./src/api/host/index.ts",
-        "./*": "./src/*"
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        },
+        "./api/host": {
+            "types": "./dist/api/host/index.d.ts",
+            "import": "./dist/api/host/index.js"
+        },
+        "./package.json": "./package.json"
+    },
+    "publishConfig": {
+        "access": "public"
     },
     "scripts": {
         "start": "node src/index.ts",
-        "test": "node --test",
+        "test": "node --test test",
         "typecheck": "tsc --noEmit",
         "format": "oxfmt",
         "format:check": "oxfmt --check",
-        "pty:build": "node scripts/build-node-pty.mjs"
+        "pty:build": "node scripts/build-node-pty.mjs",
+        "build:web-ui": "node plugins/wellspring-web/scripts/build-ui.mjs",
+        "typecheck:web-ui": "node plugins/wellspring-web/scripts/check-ui.mjs",
+        "build": "tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs",
+        "prepack": "npm run build"
     },
     "dependencies": {
         "cli-highlight": "^2.1.11",

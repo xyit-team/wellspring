@@ -1,5 +1,22 @@
 # Wellspring 源泉 —— 聚合式 Agent 平台
 
+## 安装
+
+```bash
+npm install -g @xyit/wellspring
+wellspring version
+```
+
+npm 包只包含**宿主与 CLI**，不包含 `plugins/` 下的自带插件。Agent 工具、网页端等能力都由插件提供，
+需要另行获取官方插件（仓库里的 `plugins/wellspring-core`、`plugins/wellspring-web` 等）后安装：
+
+```bash
+wellspring plugin link ./plugins/wellspring-core
+wellspring plugin link ./plugins/wellspring-web
+```
+
+只安装 npm 包时 CLI 与宿主可以运行，但 Agent 没有工具，网页端也不会启动。
+
 ## 运行要求
 
 - Node.js >= 24
@@ -40,6 +57,8 @@ node src/index.ts key test      # 连通性测试（拉一次模型列表）
 node src/index.ts config set models.activeProvider deepseek   # 切换供应商（网页里可加自定义供应商）
 node src/index.ts config set models.activeModel deepseek-chat # 切换模型
 node src/index.ts config set models.activeReasoning high      # 推理等级 off/low/high/max
+node src/index.ts config set network.proxy http://127.0.0.1:7890  # 出站 HTTP 代理；none 恢复直连
+node src/index.ts config set network.noProxy "localhost,127.0.0.1" # 不走代理的主机（逗号/空格分隔）
 node src/index.ts config set plugins.wellspring-web.host 0.0.0.0  # 插件私有配置（重启生效）
 
 OPENAI_API_KEY=sk-... node src/index.ts chat "解释一下 EventBus"   # 也可以只用环境变量
@@ -74,8 +93,11 @@ hi
 
 ```text
 请求执行命令
-  command node -e console.log('hi')
+  command node
+  参数 1 -e
+  参数 2 console.log('hi')
   工作目录 .
+  权限 read-only → workspace-write
 是否允许？[允许] [拒绝]  ←/→ 切换 · Enter 确认
   已允许提权
 ```
@@ -88,7 +110,7 @@ hi
 - 脚注与数学公式保留原文（终端渲染器不支持）
 - 非 TTY 与 `--json` 保持纯文本
 - 无颜色终端用 `>` 标记当前选项
-- 请求更宽权限时显示审批块，`--allow-exec` 跳过
+- 请求更宽权限时显示审批块：命令、每个参数、工作目录、权限变化，以及联网 / 后台 / 超时 / 标准输入等本次调用参数；`--allow-exec` 跳过
 
 `--json` 输出与内部 `Result` 对齐的 envelope：
 
@@ -118,13 +140,15 @@ hi
 Agent 工具实现已抽到 [`plugins/wellspring-core`](plugins/wellspring-core)：
 
 - `read`
-- `delete_file`（删除工作区文件；目录需 `recursive:true`，read-only 权限下拒绝）
+- `delete_file`（把工作区文件/目录移入回收站；目录需 `recursive:true`，read-only 权限下拒绝）
 - `execute_code`（支持 `background` / `network`）
 - `web_search`
 - `web_fetch`
 - `query_task`
 - `stop_task`
 - `skill_list` / `skill_read` / `skill_install` / `skill_modify`（通用 SKILL.md 规范）
+- `onSessionStart`：新会话第一轮向 system prompt 注入运行环境（OS / Node / 工作目录 / 时间 / 模型 / 沙箱权限）
+  与本轮可用工具列表（名称 + 一行描述）
 
 所有插件都由用户手动安装或链接，平台不会自动安装插件：
 
@@ -156,8 +180,10 @@ await api.capabilities.webFetch("https://example.com")
 `run` 模式提供：
 
 - `read`：读取 workspace 内 UTF-8 文本，带行号，支持 offset/limit
-- `delete_file`：删除 workspace 内文件；`path` 为工作区相对路径，删目录要 `recursive:true`；工作区根目录与 `..` 路径拒绝，只读权限下不允许调用
-- `execute_code`：sandbox 内执行命令；默认 `read-only`，普通命令不弹审批；模型请求 `workspace-write` / `danger-full-access` 时才审批
+- `delete_file`：把 workspace 内文件或目录移入插件数据目录的回收站（`<dataDir>/plugin-data/wellspring-core/trash/<时间戳>/files/<原路径>`），不会永久删除；`path` 为工作区相对路径，目录要 `recursive:true`；工作区根目录与 `..` 路径拒绝，只读权限下不允许调用。回收站保留最近 200 次删除，恢复时把 `files/` 里的条目移回原路径即可
+- `execute_code`：sandbox 内执行命令；默认 `read-only`，普通命令不弹审批；模型请求 `workspace-write` / `danger-full-access` 时才审批。
+  沙箱把当前 Node 安装前缀挂到 `/opt/wellspring`（`node` / `npm` / `npx` 都在 PATH 上）；`HOME=/scratch`，
+  `/tmp` 与 `/scratch` 都是单次调用生命周期，跨调用持久保留的只有 workspace 与显式导出的 artifact
 - `web_search`：调用 DeepSeek Search API 搜索网页
 - `web_fetch`：调用 DeepSeek Fetch API 抓取网页 Markdown 正文
 - `ask`：平台内置，向用户提问并等待回答（等待上限 5 分钟）。问题触发 `onAgentAsk`；回答后触发 `onUserAnswer`，答案作为工具结果回到模型。终端里直接在命令行回答（回车跳过）；网页在输入框上方显示「Agent 提问」卡片（编号选项、推荐标记、自定义答案、跳过/收起）；网页没有应答时按未回答继续
@@ -193,12 +219,16 @@ await api.capabilities.webFetch("https://example.com")
 ```
 
 - `openai.baseUrl` 为 `null` 时使用 SDK 默认值或 `OPENAI_BASE_URL`
-- `network.proxy` 为 `null` 时直连；一期只支持 HTTP/HTTPS 代理
+- `network.proxy` 为 `null` 时直连；只支持 HTTP/HTTPS 代理。可以用 CLI（`config set network.proxy <url>`、`network.noProxy`）
+  或网页「网络代理」页修改；模型调用每轮重新读取配置，保存后下一轮生效，不需要重启服务
 - `sandbox.mode`：`off` / `strict` / `best-effort`；`strict` 找不到 OS 后端时拒绝 Agent 代码执行，`best-effort` 才降级
 - `sandbox.access`：`read-only` / `workspace-write` / `danger-full-access`；默认 `read-only`
 - `--permission <mode>`：单轮覆盖 `sandbox.access`；REPL 里 `/permission [mode]`
 - `sandbox.backend`：`auto` / `bwrap` / `nsjail`
-- `sandbox.defaultTimeoutMs`、`defaultMemoryMB`、`outputLimitBytes`：Agent 代码执行的默认限制
+- `sandbox.defaultTimeoutMs`、`defaultMemoryMB`、`outputLimitBytes`：Agent 代码执行的默认限制。
+  `defaultTimeoutMs` 是唯一的超时来源（宿主 timer 杀进程，不再用 RLIMIT_CPU）；`defaultMemoryMB` 是物理内存上限，
+  通过 systemd user scope 的 cgroup v2 `memory.max`（并关闭 swap）实施；宿主没有 systemd user manager 时
+  降级为只限制 V8 堆。不再设置 RLIMIT_AS（它会直接打死 V8 / JVM / Go）
 - 插件私有配置在 `<configDir>/plugins/<id>.json`，可用 `wellspring config get/set plugins.<id>.<field> <value>` 读写：
 
     ```bash
@@ -233,7 +263,9 @@ await api.capabilities.webFetch("https://example.com")
 
 - 内置供应商 id 固定为 `openai`，由 `openai.baseUrl` / `openai.model` / `OPENAI_API_KEY` 描述，不能删除
 - 每个供应商的 Key 分槽存在 `credentials.json` 的 `providers` 下；`apiKeyEnv` 指定的环境变量优先
-- CLI 用 `config set models.activeProvider|models.activeModel|models.activeReasoning` 切换；网页在「模型与供应商」里增删供应商、切换模型
+- CLI 用 `config set models.activeProvider|models.activeModel|models.activeReasoning` 切换，
+  `config set network.proxy|network.noProxy` 配置出站代理；网页在「模型与供应商」里增删供应商、切换模型，
+  在「网络代理」页配置代理
 - 推理等级 `activeReasoning`：`off` / `low` / `high` / `max`（参考 Harness）；`off` 不发参数，
   其它按 `reasoning_effort` 发给模型接口。单轮可用 `--reasoning <level>` 覆盖
 
@@ -261,18 +293,19 @@ if (other) {
 ### 开发与安装
 
 ```bash
-node src/index.ts plugin new hello-plugin --dir ./plugins
-node src/index.ts plugin link ./plugins/hello-plugin      # 开发时链接
-node src/index.ts plugin install ./plugins/hello-plugin    # 或目录 / zip
+node src/index.ts plugin new my-plugin --dir ./plugins
+node src/index.ts plugin link ./plugins/my-plugin      # 开发时链接（只改文件，不启动插件）
+node src/index.ts plugin install ./plugins/my-plugin    # 或目录 / zip（只改文件）
+node src/index.ts plugin remove <name>                     # 被依赖时拒绝；加 --ignore 强制删除
 node src/index.ts plugin list
 ```
 
-仓库自带示例：[plugins/hello-plugin](plugins/hello-plugin/index.ts)。
+仓库自带官方插件：[plugins/wellspring-core](plugins/wellspring-core)、[plugins/wellspring-web](plugins/wellspring-web)、[plugins/wellspring-http](plugins/wellspring-http)、[plugins/wellspring-code](plugins/wellspring-code)。
 
 ### 入口与生命周期
 
 ```ts
-import { onMessage, onInit, onShutdown } from "wellspring/api/host/index.ts"
+import { onMessage, onSessionStart, onInit, onShutdown } from "wellspring/api/host/index.ts"
 import type { Logger, PluginApi } from "wellspring/api/host/index.ts"
 
 // 钩子可以放在模块顶层，也可以放在 setup() 里
@@ -282,9 +315,14 @@ onMessage(({ phase, prompt }) => {
     }
 })
 
+// 每个会话只触发一次：新会话的第一轮开始前注入一次性 system prompt
+onSessionStart(({ prompt, cwd }) => {
+    prompt.push(`你当前的工作区是 ${cwd}`)
+})
+
 export function setup() {
     return {
-        id: "hello-plugin",
+        id: "my-plugin",
         name: "Hello Plugin",
         version: "0.1.0",
         status: "ok",
@@ -325,24 +363,26 @@ onShutdown(() => {
 
 `setup()` 的 `init(api: PluginApi)` 暴露以下能力。
 
-| 成员                       | 说明                                                     |
-| -------------------------- | -------------------------------------------------------- |
-| `apiVersion`               | 宿主 API 版本                                            |
-| `plugin`                   | `{ id, name, version }`                                  |
-| `paths`                    | 配置、数据、缓存、日志根目录                             |
-| `config`                   | 全局配置 `AppSetting`                                    |
-| `logger`                   | pino Logger                                              |
-| `output`                   | `info` / `warn` / `error` / `print`，走终端渲染          |
-| `pluginDataDir`            | 插件数据目录，已创建                                     |
-| `pluginConfig`             | `<configDir>/plugins/<id>.json` 内容                     |
-| `fs`                       | 插件数据目录内的文件 API                                 |
-| `workspaceFs`              | 当前工作目录的文件 API，需 `fs.read` 声明 `${workspace}` |
-| `registerCommand(command)` | 运行时注册命令                                           |
-| `registerAgentTool(tool)`  | 运行时注册 Agent 工具                                    |
-| `pluginData(pluginId)`     | 读取依赖插件的数据目录，无权限返回 `null`                |
-| `capabilities`             | 代码执行与网络能力                                       |
-| `http`                     | 宿主 HTTP/HTTPS/SSE/WebSocket 服务                       |
-| `agent`                    | 与 Agent 会话交互，`chat({ message, sessionId? })`       |
+| 成员                       | 说明                                                          |
+| -------------------------- | ------------------------------------------------------------- |
+| `apiVersion`               | 宿主 API 版本                                                 |
+| `plugin`                   | `{ id, name, version }`                                       |
+| `paths`                    | 配置、数据、缓存、日志根目录                                  |
+| `config`                   | 全局配置 `AppSetting`                                         |
+| `logger`                   | pino Logger                                                   |
+| `output`                   | `info` / `warn` / `error` / `print`，走终端渲染               |
+| `pluginDataDir`            | 插件数据目录，已创建                                          |
+| `pluginConfig`             | `<configDir>/plugins/<id>.json` 内容                          |
+| `fs`                       | 插件数据目录内的文件 API                                      |
+| `workspaceFs`              | 当前工作目录的文件 API，需 `fs.read` 声明 `${workspace}`      |
+| `registerCommand(command)` | 运行时注册命令                                                |
+| `registerAgentTool(tool)`  | 运行时注册 Agent 工具                                         |
+| `pluginData(pluginId)`     | 读取依赖插件的数据目录，无权限返回 `null`                     |
+| `capabilities`             | 代码执行与网络能力                                            |
+| `http`                     | 宿主 HTTP/HTTPS/SSE/WebSocket 服务（只给 wellspring-http 用） |
+| `workspaces`               | 宿主级工作区注册表：列表 / 添加 / 移除 / 重命名 / touch       |
+| `agent`                    | 与 Agent 会话交互，`chat({ message, sessionId? })`            |
+| `network`                  | 出站代理配置：`state()` / `saveProxy({ url, noProxy? })`      |
 
 #### capabilities
 
@@ -376,6 +416,28 @@ onShutdown(() => {
 流式执行中，如果 `execute_code` 请求比当前权限更宽的 access，宿主会发出 `{ type: "approval", request }` 并等待
 `agent.respondApproval(request.approvalId, approved)`；超时（120s）按拒绝处理。
 
+#### workspaces
+
+工作区（用户手动添加的目录）是**宿主级**概念，注册表存在 `<dataDir>/workspaces.json`，
+插件通过 `api.workspaces` 读写，不再解析其它插件的数据目录。需要 `hostApi: workspaces` 权限。
+
+| 方法                              | 说明                                                                |
+| --------------------------------- | ------------------------------------------------------------------- |
+| `workspaces.list()`               | `{ workspaces: [{ id, name, root, createdAt, lastSeenAt }] }`       |
+| `workspaces.add({ root, name? })` | 添加已存在的绝对路径目录；重复添加返回已有记录（`duplicate: true`） |
+| `workspaces.rename(id, name)`     | 重命名；不存在返回 `null`                                           |
+| `workspaces.touch(id)`            | 刷新 `lastSeenAt`；不存在返回 `null`                                |
+| `workspaces.remove(id)`           | 只从注册表移除，不动目录本身                                        |
+
+```ts
+const { workspaces } = await api.workspaces.list()
+const added = await api.workspaces.add({ root: "/home/me/project", name: "项目" })
+```
+
+- 工作区 id 由目录路径派生（名称片段 + 路径哈希），同一目录重复添加不会产生重复条目
+- 最多 40 个工作区；名称 1–60 字符；注册表损坏会备份成 `workspaces.json.broken` 后按空表启动
+- 首次加载会兼容迁移旧版 `wellspring-web` 插件数据目录里的工作区索引（只读 id / 名称 / 路径 / 时间）
+
 #### fs / workspaceFs
 
 `HostFileApi` 提供：
@@ -408,14 +470,18 @@ list / stat / mkdir / remove / exists
 - `getHost()`：宿主状态、OS、路径、插件列表
 - `eventBus` / `EventEntity`：事件总线
 - `getSession(id)`：获取活跃会话；`Session` / `SessionMessage` / `Workspace`
-- `onInit` / `onShutdown` / `onMessage` 等钩子
+- `onInit` / `onShutdown` / `onMessage` / `onSessionStart` 等钩子
 - 全部 `PluginApi`、`PluginCommand`、`AgentTool`、`HttpServerHandle` 等类型
 
 ### 钩子
 
-`onInit`、`onShutdown`、`onMessage`、`beforeTurn`、`beforeStep`、`afterStep`、`afterTurn`、`onAgentRunSync`、`onAgentRunAsync`、`onAgentAsyncTaskComplete`、`onAgentCallTool`、`onAgentAsk`、`onAgentRead`、`onAgentQueryTask`、`onAgentSubmit`、`onAgentSetTasks`、`onAgentSetGoal`、`onAgentRequestPermission`、`onUserAnswer`。
+`onInit`、`onShutdown`、`onMessage`、`onSessionStart`、`beforeTurn`、`beforeStep`、`afterStep`、`afterTurn`、`onAgentRunSync`、`onAgentRunAsync`、`onAgentAsyncTaskComplete`、`onAgentCallTool`、`onAgentAsk`、`onAgentRead`、`onAgentQueryTask`、`onAgentSubmit`、`onAgentSetTasks`、`onAgentSetGoal`、`onAgentRequestPermission`、`onUserAnswer`。
 
 - `onMessage` 取代原来的 `beforeMessage` / `afterMessage`：`phase: "before" | "after"`，before 阶段可修改 `prompt`
+- `onSessionStart` 只在**会话第一轮**开始前触发一次（新会话的第一次对话；chat 和 run 都会触发），
+  入参是 `SessionStartEvent`（`input` / `cwd` / `time` / `timeZone` / `model` / `permission` / `tools`），
+  可以往 `prompt` 里追加一次性 system 提示；`tools` 是本轮可调用的工具（名称 + 描述，含内置 `ask`）。
+  第二轮起再注入请用 `onMessage`。core 插件已用这个钩子注入运行环境与工具清单
 - `onAgentSetTasks` 取代 `onAgentSetTask`
 - `onAgentRunSync` 在 `run` 模式开始前触发
 - `onAgentRunAsync` 在 Agent 创建异步任务之前触发，`onAgentAsyncTaskComplete` 在异步任务完成后触发（当前还没有异步任务实现，钩子已暴露，暂不触发）
@@ -501,6 +567,10 @@ const files = await ctx.workspaceFs.list("src")
 - bridge 请求默认 30 秒超时；`agent.stream` 不设上限（一轮对话的时长由模型与工具步骤决定，不能按固定秒数掐断），
   `agent.chat` 为 180 秒
 - `hostApi` 默认包含 `logger` / `fs` / `event` / `getHost` / `shutdown`；`workspaceFs` 仍需在 `fs.read` 里声明 `${workspace}`
+- `models` / `plugins` / `workspaces` / `http` / `exec` / `pty` / `capabilities` 需要在 `hostApi` 中显式声明；
+  `http` 只保留给 `wellspring-http`，普通插件请走上面的 `wellspring/api/plugin/http-client.ts`
+- `hostApi: "plugins"` 提供 `api.plugins.list/install/remove/enable/disable`：安装只接受 zip（≤10MB）；
+  启用/禁用与禁用后的卸载即时生效，安装与禁用 `wellspring-web` 重启后生效；卸载 `wellspring-web` 被拒绝
 - `${workspace}` 默认只读，写 workspace 需放进 `fs.write`
 - 没有可用 OS 后端时插件加载失败；插件不做 direct 降级
 - `sandbox.mode: off` 时插件全部拒绝加载
@@ -508,96 +578,76 @@ const files = await ctx.workspaceFs.list("src")
 
 ### 插件的 HTTP 服务
 
-sandbox 插件不能直接 `listen()`，通过宿主能力创建 HTTP 服务。`host` 允许绑定广域网地址（例如 `0.0.0.0`）：
+平台里只有 `wellspring-http` 插件持有 `hostApi.http`；所有监听端口都由它创建。其它插件在
+`setup().deps` 里声明 `wellspring-http`，然后用事件总线注册服务器（消费者 helper：
+`wellspring/api/plugin/http-client.ts`，协议：
+`wellspring/api/plugin/http-protocol.ts`）：
 
 ```ts
-import { onInit, onShutdown } from "wellspring/api/host/index.ts"
-
-let api
-let server
+import type { HttpRequest, HttpResponse } from "wellspring/api/host/index.ts"
+import { eventBus } from "wellspring/api/host/index.ts"
+import { registerHttpServer } from "wellspring/api/plugin/http-client.ts"
 
 export function setup() {
     return {
         // ...
-        init(value) {
-            api = value
+        deps: ["wellspring-http"],
+        init: async (api) => {
+            const server = await registerHttpServer(
+                eventBus,
+                { name: "my-app", host: "127.0.0.1", port: 8787 },
+                async (request: HttpRequest, stream): Promise<HttpResponse> => ({
+                    status: 200,
+                    headers: { "content-type": "text/plain" },
+                    body: `hello ${request.url}`,
+                }),
+            )
+            api.output.info(`listening on http://${server.host}:${server.port}`)
         },
     }
 }
-
-onInit(async () => {
-    server = await api.http.createServer({ host: "127.0.0.1", port: 8787 }, (request) => ({
-        status: 200,
-        headers: { "content-type": "text/plain" },
-        body: `hello ${request.url}`,
-    }))
-})
-
-onShutdown(async () => {
-    await server?.close()
-})
 ```
 
-- 宿主监听端口，请求通过 RPC 交给插件 handler
 - `host` 可以是 loopback（默认 `127.0.0.1`），也可以是 `0.0.0.0` / `::` / 指定网卡地址
-- `port: 0` 使用随机端口，返回 `server.port`
-- 请求体以 base64 传入，响应可返回 `utf8` 或 `base64`
-- `hostApi` 需要声明 `http`（默认 hostApi 已包含）
+- `port: 0` 使用随机端口，实际端口在返回的 `server.port` 里
+- HTTPS 传 `tls: { cert, key, ca? }`（PEM 字符串）；证书可以放在插件 data 目录用 `api.fs` 读
+- 请求体以 base64 传入、响应可返回 `utf8` 或 `base64`；`stream: true` + `stream.write/end` 支持 SSE；
+  `websocket: (socket, request) => void` 支持 WebSocket 升级（不传则升级请求返回 1008）
+- 请求/响应经事件总线转发，**单个体上限 2.5 MiB**（sandbox 单帧 4 MiB）；超限请求返回 `413`，
+  超限响应返回 `502`。需要传大文件请按分片接口设计
+- 启动失败（端口占用 / 重名 / TLS 不合法）会让 `registerHttpServer` reject，可以按失败插件处理
+- 插件 `onShutdown` 里 `await server.close()`；wellspring-http 关闭时所有托管服务器一起关闭
+- 细节、完整事件表与错误码见 [`plugins/wellspring-http/README.md`](plugins/wellspring-http/README.md)
 
-HTTPS：
+因为 `deps` 是硬依赖，没链接 `wellspring-http`（或它被禁用）时依赖方会以「依赖不存在 / 依赖被禁用」失败。
+`package.json` 里也不再需要 `hostApi: ["http"]`——`api.http` 只剩 wellspring-http 自己使用。
 
-```ts
-const cert = await api.fs.readText("cert.pem")
-const key = await api.fs.readText("key.pem")
-server = await api.http.createServer({ host: "127.0.0.1", port: 8443, tls: { cert, key } }, handler)
+前端可以自由选择框架。`wellspring-web` 使用 **Vue 3 + Vite**：前端源码在 `plugins/wellspring-web/frontend/`，
+构建产物打包成插件内 TS 资源，由插件自己的 HTTP 服务同源下发（严格 CSP，无 `unsafe-eval`、无外部 CDN）。
+改前端后执行 `node plugins/wellspring-web/scripts/build-ui.mjs` 再重启服务。
+
+### wellspring-http 插件
+
+`plugins/wellspring-http` 是平台里唯一的 HTTP 服务器管理器：校验注册参数、创建 HTTP/HTTPS/WebSocket
+服务器、把请求转发给注册方、注销与关闭时统一释放端口，并广播 `wellspring-http:servers` 列表。
+
+```bash
+wellspring plugin link plugins/wellspring-http
 ```
 
-证书放在插件 data 目录，通过 `api.fs` 读取；sandbox 插件不能直接读宿主任意路径。
-
-SSE：
-
-```ts
-server = await api.http.createServer({ port: 8787 }, (request, stream) => {
-    stream.write("data: hello\n\n")
-    setTimeout(() => {
-        stream.write("data: world\n\n")
-        stream.end()
-    }, 100)
-    return {
-        status: 200,
-        headers: { "content-type": "text/event-stream" },
-        stream: true,
-    }
-})
-```
-
-WebSocket：
-
-```ts
-server = await api.http.createServer(
-    {
-        port: 8787,
-        websocket: (socket) => {
-            socket.onMessage((data) => {
-                void socket.send(`echo: ${data}`)
-            })
-            socket.onClose((code, reason) => {
-                // 连接关闭
-            })
-        },
-    },
-    () => ({ status: 404 }),
-)
-```
-
-- SSE 通过 `stream: true` 保持连接，`stream.write` / `stream.end`
-- WebSocket 使用 `ws` 宿主侧实现，消息通过 RPC 转发
+- 事件频道：`wellspring-http:register` / `wellspring-http:unregister`，每个服务器的
+  `wellspring-http:request:<name>` / `wellspring-http:response:<name>`
+- 错误码：`port-in-use`、`permission-denied`、`address-unavailable`、`invalid-register`、
+  `duplicate-name`、`listen-failed`
+- 测试：`node --test test/http-plugin.test.ts`（fixture 消费者覆盖请求、SSE、错误、超时、重名、
+  端口占用与 WebSocket）
 
 ### Web 插件
 
-`plugins/wellspring-web` 提供网页聊天界面：
+`plugins/wellspring-web` 提供网页聊天界面，依赖 `wellspring-http`：
 
 ```bash
+wellspring plugin link plugins/wellspring-http
 wellspring plugin link plugins/wellspring-web
 wellspring start
 ```
@@ -608,14 +658,33 @@ wellspring start
 - 侧栏「修改密码」：校验当前密码后更新哈希并让其他设备重新登录；密码至少 6 位、最多 200 位
 - 之后访问需要登录；登录 token 只保存在服务进程内存，重启后需要重新登录
 - 聊天通过 `/api/chat/stream` SSE 调用 `api.agent.stream`，会话保存到标准会话存储；流开始时先收到会话 id，
-  回复中途刷新页面会自动接续这一轮（`/api/chat/resume` 重放并继续接收），之后发消息仍续同一个 Agent 会话
+  回复中途刷新页面会自动接续这一轮（`/api/chat/resume` 重放并继续接收），之后发消息仍续同一个 Agent 会话。
+  本轮开始、每步结束和收尾都会落盘：服务重启或进程被停掉时，已经开始的一轮不会从会话里消失。
+  刷新时浏览器中断 SSE 读取不算回复失败：那一轮只在服务端跑完或续接失败时才落到错误态
+- 所有界面都是路由（`/`、`/c/<id>`、`/providers`、`/network`、`/plugins`、`/password`、`/status`、`/extensions`、`/ext/<id>`，其它地址进 404），
+  侧栏入口是链接、当前页高亮，刷新或直达任意深层地址都能打开；未登录时重定向到 `/login` 并在登录后回到原地址
+- 每个会话有自己的地址 `/c/<id>`（发出第一条消息后写入），浏览器前进后退、刷新都停在这个会话；
+  在设置页面点侧栏里的会话直接回到对话，不需要先点右上角返回按钮
 - 回复中可以插话：消息在 Agent 下一次模型调用前注入同一轮，作为过程行显示在回复里；没赶上本轮结束就按下一轮排队
+- 长会话默认只渲染最近 30 条消息，顶部「加载更早」按页补回更早的记录并保持阅读位置；保存与导出不受影响
+- 网络代理（`/network`）：配置出站 HTTP/HTTPS 代理与 `noProxy`，写入宿主 `app-setting.json`；
+  保存后下一轮模型调用、拉取模型列表与 `web_search` / `web_fetch` 生效，无需重启服务
+- 模型上下文窗口可配置（`128K` / `1M` 写法），模型菜单显示配置值；输入框下方的一行统计显示当前会话的上下文占用，
+  优先用最近一次请求的真实 prompt tokens，旧会话才回退到按字符数估算
+- Token 统计：输入框下方常显「上下文占用 · 会话用量 · 缓存命中率」，点开是完整明细
+  （未缓存输入 / 缓存读取 / 缓存写入 / 输出 / 推理 / 合计）；每条回复下方的「用量」按钮显示本轮用量与缓存命中，
+  点开看该轮明细。缓存命中来自供应商返回的 `prompt_cache_hit_tokens` / `prompt_tokens_details.cached_tokens`，
+  供应商不返回缓存用量时只显示输入与输出
+- 网页端插件管理（`/plugins`）：列表、启用/禁用、卸载（先禁用后即时生效）、上传 zip 安装（重启生效）；
+  禁用 `wellspring-web` 需二次确认且重启后生效
 - 思考链与工具调用：Agent 的思考内容默认折叠成一行「思考」（只显示摘要，流式时跟随最后一个完成段落），
   工具调用折叠成一行「读取文件 / 执行命令 …」（参数摘要 + 运行中 / 完成 / 失败）；点开看完整内容。
   正文、思考、工具行按发生顺序穿插，和 Harness 一致；随会话保存（含正文偏移），刷新后顺序不变
 - 侧栏「关闭 Wellspring」：二次确认后优雅关闭服务（等价于 `wellspring stop`），先执行插件 onShutdown
   再清理服务记录；会话与工作区数据保留，需要时重新 `wellspring start`
-- 字体与字号沿用 code 插件的设计 token：同一套字体栈，`--font-size-xs: 1rem` … `--font-size-8xl: 3.7rem`
+- 字体与字号沿用 code 插件的设计 token：界面与代码统一使用系统等宽字体
+  （Windows Consolas、macOS Menlo/Monaco、Linux DejaVu Sans Mono / Ubuntu Mono、Android Droid Sans Mono），
+  `--font-size-xs: 1rem` … `--font-size-8xl: 3.7rem`
   的 rem 阶梯，根字号默认 `1rem`
 - 输入框左侧有 Agent 权限切换器（只读 / 工作区可写 / 完全访问），每个会话独立保存；切到「完全访问」会二次确认，
   并常驻红色警告条；新会话默认沿用最近一次选择。权限随每次聊天请求传给宿主
@@ -625,22 +694,26 @@ wellspring start
   同一菜单顶部可切推理等级（off / low / high / max），按钮上显示「模型 · 等级」。模型、推理等级、权限都按会话保存，
   切会话会恢复那个会话自己的设置；新会话的模型/推理等级沿用**全局默认**——在侧栏「供应商」里点模型按钮设置，
   只影响之后新建的会话，已有会话保持自己的模型
-- 侧栏「供应商」打开管理弹窗：接入任意 OpenAI 兼容供应商（Base URL + Key + 模型列表，可一键拉取模型），
+- 侧栏「供应商」是独立页面（`/providers`）：接入任意 OpenAI 兼容供应商（Base URL + Key + 模型列表，可一键拉取模型），
   按供应商分别保存 / 清除 Key、删除自定义供应商；切换模型后网页会把 provider/model 一起发给宿主
 - 页面、样式和脚本由插件以静态资源提供，HTML 不含内联脚本，因此可以下发严格 CSP
 - 主题（跟随系统 / 浅色 / 深色）写进 cookie，服务端渲染 `data-theme`，首屏不闪
 - 工作区由用户在页面里手动添加：调用宿主系统的原生文件夹对话框，Agent 在该目录下运行；
-  工作区列表显示在侧边栏，可切换；移除工作区后会话进入「未分组」继续保留
+  工作区注册表由**宿主**统一维护（`api.workspaces`），Web 插件只保存每个工作区的会话；
+  侧边栏显示工作区列表，可切换；移除工作区后会话进入「未分组」继续保留
 - 输入框支持 `/` 指令菜单与 `@` 工作区文件引用：文件名 / 路径段 / 子序列模糊匹配并排序（文件名前缀优先，忽略大小写），
   `assets/app` 这类多段路径按段命中，深层文件与中文文件名可搜，目录可逐级下钻；`@` 可紧跟汉字或中文标点，
   菜单里的命中片段与输入框里的引用文本都会高亮（带空格的路径用 `@"…"` 引号形式）；
   相对路径在发送时附给 Agent，Agent 可按路径读取
-- Agent 请求提权时网页弹出审批框，显示命令、目录、权限变化与理由；批准后仅本次命令生效，超时按拒绝处理
+- Agent 请求提权时网页弹出审批框：完整命令行、逐个参数、工作目录、权限变化，以及联网 / 后台 / 超时 / 标准输入与理由；批准后仅本次命令生效，超时按拒绝处理
 - Agent 用 `ask` 工具提问时，网页在输入框上方显示「Agent 提问」卡片（参考 Harness）：问题标题、
   编号选项（标签带「（推荐）」时显示「推荐」徽标）、自定义答案输入行、跳过/收起/关闭；
   回答写到 `/api/asks/<askId>`，Agent 拿到答案继续本轮。停止生成时自动按跳过释放等待
-- 会话按工作区保存在 `<dataDir>/plugin-data/wellspring-web/workspaces/`，未分组会话在 `ungrouped/`
-- 添加工作区时由宿主校验目录，插件需要 `agent` 权限；系统状态弹窗与工作区目录展示需要 `getHost` 权限
+- 工作区索引在 `<dataDir>/workspaces.json`（宿主级，插件通过 `api.workspaces` 访问）；
+  会话仍按工作区保存在 `<dataDir>/plugin-data/wellspring-web/workspaces/`，未分组会话在 `ungrouped/`；
+  首次启动会把旧版插件数据目录里的 `workspaces.json` 自动迁移到宿主注册表
+- 工作区注册表由宿主维护（`<dataDir>/workspaces.json`），插件通过 `api.workspaces` 访问，需要 `workspaces` 权限；
+  添加工作区时由宿主校验目录（原生对话框走 `agent` 权限）；系统状态页面（`/status`）与工作区目录展示需要 `getHost` 权限
 - 登录失败按来源地址限流（5 次后锁定 60 秒）；写接口要求 JSON 且校验同源 `Origin`
 - 其它插件可通过事件总线注册 `wellspring-web:addon:register`（`nav-bottom`），网页在侧栏底部实时显示链接
 - 默认监听 `127.0.0.1:8787`，可在 `<configDir>/plugins/wellspring-web.json` 覆盖，或用
@@ -654,28 +727,36 @@ wellspring start
 
 ### Code 插件（VS Code 风格）
 
-`plugins/wellspring-code` 提供浏览器里的 VS Code 风格代码编辑器，依赖 `wellspring-web`：
+`plugins/wellspring-code` 提供浏览器里的 VS Code 风格代码编辑器，只依赖 `wellspring-http`
+（Web 插件是可选搭配：装了就多一个侧栏入口）：
 
 ```bash
-wellspring plugin link plugins/wellspring-web
+wellspring plugin link plugins/wellspring-http
 wellspring plugin link plugins/wellspring-code
+# 可选：网页聊天界面
+wellspring plugin link plugins/wellspring-web
 wellspring start
 ```
 
 打开 `http://127.0.0.1:8788`（与 Web 插件默认的 `8787` 不冲突）。
 
-- 通过 `deps: ["wellspring-web"]` 与 `api.pluginData("wellspring-web")` 读取工作区索引
-  （名称 / 路径 / 会话数），在侧栏与命令面板里快捷切换工作区；不读取密码与会话内容
-- 启动时向 web 注册 `nav-bottom` 扩展，在网页侧栏底部显示「代码编辑器」入口（指向本服务地址）
+- 工作区列表来自宿主注册表 `api.workspaces`（名称 / 路径 / 最近访问），在侧栏与命令面板里快捷切换；
+  不再依赖 `wellspring-web`，也不读取其它插件的数据目录
+- 装了 Web 插件时，会通过事件总线注册 `nav-bottom` 扩展，在网页侧栏底部显示「代码编辑器」入口
+  （指向本服务地址）；没装 Web 也不影响使用
 - 文件能力来自 `api.workspaceFs`，根目录是服务进程的当前目录；只有落在这个根内的工作区可访问，
   根外的工作区在切换列表里置灰
-- 包含资源管理器、标签页、语法高亮、自动补全、行号、缩略图、文件内查找、全文搜索、命令面板、
-  状态栏、Markdown 与图片预览、深浅主题；标签 / 最近打开 / 展开状态按工作区隔离
+- 包含资源管理器、标签页、语法高亮、自动补全、语法诊断、括号配对高亮、缩进参考线、文件/工作区符号搜索与转到定义、
+  行号、缩略图、查找替换、全文搜索、命令面板、Git 面板（改动列表 / 暂存 / 并排 diff 窗口 / 树标记）、状态栏、
+  Markdown 与图片预览、深浅主题；标签 / 最近打开 / 展开状态按工作区隔离
+- 长文件（>1200 行或 60KB）按 400 行分片着色；组合输入期间暂停镜像层 / 缩略图 / 诊断重算；
+  按工作区 + 文件路径记住滚动与光标位置，刷新、重新打开或切回标签时恢复
 - 可选的单用户访问密码：设置后所有 API 要登录，支持登录页、退出与改密；可监听 `0.0.0.0` 并内置 TLS，
   也可以放在 TLS 反代后远程访问
 - 移动端可用：侧栏抽屉选中文件后自动收起、编辑器触摸滚动、控制台点击唤起软键盘，
   高度跟随可视视口（`visualViewport`）
-- 页面、样式与脚本由插件提供，前端没有构建步骤；严格 CSP，HTML 不含内联脚本/样式
+- 前端为 Vue 3（Vite 构建产物打包成插件内 TS 资源），页面只含挂载点与 SPRITE；
+  严格 CSP，HTML 不含内联脚本/样式，也不需要 `unsafe-eval`
 - 图标来自 Lucide（ISC License），内联 SVG 精灵，不请求外部 CDN；Wellspring logo 保持自有
 - 写接口校验 JSON、请求体大小与同源 `Origin`；带 `baseMtimeMs` 的保存会检测磁盘冲突
 - 默认只监听 `127.0.0.1:8788`，可在 `<configDir>/plugins/wellspring-code.json` 覆盖：
@@ -685,7 +766,8 @@ wellspring start
 ```
 
 - 没有 LSP：自动补全只用当前语言的关键字 / 类型 / 字面量与文件内标识符做前缀匹配，
-  语法高亮由插件自带的词法着色实现
+  语法高亮由插件自带的词法着色实现；语法诊断只做括号/字符串/注释/JSON 的结构检查，不做语义分析；
+  转到定义只查当前文件与已打开标签里的符号名；工作区符号索引按行级正则扫描文本文件，不做类型解析
 
 路由、快捷键与设计说明见 [`plugins/wellspring-code/README.md`](plugins/wellspring-code/README.md)。
 
@@ -718,13 +800,17 @@ off()
 
 `wellspring start` 会写 `<dataDir>/service.json`；用户 Ctrl+C、`wellspring stop`（SIGTERM）或插件调用 `shutdown()` 都会触发 `onShutdown` 后优雅退出。
 
+关闭不会因为浏览器的 SSE / 长连接而卡住：HTTP 服务器先等 800ms 让请求收尾，然后强制断开剩余连接；
+插件 `onShutdown` 超过 10 秒会强制退出。第一次 Ctrl+C 走优雅关闭，再按一次立即退出。
+
 插件是原生 TS，类型导入必须写 `import type { Logger, PluginApi }`；Node 只擦除类型标注，不会擦除普通 import。
 
 ## 目录
 
 - 配置：`<configDir>/app-setting.json`；API Key：`<configDir>/credentials.json`（0600，与环境变量分开）
-- 会话：`<dataDir>/sessions/<cwd桶>/<sessionId>/`，每轮一个 `turns/NNNN.jsonl.zstd`
+- 会话：`<dataDir>/sessions/<cwd桶>/<sessionId>/`，`turns/NNNN.jsonl.zstd` 是事件段；一轮会在开始、每步结束和收尾时各落一段，中断后已产生的部分可回放
 - 插件：`<dataDir>/plugins/<name>/`，入口导出 `setup(): WellspringPlugin`；支持 `plugin install <zip|目录>`
+- 工作区注册表：`<dataDir>/workspaces.json`（宿主级，插件通过 `api.workspaces` 访问）
 - 插件配置/数据：`<configDir>/plugins/<id>.json`、`<dataDir>/plugin-data/<id>/`
 - 服务状态：`<dataDir>/service.json`
 - 日志：`<logDir>/app.log`；human 模式 Pino 只写文件，终端输出走 `elog4js`

@@ -17,8 +17,12 @@
         "allowImportingTsExtensions": true,
         "noEmit": true,
         "skipLibCheck": true,
-        "forceConsistentCasingInFileNames": true
+        "forceConsistentCasingInFileNames": true,
+        "paths": {
+            "wellspring": ["./src/api/host/index.ts"],
+            "wellspring/*": ["./src/*"]
+        }
     },
-    "include": ["src", "test", "scripts"],
+    "include": ["src", "test", "scripts", "test-fixtures"],
     "exclude": ["node_modules"]
 }
