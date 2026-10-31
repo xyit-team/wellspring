@@ -30,5 +30,12 @@ if (files.length === 0) {
     console.error("没有找到测试文件")
     process.exit(1)
 }
-const result = spawnSync(process.execPath, ["--test", ...files], { stdio: "inherit" })
+/*
+ * 串行跑测试文件：GitHub 的 4 核 runner 上并发跑插件 sandbox 相关文件时，
+ * Node 24 会在 InternalCallbackScope 里触发原生断言（异步上下文 id 非 0）。
+ * 串行更稳，代价只是几十秒。
+ */
+const result = spawnSync(process.execPath, ["--test", "--test-concurrency=1", ...files], {
+    stdio: "inherit",
+})
 process.exit(result.status ?? 1)

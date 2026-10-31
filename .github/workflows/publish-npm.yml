@@ -56,6 +56,14 @@ jobs:
             - name: 安装依赖（严格按 lockfile）
               run: pnpm install --frozen-lockfile
 
+            - name: 安装插件依赖
+              # plugins/ 不在根 pnpm workspace 里；网页扩展编译要用 @vue/compiler-sfc，
+              # 前端测试也会直接用 frontend 的 vue，因此分别按各自的 lockfile 安装
+              run: |
+                  set -euo pipefail
+                  npm ci --prefix plugins/wellspring-web --no-audit --no-fund
+                  npm ci --prefix plugins/wellspring-web/frontend --no-audit --no-fund
+
             - name: 类型检查
               run: pnpm typecheck
 
