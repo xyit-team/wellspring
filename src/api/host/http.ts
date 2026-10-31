@@ -76,4 +76,4 @@ export interface HostHttpApi {
     createServer(options: HttpServerOptions, handler: HttpHandler): Promise<HttpServerHandle>
 }
 
-export const HTTP_MAX_BODY_BYTES = 4 * 1024 * 1024
+export const HTTP_MAX_BODY_BYTES = 16 * 1024 * 1024

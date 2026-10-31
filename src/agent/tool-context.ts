@@ -12,6 +12,14 @@ export interface AgentToolRequest {
     readonly currentPermission?: SandboxAccess
     readonly requestedPermission?: SandboxAccess
     readonly justification?: string
+    /** 请求联网：和提权是两件事，审阅时也要看到 */
+    readonly network?: boolean
+    /** 请求后台执行 */
+    readonly background?: boolean
+    /** 要喂给进程的标准输入（可能很大，界面截断显示） */
+    readonly stdin?: string
+    /** 请求的超时毫秒 */
+    readonly timeoutMs?: number
 }
 
 export interface AgentToolContext {

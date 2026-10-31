@@ -16,7 +16,12 @@ import {
     type HostPlugin,
     type HostPluginStatus,
 } from "../api/host/host.ts"
-import { removeHooksByOwner, withHookOwner } from "../api/host/hooks.ts"
+import {
+    emitInitHooksForOwner,
+    emitShutdownHooksForOwner,
+    removeHooksByOwner,
+    withHookOwner,
+} from "../api/host/hooks.ts"
 import type {
     AgentTool,
     PluginCommand,
@@ -43,8 +48,15 @@ import { PLUGIN_NAME, pluginsRoot } from "./paths.ts"
 import { PluginRegistry } from "./registry.ts"
 import { createHostAgentService, type HostAgentService } from "./agent-service.ts"
 import { createHostModelsService } from "./models-service.ts"
+import { createHostNetworkService } from "./network-service.ts"
 import { loadPluginConfig } from "./runtime.ts"
-import { readPluginState } from "./state.ts"
+import { readPluginState, setPluginEnabled } from "./state.ts"
+import {
+    createHostPluginManager,
+    type HostPluginManager,
+    type PluginHotController,
+    type PluginHotOutcome,
+} from "./manage.ts"
 
 interface PluginPackageJson {
     readonly name?: string
@@ -85,6 +97,24 @@ export interface LoadPluginsOptions {
     /** 测试注入；默认按 settings 构造 */
     readonly agent?: HostAgentService
 }
+
+/** 当前进程内的插件运行时；热启用/禁用用 */
+interface RuntimeState {
+    readonly options: LoadPluginsOptions
+    readonly paths: ResolvedPaths
+    readonly root: string
+    readonly sandboxSetting: SandboxSetting
+    readonly sandboxBackend: SandboxBackend | null
+    readonly dataAccess: PluginDataService
+    readonly agentService: HostAgentService
+    readonly modelsService: ReturnType<typeof createHostModelsService>
+    readonly networkService: ReturnType<typeof createHostNetworkService>
+    pluginManager: HostPluginManager
+    readonly queueHost: { current: Promise<void> }
+    entries: PluginEntry[]
+}
+
+const runtimes = new Map<string, RuntimeState>()
 
 const ENTRY_CANDIDATES = ["index.ts", "index.js", "index.mjs", "index.mts"]
 
@@ -203,7 +233,7 @@ function sandboxPermissions(pkg: PluginPackageJson | null): PluginSandboxPermiss
     const rawHostApi = manifest["hostApi"]
     const hostApi = Array.isArray(rawHostApi)
         ? rawHostApi.filter((item): item is string => typeof item === "string")
-        : ["logger", "fs", "event", "getHost", "shutdown", "http", "agent"]
+        : ["logger", "fs", "event", "getHost", "shutdown", "agent"]
     const rawFs = manifest["fs"]
     const fs =
         typeof rawFs === "object" && rawFs !== null && !Array.isArray(rawFs)
@@ -233,6 +263,8 @@ async function loadEntry(
     sandboxSetting: SandboxSetting,
     agentService: HostAgentService,
     modelsService: ReturnType<typeof createHostModelsService>,
+    networkService: ReturnType<typeof createHostNetworkService>,
+    pluginManager: HostPluginManager,
 ): Promise<PluginEntry> {
     let pkg: PluginPackageJson | null = null
     try {
@@ -315,9 +347,12 @@ async function loadEntry(
                     config: options.config,
                     paths,
                     logger: options.logger,
+                    settingsFile: join(paths.configDir, SETTING_FILE_NAME),
                 }),
                 agent: agentService,
                 models: modelsService,
+                network: networkService,
+                plugins: pluginManager,
             })
             const ready = await client.start({ deferInit: true })
             entry.sandboxClient = client
@@ -424,6 +459,258 @@ function sortByDeps(entries: readonly PluginEntry[]): PluginEntry[] {
 }
 
 /** 加载全部插件。坏插件记录失败状态，不影响其他插件 */
+function pluginIdOf(entry: PluginEntry): string {
+    return entry.plugin?.id ?? entry.owner
+}
+
+/** 把当前 entries 写回宿主快照；热变更后管理页与 /api/host 立即反映 */
+function publishHostPlugins(entries: readonly PluginEntry[], registry: PluginRegistry): void {
+    setHostPlugins(
+        entries.map((entry): HostPlugin => {
+            const plugin = entry.plugin
+            const id = pluginIdOf(entry)
+            const commands =
+                plugin === null || entry.error !== null || entry.disabled
+                    ? []
+                    : registry
+                          .list()
+                          .filter((record) => record.pluginName === id)
+                          .map((record) => record.command.name)
+            return {
+                id,
+                name:
+                    plugin?.name ??
+                    (typeof entry.pkg?.name === "string" ? entry.pkg.name : entry.owner),
+                version:
+                    plugin?.version ??
+                    (typeof entry.pkg?.version === "string" ? entry.pkg.version : "0.0.0"),
+                deps: plugin?.deps ?? [],
+                commands,
+                getStatus: (): HostPluginStatus =>
+                    entry.disabled ? "disabled" : entry.error ? "failed" : "ok",
+            }
+        }),
+    )
+}
+
+/** 依赖数据访问按运行中的插件刷新 */
+function refreshDataAccess(state: RuntimeState): void {
+    state.dataAccess.setPlugins(
+        state.entries.map((entry) => ({
+            id: pluginIdOf(entry),
+            deps: entry.plugin?.deps ?? [],
+        })),
+    )
+}
+
+function runExclusive<T>(state: RuntimeState, task: () => Promise<T>): Promise<T> {
+    const next = state.queueHost.current.then(task, task)
+    state.queueHost.current = next.then(
+        () => undefined,
+        () => undefined,
+    )
+    return next
+}
+
+async function hotEnableEntry(state: RuntimeState, idOrDir: string): Promise<PluginHotOutcome> {
+    const existing = state.entries.find(
+        (entry) =>
+            entry.dirName === idOrDir || pluginIdOf(entry) === idOrDir || entry.owner === idOrDir,
+    )
+    if (
+        existing !== undefined &&
+        existing.plugin !== null &&
+        existing.error === null &&
+        existing.sandboxClient !== null
+    ) {
+        return { ok: true, id: existing.plugin.id, changed: false }
+    }
+    const dirName = existing?.dirName ?? idOrDir
+    if (!PLUGIN_NAME.test(dirName)) {
+        return { ok: false, id: dirName, error: "插件名不合法" }
+    }
+    const dir = join(state.root, dirName)
+    const info = await stat(dir).catch(() => null)
+    if (info === null || !info.isDirectory()) {
+        return { ok: false, id: dirName, error: "plugin.not-found" }
+    }
+    if (existing !== undefined) {
+        state.entries = state.entries.filter((entry) => entry !== existing)
+    }
+    const disabled = new Set(await readPluginState(state.paths))
+    disabled.delete(dirName)
+    const entry = await loadEntry(
+        dirName,
+        dir,
+        state.entries.length,
+        state.options,
+        disabled,
+        state.sandboxBackend,
+        state.dataAccess,
+        state.sandboxSetting,
+        state.agentService,
+        state.modelsService,
+        state.networkService,
+        state.pluginManager,
+    )
+    if (entry.plugin === null || entry.error !== null) {
+        state.entries.push(entry)
+        publishHostPlugins(state.entries, state.options.registry)
+        return { ok: false, id: pluginIdOf(entry), error: entry.error ?? "插件加载失败" }
+    }
+    const plugin = entry.plugin
+    for (const dep of plugin.deps ?? []) {
+        const target = state.entries.find(
+            (candidate) =>
+                pluginIdOf(candidate) === dep &&
+                candidate.plugin !== null &&
+                candidate.error === null &&
+                candidate.sandboxClient !== null,
+        )
+        if (target === undefined) {
+            await cleanupEntry(entry, state.options)
+            entry.error = `依赖未启动：${dep}`
+            state.entries.push(entry)
+            publishHostPlugins(state.entries, state.options.registry)
+            return { ok: false, id: plugin.id, error: entry.error }
+        }
+    }
+    if (entry.sandboxClient === null) {
+        entry.error = "插件未运行在 sandbox 内"
+        state.entries.push(entry)
+        publishHostPlugins(state.entries, state.options.registry)
+        return { ok: false, id: plugin.id, error: entry.error }
+    }
+    // 先恢复依赖图再执行 init：插件 init 里可能通过 api.pluginData 读取依赖插件的数据
+    state.entries.push(entry)
+    refreshDataAccess(state)
+    publishHostPlugins(state.entries, state.options.registry)
+    try {
+        const ready = await entry.sandboxClient.initialize()
+        for (const command of entry.sandboxClient.commandStubs()) {
+            state.options.registry.register(ready.plugin.id, command)
+        }
+        for (const tool of entry.sandboxClient.agentToolStubs()) {
+            state.options.agentTools?.register(ready.plugin.id, tool)
+        }
+        await setPluginEnabled(dirName, true, state.paths)
+        await emitInitHooksForOwner(ready.plugin.id)
+        refreshDataAccess(state)
+        publishHostPlugins(state.entries, state.options.registry)
+        return { ok: true, id: ready.plugin.id, changed: true }
+    } catch (error) {
+        entry.error = errorText(error)
+        await cleanupEntry(entry, state.options)
+        refreshDataAccess(state)
+        publishHostPlugins(state.entries, state.options.registry)
+        return { ok: false, id: plugin.id, error: entry.error }
+    }
+}
+
+async function hotDisableEntry(state: RuntimeState, idOrDir: string): Promise<PluginHotOutcome> {
+    const entry = state.entries.find(
+        (candidate) =>
+            candidate.dirName === idOrDir ||
+            pluginIdOf(candidate) === idOrDir ||
+            candidate.owner === idOrDir,
+    )
+    if (entry === undefined) {
+        return { ok: false, id: idOrDir, error: "plugin.not-found" }
+    }
+    const id = pluginIdOf(entry)
+    if (id === "wellspring-web" || entry.dirName === "wellspring-web") {
+        return {
+            ok: false,
+            id,
+            error: "wellspring-web 不支持热禁用，请走重启流程",
+        }
+    }
+    const dependents = state.entries
+        .filter((candidate) => {
+            if (candidate === entry) return false
+            if (candidate.plugin === null || candidate.error !== null) return false
+            return (candidate.plugin.deps ?? []).includes(id)
+        })
+        .map(pluginIdOf)
+    if (dependents.length > 0) {
+        return {
+            ok: false,
+            id,
+            dependents,
+            error: `插件被依赖：${dependents.join(", ")}`,
+        }
+    }
+    try {
+        await emitShutdownHooksForOwner(entry.owner)
+    } catch {
+        // 关闭钩子的错误不阻止停用
+    }
+    await cleanupEntry(entry, state.options)
+    // 留一个禁用占位，宿主快照与管理页仍能看到它
+    entry.disabled = true
+    entry.plugin = null
+    entry.error = null
+    entry.sandboxClient = null
+    await setPluginEnabled(entry.dirName, false, state.paths)
+    refreshDataAccess(state)
+    publishHostPlugins(state.entries, state.options.registry)
+    return { ok: true, id, changed: true }
+}
+
+async function hotForgetEntry(state: RuntimeState, idOrDir: string): Promise<void> {
+    const entry = state.entries.find(
+        (candidate) =>
+            candidate.dirName === idOrDir ||
+            pluginIdOf(candidate) === idOrDir ||
+            candidate.owner === idOrDir,
+    )
+    if (entry === undefined) {
+        return
+    }
+    state.entries = state.entries.filter((candidate) => candidate !== entry)
+    refreshDataAccess(state)
+    publishHostPlugins(state.entries, state.options.registry)
+}
+
+function controllerOf(state: RuntimeState): PluginHotController {
+    return {
+        hotEnable: (id: string) => runExclusive(state, () => hotEnableEntry(state, id)),
+        hotDisable: (id: string) => runExclusive(state, () => hotDisableEntry(state, id)),
+        hotForget: (id: string) => runExclusive(state, () => hotForgetEntry(state, id)),
+    }
+}
+
+/** 取当前进程的插件热加载控制器；未经过 loadPlugins 时返回 null */
+export function getPluginRuntime(paths: ResolvedPaths = getPaths()): PluginHotController | null {
+    const state = runtimes.get(paths.dataDir)
+    if (state === undefined) {
+        return null
+    }
+    return controllerOf(state)
+}
+
+export async function hotEnablePlugin(
+    id: string,
+    paths: ResolvedPaths = getPaths(),
+): Promise<PluginHotOutcome> {
+    const runtime = getPluginRuntime(paths)
+    if (runtime === null) {
+        return { ok: false, id, error: "插件运行时未初始化" }
+    }
+    return await runtime.hotEnable(id)
+}
+
+export async function hotDisablePlugin(
+    id: string,
+    paths: ResolvedPaths = getPaths(),
+): Promise<PluginHotOutcome> {
+    const runtime = getPluginRuntime(paths)
+    if (runtime === null) {
+        return { ok: false, id, error: "插件运行时未初始化" }
+    }
+    return await runtime.hotDisable(id)
+}
+
 export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly LoadedPlugin[]> {
     ensureHostAlias()
     ensureAccessGuard()
@@ -472,6 +759,32 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
         configDir: resolvedPaths.configDir,
         logger: options.logger,
     })
+    const networkService = createHostNetworkService({
+        settings: options.config,
+        settingsFile: join(resolvedPaths.configDir, SETTING_FILE_NAME),
+        logger: options.logger,
+    })
+    const state: RuntimeState = {
+        options,
+        paths: resolvedPaths,
+        root,
+        sandboxSetting,
+        sandboxBackend,
+        dataAccess,
+        agentService,
+        modelsService,
+        networkService,
+        pluginManager: null as unknown as HostPluginManager,
+        queueHost: { current: Promise.resolve() },
+        entries: [],
+    }
+    const pluginManager = createHostPluginManager({
+        paths: resolvedPaths,
+        logger: options.logger,
+        runtime: controllerOf(state),
+    })
+    state.pluginManager = pluginManager
+    runtimes.set(resolvedPaths.dataDir, state)
     const disabled = await readPluginState(options.paths ?? getPaths())
     const entries: PluginEntry[] = []
     let index = 0
@@ -500,35 +813,19 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
                 sandboxSetting,
                 agentService,
                 modelsService,
+                networkService,
+                pluginManager,
             ),
         )
         index += 1
     }
 
-    dataAccess.setPlugins(
-        entries.map((entry) => ({
-            id: entry.plugin?.id ?? entry.owner,
-            deps: entry.plugin?.deps ?? [],
-        })),
-    )
+    state.entries = entries
+    refreshDataAccess(state)
     const sorted = sortByDeps(entries)
 
     // 让 init/hook 期间也能看到宿主插件列表（命令列表在 finalize 后补全）
-    setHostPlugins(
-        entries.map((entry): HostPlugin => ({
-            id: entry.plugin?.id ?? entry.owner,
-            name:
-                entry.plugin?.name ??
-                (typeof entry.pkg?.name === "string" ? entry.pkg.name : entry.owner),
-            version:
-                entry.plugin?.version ??
-                (typeof entry.pkg?.version === "string" ? entry.pkg.version : "0.0.0"),
-            deps: entry.plugin?.deps ?? [],
-            commands: [],
-            getStatus: (): HostPluginStatus =>
-                entry.disabled ? "disabled" : entry.error ? "failed" : "ok",
-        })),
-    )
+    publishHostPlugins(entries, options.registry)
 
     const finished = new Set<PluginEntry>()
 
@@ -614,16 +911,8 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
         return { ...base, status: "ok", commands, error: null }
     })
 
-    setHostPlugins(
-        loaded.map((plugin): HostPlugin => ({
-            id: plugin.id,
-            name: plugin.name,
-            version: plugin.version,
-            deps: plugin.deps,
-            commands: plugin.commands,
-            getStatus: (): HostPluginStatus => plugin.status,
-        })),
-    )
+    state.entries = entries
+    publishHostPlugins(entries, options.registry)
     return loaded
 }
 

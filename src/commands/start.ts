@@ -40,7 +40,14 @@ export async function runStartCommand(ctx: CommandContext): Promise<CommandOutco
     }
 
     setShutdownHandler(requestShutdown)
+    let signals = 0
     const onSignal = (): void => {
+        signals += 1
+        // 第二次 Ctrl+C 直接退出：某个插件的 onShutdown 卡住时仍然能停下来
+        if (signals > 1) {
+            ctx.elog.notice("强制退出")
+            process.exit(130)
+        }
         requestShutdown()
     }
     process.on("SIGINT", onSignal)
@@ -57,7 +64,17 @@ export async function runStartCommand(ctx: CommandContext): Promise<CommandOutco
         await shutdownPromise
         setHostStatus("stopping")
         ctx.elog.notice("正在关闭…")
-        await emitShutdownHooks()
+        // 兜底：插件 onShutdown 若卡住（例如有长连接没断开），超时后强制退出
+        const forceExit = setTimeout(() => {
+            ctx.elog.notice("关闭超时，强制退出")
+            process.exit(130)
+        }, 10_000)
+        forceExit.unref()
+        try {
+            await emitShutdownHooks()
+        } finally {
+            clearTimeout(forceExit)
+        }
         ctx.logger.info("service stopped")
         ctx.elog.info("Wellspring 服务已关闭")
         return success({ pid: process.pid })

@@ -10,6 +10,7 @@ import { getHostBridge } from "../../sandbox/bridge-state.ts"
 
 export type HookKind =
     | "message"
+    | "sessionStart"
     | "beforeTurn"
     | "beforeStep"
     | "afterStep"
@@ -50,6 +51,35 @@ export class SessionMessageEvent extends SessionLifecycleEvent {
     declare readonly phase: "before" | "after"
     declare readonly content: string
     /** before 阶段可追加系统提示；平台会把数组拼进系统消息 */
+    declare readonly prompt: string[]
+}
+
+/**
+ * 会话的第一轮开始前触发（新会话的第一次对话）。
+ *
+ * 与 `onMessage` 的区别：`onSessionStart` 每个会话只触发一次，适合注入一次性的
+ * system prompt（例如插件的角色设定、工作区约定）；`onMessage` 的 before 阶段每轮都触发。
+ * 可以在 `prompt` 数组里追加字符串，平台会把它们拼进 system 消息。
+ */
+export interface SessionStartTool {
+    readonly name: string
+    readonly description: string
+}
+
+export class SessionStartEvent extends SessionLifecycleEvent {
+    declare readonly input: string
+    declare readonly cwd: string
+    /** 第一轮开始的宿主时间戳 */
+    declare readonly time: number
+    /** 宿主时区（IANA 名称，例如 Asia/Shanghai） */
+    declare readonly timeZone: string
+    /** 本轮使用的模型 */
+    declare readonly model: string
+    /** 本轮生效的 sandbox 权限 */
+    declare readonly permission: string
+    /** 本轮可调用的工具（含平台内置 ask；纯对话模式为空） */
+    declare readonly tools: readonly SessionStartTool[]
+    /** 可追加系统提示；平台会拼进 system 消息 */
     declare readonly prompt: string[]
 }
 
@@ -180,6 +210,7 @@ interface Entry<Args extends unknown[]> {
 }
 
 const messageHooks: Entry<[SessionMessageEvent]>[] = []
+const sessionStartHooks: Entry<[SessionStartEvent]>[] = []
 const beforeTurnHooks: Entry<[BeforeTurnEvent]>[] = []
 const beforeStepHooks: Entry<[BeforeStepEvent]>[] = []
 const afterStepHooks: Entry<[AfterStepEvent]>[] = []
@@ -241,6 +272,7 @@ function removeByOwner(registry: Entry<unknown[]>[], owner: string): void {
 export function removeHooksByOwner(owner: string): void {
     const registries: Entry<never>[][] = [
         messageHooks,
+        sessionStartHooks,
         beforeTurnHooks,
         beforeStepHooks,
         afterStepHooks,
@@ -267,6 +299,7 @@ export function removeHooksByOwner(owner: string): void {
 
 const ALL_HOOK_KINDS: readonly HookKind[] = [
     "message",
+    "sessionStart",
     "beforeTurn",
     "beforeStep",
     "afterStep",
@@ -291,6 +324,8 @@ function registryFor(kind: HookKind): Entry<unknown[]>[] {
     switch (kind) {
         case "message":
             return messageHooks as Entry<unknown[]>[]
+        case "sessionStart":
+            return sessionStartHooks as Entry<unknown[]>[]
         case "beforeTurn":
             return beforeTurnHooks as Entry<unknown[]>[]
         case "beforeStep":
@@ -357,6 +392,11 @@ export function listHookKinds(owner: string): HookKind[] {
 
 export function onMessage(handler: HookHandler<[SessionMessageEvent]>): Unregister {
     return add(messageHooks, handler)
+}
+
+/** 会话第一轮开始前触发一次；可往 prompt 里追加 system 提示 */
+export function onSessionStart(handler: HookHandler<[SessionStartEvent]>): Unregister {
+    return add(sessionStartHooks, handler)
 }
 
 export function beforeTurn(handler: HookHandler<[BeforeTurnEvent]>): Unregister {
@@ -469,6 +509,10 @@ export async function emitOnMessage(payload: SessionMessageEvent): Promise<void>
     await emit("message", messageHooks, [eventOf(payload, SessionMessageEvent)])
 }
 
+export async function emitSessionStart(payload: SessionStartEvent): Promise<void> {
+    await emit("sessionStart", sessionStartHooks, [eventOf(payload, SessionStartEvent)])
+}
+
 export async function emitBeforeTurn(payload: BeforeTurnEvent): Promise<void> {
     await emit("beforeTurn", beforeTurnHooks, [eventOf(payload, BeforeTurnEvent)])
 }
@@ -547,6 +591,24 @@ export async function emitInitHooks(): Promise<void> {
 
 export async function emitShutdownHooks(): Promise<void> {
     await emit("shutdown", shutdownHooks, [])
+}
+
+/** 只触发某个插件的 init hooks；热启用时使用 */
+export async function emitInitHooksForOwner(owner: string): Promise<void> {
+    await emit(
+        "init",
+        initHooks.filter((entry) => entry.owner === owner),
+        [],
+    )
+}
+
+/** 只触发某个插件的 shutdown hooks；热禁用时使用 */
+export async function emitShutdownHooksForOwner(owner: string): Promise<void> {
+    await emit(
+        "shutdown",
+        shutdownHooks.filter((entry) => entry.owner === owner),
+        [],
+    )
 }
 
 let shutdownHandler: (() => void) | null = null

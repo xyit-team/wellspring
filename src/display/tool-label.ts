@@ -6,7 +6,7 @@
 const TOOL_LABELS: Readonly<Record<string, string>> = {
     execute_code: "执行命令",
     read: "读取文件",
-    delete_file: "删除文件",
+    delete_file: "移入回收站",
     web_search: "搜索网页",
     web_fetch: "抓取网页",
     query_task: "查询任务",

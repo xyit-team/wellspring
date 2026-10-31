@@ -248,9 +248,9 @@ async function main(argv: readonly string[]): Promise<void> {
     }
 
     try {
-        // 钩子与插件命令都可能在任意命令里用到；只有 version 不需要插件
-        // version / key 不依赖插件，启动会更快
-        if (commandName !== "version" && commandName !== "key") {
+        // 钩子与插件命令都可能在任意命令里用到；version / key / plugin 不启动插件
+        // plugin 子命令只改文件，插件是否加载由下次运行决定
+        if (commandName !== "version" && commandName !== "key" && commandName !== "plugin") {
             await ensurePlugins()
         }
         setHostStatus("running")

@@ -47,6 +47,12 @@ export interface AgentCodeResult {
     readonly stderr: string
     readonly truncated: boolean
     readonly timedOut: boolean
+    /** 物理内存限制方式：cgroup = 已挂 systemd user scope 的 MemoryMax；none = 宿主不支持/未启用 */
+    readonly memoryLimit: "cgroup" | "none"
+    /** memoryLimit 为 none 时的原因 */
+    readonly memoryLimitReason: string | null
+    /** cgroup 记录到 oom_kill（进程被内存上限杀掉） */
+    readonly oomKilled: boolean
     readonly durationMs: number
     readonly artifacts: readonly SandboxArtifact[]
     /** sandbox 内可见路径；bwrap 下为 /scratch/artifacts */

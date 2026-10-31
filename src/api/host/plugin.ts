@@ -7,6 +7,7 @@ import type { Logger } from "pino"
 
 import type { HostFileApi } from "./fs.ts"
 import type { HostModelsApi } from "./models.ts"
+import type { HostNetworkApi } from "./network.ts"
 import type { HostExecApi } from "./exec.ts"
 import type { HostPtyApi } from "./pty.ts"
 
@@ -85,6 +86,8 @@ export interface AgentCallToolResult {
 import type { HostAgentApi } from "./agent.ts"
 import type { HostCapabilities } from "../../plugin/capabilities.ts"
 import type { HostHttpApi } from "./http.ts"
+import type { HostPluginsApi } from "./plugins.ts"
+import type { HostWorkspacesApi } from "./workspace.ts"
 
 export interface AgentTool {
     readonly name: string
@@ -146,4 +149,10 @@ export interface PluginApi {
     pty: HostPtyApi
     /** 自定义供应商与模型切换（需 hostApi: models 权限） */
     models: HostModelsApi
+    /** 出站 HTTP/HTTPS 代理配置（需 hostApi: network 权限） */
+    network: HostNetworkApi
+    /** 插件安装 / 卸载 / 启用 / 禁用（需 hostApi: plugins 权限） */
+    plugins: HostPluginsApi
+    /** 宿主级工作区注册表（需 hostApi: workspaces 权限） */
+    workspaces: HostWorkspacesApi
 }

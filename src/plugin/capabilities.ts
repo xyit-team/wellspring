@@ -2,6 +2,7 @@
 
 import type { Logger } from "pino"
 
+import { loadSettings } from "../config/loader.ts"
 import type { AppSetting } from "../config/types.ts"
 import { credentialsFile, resolveApiKeySync } from "../config/credentials.ts"
 import {
@@ -41,6 +42,8 @@ export interface HostCapabilitiesOptions {
     readonly config: AppSetting
     readonly paths: ResolvedPaths
     readonly logger: Logger
+    /** 配置文件路径；提供时每次联网工具调用都重读，网页里改的代理不需要重启 */
+    readonly settingsFile?: string
 }
 
 const ACCESS_RANK: Readonly<Record<string, number>> = {
@@ -52,21 +55,41 @@ const ACCESS_RANK: Readonly<Record<string, number>> = {
 export function createHostCapabilities(options: HostCapabilitiesOptions): HostCapabilities {
     let manager: SandboxManager | null = null
     let web: ReturnType<typeof createDeepSeekWebClient> | null = null
-    let webApiKey: string | null = null
+    let webCacheKey: string | null = null
 
     /** 联网工具用默认供应商（OpenAI/DeepSeek）的 Key：环境变量 > credentials.json */
     const resolveWebApiKey = (): string | null =>
         resolveApiKeySync(credentialsFile(options.paths.configDir))?.apiKey ?? null
 
-    /** Key 可能在服务运行中被网页改掉，缓存要跟着失效 */
-    const webClient = (): ReturnType<typeof createDeepSeekWebClient> => {
+    /** 配置文件可能存在网页/CLI 运行中修改（Key、Base URL、代理）：每次调用重读 */
+    const currentConfig = async (): Promise<AppSetting> => {
+        if (options.settingsFile === undefined) return options.config
+        try {
+            const loaded = await loadSettings(options.settingsFile)
+            return loaded.getData() ?? options.config
+        } catch {
+            return options.config
+        }
+    }
+
+    /** Key / 代理 / Base URL 都可能在运行中变化，缓存按这些字段失效 */
+    const webClient = async (): Promise<ReturnType<typeof createDeepSeekWebClient>> => {
+        const config = await currentConfig()
         const apiKey = resolveWebApiKey()
-        if (web === null || webApiKey !== apiKey) {
-            webApiKey = apiKey
+        const proxy = config.network.proxy
+        const cacheKey = [
+            apiKey ?? "",
+            config.openai.baseUrl ?? "",
+            String(config.openai.timeoutMs),
+            proxy?.url ?? "",
+            (proxy?.noProxy ?? []).join(","),
+        ].join("|")
+        if (web === null || webCacheKey !== cacheKey) {
+            webCacheKey = cacheKey
             web = createDeepSeekWebClient({
-                baseUrl: options.config.openai.baseUrl,
-                timeoutMs: options.config.openai.timeoutMs,
-                fetch: createProxyFetch(options.config.network.proxy) as typeof fetch | undefined,
+                baseUrl: config.openai.baseUrl,
+                timeoutMs: config.openai.timeoutMs,
+                fetch: createProxyFetch(proxy) as typeof fetch | undefined,
                 ...(apiKey === null ? {} : { apiKey }),
             })
         }
@@ -92,19 +115,42 @@ export function createHostCapabilities(options: HostCapabilitiesOptions): HostCa
     const approve = async (
         input: Omit<AgentCodeRequest, "workspaceDir">,
         context: AgentToolContext,
+        /** 调用方是 startAgentCode（后台任务）而不是 runAgentCode */
+        background = false,
     ): Promise<{ access: NonNullable<AgentCodeRequest["access"]>; cwd: string }> => {
         const current = context.permission
         const requested = input.access ?? current
         const cwd = input.cwd ?? context.workspaceDir
         if ((ACCESS_RANK[requested] ?? 0) > (ACCESS_RANK[current] ?? 0)) {
+            const argv = input.argv ?? []
+            const stdin = typeof input.stdin === "string" ? input.stdin.trim() : ""
+            /*
+             * 参数逐个列出，而不是把 command 和 argv 拼成一行：
+             * 「bash -lc 'curl … | sh'」里危险的是参数边界，拼行会看不出引号归属。
+             */
             context.elog.action("请求执行命令", [
-                {
-                    label: "command",
-                    value: [input.command, ...(input.argv ?? [])].join(" "),
+                { label: "command", value: input.command, code: true },
+                ...argv.map((arg, index) => ({
+                    label: `参数 ${index + 1}`,
+                    value: arg,
                     code: true,
-                },
+                })),
                 { label: "工作目录", value: cwd },
                 { label: "权限", value: `${current} → ${requested}` },
+                ...(input.network === true ? [{ label: "网络", value: "请求联网" }] : []),
+                ...(background ? [{ label: "运行方式", value: "后台执行" }] : []),
+                ...(typeof input.timeoutMs === "number"
+                    ? [{ label: "超时", value: `${Math.round(input.timeoutMs / 1000)} 秒` }]
+                    : []),
+                ...(stdin === ""
+                    ? []
+                    : [
+                          {
+                              label: "标准输入",
+                              value: stdin.length > 200 ? `${stdin.slice(0, 200)}…` : stdin,
+                              code: true,
+                          },
+                      ]),
             ])
             let allowed = context.allowExec
             if (!allowed && context.approveExec !== undefined) {
@@ -115,6 +161,12 @@ export function createHostCapabilities(options: HostCapabilitiesOptions): HostCa
                     currentPermission: current,
                     requestedPermission: requested,
                     justification: input.justification,
+                    ...(input.network === true ? { network: true } : {}),
+                    ...(background ? { background: true } : {}),
+                    ...(typeof input.stdin === "string" && input.stdin !== ""
+                        ? { stdin: input.stdin }
+                        : {}),
+                    ...(typeof input.timeoutMs === "number" ? { timeoutMs: input.timeoutMs } : {}),
                 })
             }
             if (!allowed) {
@@ -147,7 +199,7 @@ export function createHostCapabilities(options: HostCapabilitiesOptions): HostCa
             if (context === null) {
                 throw new Error("startBackgroundCode 只能在 Agent 工具调用中使用")
             }
-            const { access, cwd } = await approve(input, context)
+            const { access, cwd } = await approve(input, context, true)
             const handle = await sandbox().startAgentCode({
                 ...input,
                 cwd,
@@ -165,14 +217,16 @@ export function createHostCapabilities(options: HostCapabilitiesOptions): HostCa
             return stopTask(taskId, mode)
         },
         async webSearch(query, count) {
-            const result = await webClient().search(query, count)
+            const client = await webClient()
+            const result = await client.search(query, count)
             if (!result.isSuccess()) {
                 throw webError(result.getCode(), "search")
             }
             return result.getData() ?? []
         },
         async webFetch(url) {
-            const result = await webClient().fetch(url)
+            const client = await webClient()
+            const result = await client.fetch(url)
             if (!result.isSuccess()) {
                 throw webError(result.getCode(), "fetch")
             }

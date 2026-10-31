@@ -11,6 +11,7 @@ import type { SandboxAccess } from "../config/types.ts"
 import { auditSandbox } from "./audit.ts"
 import { BwrapBackend } from "./backends/bwrap.ts"
 import { DirectBackend } from "./backends/direct.ts"
+import { createSandboxMemoryLimit, type MemoryLimitState } from "./memory-limit.ts"
 import { startSandboxProcess, type SandboxProcessHandle } from "./supervisor.ts"
 import {
     SandboxExecutionError,
@@ -103,6 +104,7 @@ export class SandboxManager {
     readonly #options: SandboxManagerOptions
     #backend: SandboxBackend | null
     #resolved: Promise<SandboxBackend> | null = null
+    #memoryLimitWarned = false
     #active = 0
     readonly #waiters: Array<() => void> = []
 
@@ -279,27 +281,52 @@ export class SandboxManager {
             env["WORKSPACE"] = workspaceDir
         }
 
-        const spec = backend.buildAgentLaunch({
-            workspaceDir,
-            scratchDir,
-            cwd,
-            access,
-            network: request.network,
-            command: request.command,
-            argv: request.argv,
-            env,
-            limits,
-        })
+        const memoryLimit: MemoryLimitState | null =
+            backend.name === "bwrap"
+                ? await createSandboxMemoryLimit({
+                      bytes: limits.memoryMB * 1024 * 1024,
+                      timeoutMs: limits.timeoutMs,
+                  })
+                : null
+        if (memoryLimit !== null && !memoryLimit.active && !this.#memoryLimitWarned) {
+            this.#memoryLimitWarned = true
+            this.#options.logger?.warn(
+                { reason: memoryLimit.reason },
+                "沙箱物理内存限制不可用，仅保留 V8 堆上限与超时",
+            )
+        }
 
-        const processHandle: SandboxProcessHandle = startSandboxProcess(spec, limits, {
-            stdin: request.stdin ?? "",
-        })
+        let processHandle: SandboxProcessHandle
+        try {
+            const baseSpec = backend.buildAgentLaunch({
+                workspaceDir,
+                scratchDir,
+                cwd,
+                access,
+                network: request.network,
+                command: request.command,
+                argv: request.argv,
+                env,
+                limits,
+            })
+            const spec =
+                memoryLimit !== null && memoryLimit.active ? memoryLimit.wrap(baseSpec) : baseSpec
+            processHandle = startSandboxProcess(spec, limits, {
+                stdin: request.stdin ?? "",
+            })
+        } catch (error) {
+            await memoryLimit?.finish()
+            this.#releaseSlot()
+            throw error
+        }
 
         let finalize: Promise<AgentCodeResult> | null = null
         const wait = (): Promise<AgentCodeResult> => {
             finalize ??= (async (): Promise<AgentCodeResult> => {
                 try {
                     const processResult = await processHandle.done
+                    const memory = await memoryLimit?.finish()
+                    const oomKilled = memory?.oomKilled === true
                     const { artifacts, artifactDir } = await collectArtifacts(
                         scratchDir,
                         sandboxDir,
@@ -336,6 +363,10 @@ export class SandboxManager {
                         stderr: processResult.stderr,
                         truncated: processResult.truncated,
                         timedOut: processResult.timedOut,
+                        memoryLimit: memoryLimit?.active === true ? "cgroup" : "none",
+                        memoryLimitReason:
+                            memoryLimit !== null && !memoryLimit.active ? memoryLimit.reason : null,
+                        oomKilled,
                         durationMs: processResult.durationMs,
                         artifacts,
                         artifactDir:

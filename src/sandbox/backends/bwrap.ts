@@ -5,7 +5,7 @@
 
 import { spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
-import { basename, relative, resolve, sep } from "node:path"
+import { dirname, join, relative, resolve, sep } from "node:path"
 
 import type {
     AgentLaunchInput,
@@ -17,13 +17,56 @@ import type {
 
 const SYSTEM_DIRS = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32"]
 
+/** 沙箱内挂载 Node 运行时的目录 */
+export const NODE_ROOT = "/opt/wellspring"
+
 function existingSystemDirs(): string[] {
     return SYSTEM_DIRS.filter((dir) => existsSync(dir))
 }
 
-function isNodeCommand(command: string): boolean {
-    const name = basename(command)
-    return name === "node" || name === "nodejs"
+export interface NodeRuntimeLayout {
+    /** 可整体挂载的 Node 前缀（含 bin/npm 与 lib/node_modules）；只有裸二进制时为 null */
+    readonly prefix: string | null
+    /** 沙箱内的 node 路径 */
+    readonly nodePath: string
+    /** PATH 里的目录 */
+    readonly pathEntry: string
+}
+
+/**
+ * 找到当前 node 的安装前缀。
+ *
+ * 只 bind 单个 node 二进制会丢掉同目录的 npm/npx（npm 在 lib/node_modules/npm 里），
+ * 所以优先把整个前缀挂到 /opt/wellspring；找不到 npm 的发行版才退回裸二进制。
+ */
+export function resolveNodeRuntime(
+    execPath: string = process.execPath,
+    exists: (path: string) => boolean = existsSync,
+): NodeRuntimeLayout {
+    const prefix = resolve(dirname(execPath), "..")
+    const hasNpm =
+        exists(join(prefix, "bin", "npm")) ||
+        exists(join(prefix, "lib", "node_modules", "npm")) ||
+        exists(join(prefix, "share", "nodejs", "npm"))
+    if (hasNpm) {
+        return {
+            prefix,
+            nodePath: `${NODE_ROOT}/bin/node`,
+            pathEntry: `${NODE_ROOT}/bin`,
+        }
+    }
+    return {
+        prefix: null,
+        nodePath: `${NODE_ROOT}/node`,
+        pathEntry: NODE_ROOT,
+    }
+}
+
+function nodeRuntimeMount(runtime: NodeRuntimeLayout, execPath: string): string[] {
+    if (runtime.prefix !== null) {
+        return ["--dir", NODE_ROOT, "--ro-bind", runtime.prefix, NODE_ROOT]
+    }
+    return ["--dir", NODE_ROOT, "--ro-bind", execPath, `${NODE_ROOT}/node`]
 }
 
 function insideWorkspace(workspaceDir: string, cwd: string): string {
@@ -66,34 +109,30 @@ export function buildBwrapLaunch(input: AgentLaunchInput): LaunchSpec {
         args.push("--dir", "/run", "--dir", "/run/systemd", "--dir", "/run/systemd/resolve")
         args.push("--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve")
     }
-    args.push("--dir", "/opt/wellspring")
-    args.push("--ro-bind", process.execPath, "/opt/wellspring/node")
+    const nodeRuntime = resolveNodeRuntime()
+    args.push(...nodeRuntimeMount(nodeRuntime, process.execPath))
     const workspaceBind = input.access === "workspace-write" ? "--bind" : "--ro-bind"
     args.push(workspaceBind, resolve(input.workspaceDir), "/workspace")
     args.push("--bind", resolve(input.scratchDir), "/scratch")
     args.push("--chdir", insideWorkspace(input.workspaceDir, input.cwd))
 
     const env: Record<string, string> = { ...input.env }
-    env["PATH"] = `/opt/wellspring:${env["PATH"] ?? "/usr/bin:/bin"}`
-    if (isNodeCommand(input.command)) {
-        env["NODE_OPTIONS"] =
-            `${env["NODE_OPTIONS"] ?? ""} --max-old-space-size=${input.limits.memoryMB}`.trim()
-    }
+    env["PATH"] = `${nodeRuntime.pathEntry}:${env["PATH"] ?? "/usr/bin:/bin"}`
+    /*
+     * 不再限制 RLIMIT_AS（虚拟地址空间会直接打死 V8 / JVM / Go）。
+     * 物理内存由 SandboxManager 挂 cgroup v2 memory.max；这里只留 V8 堆上限，
+     * 且对所有命令生效，npx / npm 派生的 node 子进程也能继承。
+     */
+    env["NODE_OPTIONS"] =
+        `${env["NODE_OPTIONS"] ?? ""} --max-old-space-size=${input.limits.memoryMB}`.trim()
     for (const [key, value] of Object.entries(env)) {
         args.push("--setenv", key, value)
     }
 
     args.push("--")
 
-    // prlimit 自身在 /usr/bin；用 rlimit 作为 cgroup 不可用时的兜底
-    const prlimitArgs = [
-        "--nofile=256",
-        `--nproc=${input.limits.pids}`,
-        `--cpu=${Math.max(1, Math.ceil(input.limits.timeoutMs / 1000))}`,
-    ]
-    if (!isNodeCommand(input.command)) {
-        prlimitArgs.push(`--as=${input.limits.memoryMB * 1024 * 1024}`)
-    }
+    // prlimit 自身在 /usr/bin；只留文件描述符与进程数上限，超时交给 supervisor 的 wall timeout
+    const prlimitArgs = ["--nofile=256", `--nproc=${input.limits.pids}`]
     args.push("/usr/bin/prlimit", ...prlimitArgs, "--", input.command, ...input.argv)
 
     return {
@@ -123,14 +162,14 @@ export function buildBwrapPluginLaunch(input: PluginLaunchInput): LaunchSpec {
     for (const dir of existingSystemDirs()) {
         args.push("--ro-bind-try", dir, dir)
     }
-    args.push("--dir", "/opt/wellspring")
-    args.push("--ro-bind", process.execPath, "/opt/wellspring/node")
+    const nodeRuntime = resolveNodeRuntime()
+    args.push(...nodeRuntimeMount(nodeRuntime, process.execPath))
     args.push("--ro-bind", resolve(input.pluginDir), "/plugin")
     args.push("--ro-bind", resolve(input.hostSdkDir), "/host")
     args.push("--chdir", "/plugin")
 
     const env: Record<string, string> = { ...input.env }
-    env["PATH"] = `/opt/wellspring:${env["PATH"] ?? "/usr/bin:/bin"}`
+    env["PATH"] = `${nodeRuntime.pathEntry}:${env["PATH"] ?? "/usr/bin:/bin"}`
     env["NODE_OPTIONS"] =
         `${env["NODE_OPTIONS"] ?? ""} --max-old-space-size=${input.limits.memoryMB}`.trim()
     for (const [key, value] of Object.entries(env)) {
@@ -142,7 +181,7 @@ export function buildBwrapPluginLaunch(input: PluginLaunchInput): LaunchSpec {
         "--nofile=256",
         `--nproc=${input.limits.pids}`,
         "--",
-        "/opt/wellspring/node",
+        nodeRuntime.nodePath,
         "--permission",
         "--allow-fs-read=/plugin",
         "--allow-fs-read=/host",

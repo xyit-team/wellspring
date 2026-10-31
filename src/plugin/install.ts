@@ -15,6 +15,8 @@ const ENTRIES = ["index.ts", "index.js", "index.mjs", "index.mts"]
 
 export interface InstallPluginOptions {
     readonly force?: boolean
+    /** 解析出插件名后、写入磁盘前调用；返回非空字符串表示拒绝安装 */
+    readonly validateId?: (id: string) => string | null
 }
 
 export interface InstallPluginResult {
@@ -117,6 +119,10 @@ export async function installPlugin(
         const name = await resolveSourceName(source, sourceDir, fromArchive)
         if (!PLUGIN_NAME.test(name)) {
             throw new Error(`插件名不合法：${name}`)
+        }
+        const rejected = options.validateId?.(name) ?? null
+        if (rejected !== null) {
+            throw new Error(rejected)
         }
 
         const target = join(root, name)

@@ -14,6 +14,13 @@ import type { Logger } from "pino"
 
 import type { AppSetting } from "../config/types.ts"
 import { eventBus, EventEntity } from "../event/event.ts"
+import {
+    addWorkspace,
+    listWorkspaces,
+    removeWorkspace,
+    renameWorkspace,
+    touchWorkspace,
+} from "../workspace/registry.ts"
 import { getElog } from "../logger/elog4js.ts"
 import type { ResolvedPaths } from "../platform/path.ts"
 import { createPluginFileApi } from "../plugin/fs.ts"
@@ -22,6 +29,7 @@ import type { HostCapabilities } from "../plugin/capabilities.ts"
 import { getAgentToolContext, type AgentToolContext } from "../agent/tool-context.ts"
 import { ensurePluginDataDir } from "../plugin/runtime.ts"
 import { auditSandbox } from "./audit.ts"
+import { RPC_TIMEOUT_MS } from "./rpc-timeouts.ts"
 import { getHost } from "../api/host/host.ts"
 import { getSession as findSession } from "../session/registry.ts"
 import { registerExternalHook, shutdown as shutdownHost } from "../api/host/hooks.ts"
@@ -54,6 +62,8 @@ import {
 import type { HttpRequest, HttpResponse } from "../api/host/http.ts"
 import type { HostAgentChatInput } from "../api/host/agent.ts"
 import type { HostModelsApi, HostModelProviderInput } from "../api/host/models.ts"
+import type { HostNetworkApi, HostNetworkProxyInput } from "../api/host/network.ts"
+import type { HostPluginInstallInput, HostPluginsApi } from "../api/host/plugins.ts"
 import type { HostAgentService } from "../plugin/agent-service.ts"
 import { HTTP_MAX_BODY_BYTES } from "../api/host/http.ts"
 import {
@@ -68,6 +78,7 @@ import type { PluginLaunchInput, SandboxBackend, SandboxLimits } from "./types.t
 
 const HOOK_KIND_BY_API: Readonly<Record<string, string>> = {
     onMessage: "message",
+    onSessionStart: "sessionStart",
     beforeTurn: "beforeTurn",
     beforeStep: "beforeStep",
     afterStep: "afterStep",
@@ -97,7 +108,6 @@ export async function shutdownAllSandboxPlugins(): Promise<void> {
 }
 
 const PROJECT_ROOT = resolve(import.meta.dirname, "../..")
-const RUNNER_PATH = join(PROJECT_ROOT, "src", "sandbox", "plugin-host.ts")
 
 export interface SandboxPluginMetadata {
     readonly id: string
@@ -314,6 +324,8 @@ export interface PluginSandboxClientOptions {
     readonly capabilities?: HostCapabilities
     readonly agent?: HostAgentService
     readonly models?: HostModelsApi
+    readonly network?: HostNetworkApi
+    readonly plugins?: HostPluginsApi
 }
 
 export class PluginSandboxError extends Error {
@@ -419,10 +431,11 @@ export class PluginSandboxClient {
                 const previous = this.#activeContext
                 this.#activeContext = getAgentToolContext()
                 try {
-                    return (await this.#request("plugin.agentTool", {
-                        name: meta.name,
-                        args: input,
-                    })) as AgentCallToolResult
+                    return (await this.#request(
+                        "plugin.agentTool",
+                        { name: meta.name, args: input },
+                        RPC_TIMEOUT_MS.agentTool,
+                    )) as AgentCallToolResult
                 } finally {
                     this.#activeContext = previous
                 }
@@ -435,9 +448,14 @@ export class PluginSandboxClient {
         await mkdir(this.#sandboxDir, { recursive: true })
 
         const isBwrap = this.#options.backend.name === "bwrap"
-        if (isBwrap) {
-            await this.#prepareHostSdk()
-        }
+        /*
+         * 总是把宿主 SDK 复制到 dataDir 再运行：
+         * - bwrap 后端把 dataDir 里的副本挂到 /host；
+         * - direct 后端从 node_modules 里直接跑 .ts 会触发
+         *   ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING，复制到 dataDir 后
+         *   Node 才能按源码运行插件 host runner。
+         */
+        await this.#prepareHostSdk()
 
         const pluginEntryRel = relative(this.#options.pluginDir, this.#options.pluginEntry)
         const env: Record<string, string> = {
@@ -453,7 +471,7 @@ export class PluginSandboxClient {
             pluginEntryRel,
             pluginDataDir: this.#pluginDataDir,
             hostSdkDir: this.#hostSdkDir,
-            runnerPath: RUNNER_PATH,
+            runnerPath: join(this.#hostSdkDir, "src", "sandbox", "plugin-host.ts"),
             env,
             limits: this.#options.limits,
         }
@@ -722,6 +740,44 @@ export class PluginSandboxClient {
             return await service.clearKey(String(params["id"] ?? ""))
         }
         throw new PluginSandboxError(`不支持的 models 方法：${method}`)
+    }
+
+    async #handleNetwork(method: string, params: Record<string, unknown>): Promise<unknown> {
+        const service = this.#options.network
+        if (service === undefined) {
+            throw new PluginSandboxError("宿主没有网络配置服务")
+        }
+        if (method === "host.network.state") {
+            return await service.state()
+        }
+        if (method === "host.network.saveProxy") {
+            return await service.saveProxy(params as unknown as HostNetworkProxyInput)
+        }
+        throw new PluginSandboxError(`不支持的 network 方法：${method}`)
+    }
+
+    /** 插件管理：list / install / remove / enable / disable */
+    async #handlePlugins(method: string, params: Record<string, unknown>): Promise<unknown> {
+        const service = this.#options.plugins
+        if (service === undefined) {
+            throw new PluginSandboxError("宿主没有插件管理服务")
+        }
+        if (method === "host.plugins.list") {
+            return await service.list()
+        }
+        if (method === "host.plugins.install") {
+            return await service.install(params as unknown as HostPluginInstallInput)
+        }
+        if (method === "host.plugins.remove") {
+            return await service.remove(String(params["id"] ?? ""))
+        }
+        if (method === "host.plugins.enable") {
+            return await service.enable(String(params["id"] ?? ""))
+        }
+        if (method === "host.plugins.disable") {
+            return await service.disable(String(params["id"] ?? ""))
+        }
+        throw new PluginSandboxError(`不支持的 plugins 方法：${method}`)
     }
 
     /** 终端执行：run/poll/stop 三个动作，输出缓冲留在宿主侧 */
@@ -1152,6 +1208,12 @@ export class PluginSandboxClient {
                     String(params["sessionId"] ?? ""),
                     String(params["message"] ?? ""),
                 )
+            } else if (request.method === "host.agent.stop") {
+                this.#requireHostApi("agent")
+                if (this.#options.agent === undefined) {
+                    throw new PluginSandboxError("宿主没有 Agent 服务")
+                }
+                result = await this.#options.agent.stop(String(params["sessionId"] ?? ""))
             } else if (request.method === "host.agent.respondApproval") {
                 this.#requireHostApi("agent")
                 if (this.#options.agent === undefined) {
@@ -1176,6 +1238,43 @@ export class PluginSandboxClient {
                     throw new PluginSandboxError("宿主没有模型配置服务")
                 }
                 result = await this.#handleModels(request.method, params)
+            } else if (request.method.startsWith("host.network.")) {
+                this.#requireHostApi("network")
+                if (this.#options.network === undefined) {
+                    throw new PluginSandboxError("宿主没有网络配置服务")
+                }
+                result = await this.#handleNetwork(request.method, params)
+            } else if (request.method.startsWith("host.workspaces.")) {
+                this.#requireHostApi("workspaces")
+                if (request.method === "host.workspaces.list") {
+                    result = await listWorkspaces(this.#options.paths)
+                } else if (request.method === "host.workspaces.add") {
+                    result = await addWorkspace(
+                        {
+                            root: String(params["root"] ?? ""),
+                            ...(typeof params["name"] === "string" ? { name: params["name"] } : {}),
+                        },
+                        this.#options.paths,
+                    )
+                } else if (request.method === "host.workspaces.remove") {
+                    result = await removeWorkspace(String(params["id"] ?? ""), this.#options.paths)
+                } else if (request.method === "host.workspaces.rename") {
+                    result = await renameWorkspace(
+                        String(params["id"] ?? ""),
+                        String(params["name"] ?? ""),
+                        this.#options.paths,
+                    )
+                } else if (request.method === "host.workspaces.touch") {
+                    result = await touchWorkspace(String(params["id"] ?? ""), this.#options.paths)
+                } else {
+                    throw new Error(`未知 host 方法：${request.method}`)
+                }
+            } else if (request.method.startsWith("host.plugins.")) {
+                this.#requireHostApi("plugins")
+                if (this.#options.plugins === undefined) {
+                    throw new PluginSandboxError("宿主没有插件管理服务")
+                }
+                result = await this.#handlePlugins(request.method, params)
             } else if (request.method === "host.http.createServer") {
                 this.#requireHostApi("http")
                 const serverId = String(params["serverId"] ?? "")
@@ -1353,9 +1452,27 @@ export class PluginSandboxClient {
                         ws.close()
                     }
                     record.wsServer?.close()
-                    await new Promise<void>((resolveClose) =>
-                        record.server.close(() => resolveClose()),
-                    )
+                    // SSE / 长轮询会保持连接，server.close() 要等它们全部断开；
+                    // 关闭时给一点收尾时间，然后强制断开剩余连接，避免 Ctrl+C 卡住。
+                    const server = record.server
+                    await new Promise<void>((resolveClose) => {
+                        let settled = false
+                        const finish = (): void => {
+                            if (settled) {
+                                return
+                            }
+                            settled = true
+                            clearTimeout(forceTimer)
+                            resolveClose()
+                        }
+                        server.close(() => finish())
+                        server.closeIdleConnections()
+                        const forceTimer = setTimeout(() => {
+                            server.closeAllConnections()
+                            finish()
+                        }, 800)
+                        forceTimer.unref()
+                    })
                 }
                 result = {}
             } else if (request.method === "host.websocket.send") {
@@ -1590,7 +1707,7 @@ export class PluginSandboxClient {
                     )) as {
                         prompt?: string[]
                     }
-                    if (hook === "onMessage") {
+                    if (hook === "onMessage" || hook === "onSessionStart") {
                         const target = payload as { prompt?: string[] }
                         if (Array.isArray(result.prompt) && Array.isArray(target.prompt)) {
                             target.prompt.splice(0, target.prompt.length, ...result.prompt)
@@ -1684,6 +1801,10 @@ export class PluginSandboxClient {
             [
                 join(PROJECT_ROOT, "src", "api", "host"),
                 join(this.#hostSdkDir, "src", "api", "host"),
+            ],
+            [
+                join(PROJECT_ROOT, "src", "api", "plugin"),
+                join(this.#hostSdkDir, "src", "api", "plugin"),
             ],
             [
                 join(PROJECT_ROOT, "src", "event", "event.ts"),

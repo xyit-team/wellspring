@@ -15,11 +15,13 @@ import {
     emitBeforeStep,
     emitBeforeTurn,
     emitOnMessage,
+    emitSessionStart,
 } from "../api/host/hooks.ts"
 import { Result } from "../api/result/result.ts"
 import { createMarkdownStream, renderMarkdown } from "../display/markdown.ts"
 import { USAGE_CODES } from "../input/codes.ts"
 import { booleanValue, parseCommandArgs, stringValue } from "../input/parse-options.ts"
+import { usageOf, type TokenUsage } from "../agent/usage.ts"
 import type { OpenAIClient, StreamReply } from "../network/openai.ts"
 import type { SandboxAccess } from "../config/types.ts"
 import { registerSession } from "../session/registry.ts"
@@ -70,10 +72,8 @@ export interface TurnData {
     readonly steps: number
     readonly reply: string
     readonly model: string
-    readonly usage: {
-        readonly inputTokens: number | null
-        readonly outputTokens: number | null
-    } | null
+    /** 本轮 token 用量；供应商没有报告时为 null */
+    readonly usage: TokenUsage | null
 }
 
 function parseConversationOptions(
@@ -247,6 +247,8 @@ export async function executeTurn(params: {
     readonly onAsk?: (request: HostAgentAskRequest) => void
     readonly askUser?: (request: HostAgentAskRequest) => Promise<string | null>
     readonly onStep?: (event: { readonly turn: number; readonly step: number }) => void
+    /** 中断信号：用户停止时打断在途的模型调用（只对 run 模式有效） */
+    readonly signal?: AbortSignal
 }): Promise<Result<TurnData>> {
     const { ctx, client, store, session, mode, input, model, system, stream, display } = params
     if (mode === "run") {
@@ -271,6 +273,7 @@ export async function executeTurn(params: {
             onAsk: params.onAsk,
             askUser: params.askUser,
             onStep: params.onStep,
+            signal: params.signal,
         })
     }
     const turn = lastTurnNumber(session.events) + 1
@@ -302,10 +305,38 @@ export async function executeTurn(params: {
         },
     ]
 
-    // onMessage 的 before 阶段可以往 prompt 里追加系统提示
+    /*
+     * 用户消息先落盘：进程在模型流式过程中退出时，这一轮的问题不会从会话里消失。
+     */
+    let persisted = 0
+    const persistPending = async (): Promise<void> => {
+        if (events.length <= persisted) {
+            return
+        }
+        await store.appendTurn(session, events.slice(persisted))
+        persisted = events.length
+    }
+
+    // onSessionStart 只在新会话的第一轮触发；onMessage 的 before 阶段每轮都可以追加系统提示
     const prompt: string[] = []
     if (system !== undefined && system.trim() !== "") {
         prompt.push(system)
+    }
+    if (turn === 1) {
+        await emitSessionStart({
+            sessionId: session.meta.id,
+            mode,
+            turn,
+            input,
+            cwd: session.meta.workspace ?? session.meta.cwd,
+            time: startedAt,
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            model,
+            permission: params.permission ?? ctx.settings.sandbox.access,
+            // chat 模式没有工具循环
+            tools: [],
+            prompt,
+        })
     }
     await emitOnMessage({
         sessionId: session.meta.id,
@@ -326,6 +357,9 @@ export async function executeTurn(params: {
         messages.push({ role: "system", content: systemText })
     }
     messages.push(...toChatMessages(session.events), { role: "user", content: input })
+
+    // 模型入参已经拼好，再把开头事件落盘，避免本轮用户消息被重复算进历史
+    await persistPending()
 
     await emitBeforeStep({
         sessionId: session.meta.id,
@@ -356,7 +390,7 @@ export async function executeTurn(params: {
             time: Date.now(),
             data: { turn, reason: { kind: "failed", code } },
         })
-        await store.appendTurn(session, events)
+        await persistPending()
         await emitAfterTurn({
             sessionId: session.meta.id,
             mode,
@@ -391,10 +425,7 @@ export async function executeTurn(params: {
             turn,
             step: 1,
             message: assistant,
-            usage: {
-                inputTokens: data.reply.inputTokens,
-                outputTokens: data.reply.outputTokens,
-            },
+            usage: { ...usageOf(data.reply) },
             stream: data.chunks,
         },
     })
@@ -404,7 +435,7 @@ export async function executeTurn(params: {
         time: Date.now(),
         data: { turn, reason: { kind: "completed" } },
     })
-    await store.appendTurn(session, events)
+    await persistPending()
 
     await emitOnMessage({
         sessionId: session.meta.id,
@@ -450,12 +481,12 @@ export async function executeTurn(params: {
         reply: data.reply.text,
         model: data.reply.model,
         usage:
-            data.reply.inputTokens === null && data.reply.outputTokens === null
+            data.reply.inputTokens === null &&
+            data.reply.outputTokens === null &&
+            data.reply.cacheReadTokens === undefined &&
+            data.reply.cacheWriteTokens === undefined
                 ? null
-                : {
-                      inputTokens: data.reply.inputTokens,
-                      outputTokens: data.reply.outputTokens,
-                  },
+                : usageOf(data.reply),
     })
 }
 

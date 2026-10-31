@@ -19,16 +19,18 @@ import {
     emitBeforeStep,
     emitBeforeTurn,
     emitOnMessage,
+    emitSessionStart,
     emitUserAnswer,
 } from "../api/host/hooks.ts"
 import type { HostAgentAskRequest, HostAgentToolEvent } from "../api/host/agent.ts"
 import type { AgentTool } from "../api/host/plugin.ts"
 import type { SandboxAccess } from "../config/types.ts"
 import { createAskId, cancelAsk, waitForAsk } from "../agent/pending-asks.ts"
+import { compactUsage, usageOf } from "../agent/usage.ts"
 import { toolLabel, toolSummary } from "../display/tool-label.ts"
 import { withAgentToolContext } from "../agent/tool-context.ts"
 import { Result } from "../api/result/result.ts"
-import type { OpenAIClient, ToolCall } from "../network/openai.ts"
+import type { OpenAIClient, OpenAIReply, ToolCall } from "../network/openai.ts"
 import { createMarkdownStream, renderMarkdown, type MarkdownStream } from "../display/markdown.ts"
 import { lastSeq, lastTurnNumber, toChatMessages } from "../session/replay.ts"
 import type { SessionStore, SessionData } from "../session/store.ts"
@@ -47,6 +49,14 @@ export interface ExecApprovalRequest {
     readonly currentPermission?: SandboxAccess
     readonly requestedPermission?: SandboxAccess
     readonly justification?: string
+    /** 请求联网 */
+    readonly network?: boolean
+    /** 请求后台执行 */
+    readonly background?: boolean
+    /** 标准输入（界面截断显示） */
+    readonly stdin?: string
+    /** 请求的超时毫秒 */
+    readonly timeoutMs?: number
 }
 
 export type ExecApproval = (request: ExecApprovalRequest) => Promise<boolean>
@@ -76,6 +86,12 @@ export interface AgentTurnParams {
     /** 直接问当前终端用户（CLI）；缺省时等待 HostAgentApi.respondAsk */
     readonly askUser?: (request: HostAgentAskRequest) => Promise<string | null>
     readonly onStep?: (event: { readonly turn: number; readonly step: number }) => void
+    /**
+     * 中断信号：用户停止时打断正在进行的模型调用
+     *
+     * 已经收到的正文照常保留（按「已停止」收尾），不会再发起新的步骤。
+     */
+    readonly signal?: AbortSignal
 }
 
 /** 平台内置提问工具：模型用它向用户要信息，宿主等回答后再继续 */
@@ -84,12 +100,14 @@ const ASK_QUESTION_LIMIT = 2000
 const ASK_OPTION_LIMIT = 10
 const ASK_ANSWER_LIMIT = 8000
 
+const ASK_TOOL_DESCRIPTION =
+    "向用户提问并等待回答。用于缺少必要信息、需要在几个方案里选择或确认时。问题要简短、自包含，用用户看得懂的话；不要用它代替执行任务。如果你推荐某个选项，把它放第一个，并在标签后加「（推荐）」。"
+
 const ASK_TOOL_SCHEMA: ChatCompletionTool = {
     type: "function",
     function: {
         name: ASK_TOOL_NAME,
-        description:
-            "向用户提问并等待回答。用于缺少必要信息、需要在几个方案里选择或确认时。问题要简短、自包含，用用户看得懂的话；不要用它代替执行任务。如果你推荐某个选项，把它放第一个，并在标签后加「（推荐）」。",
+        description: ASK_TOOL_DESCRIPTION,
         parameters: {
             type: "object",
             additionalProperties: false,
@@ -178,6 +196,13 @@ function pluginToolSchema(tool: AgentTool): ChatCompletionTool {
     }
 }
 
+/**
+ * 单步 usage：缓存/推理字段只在供应商报告时出现，inputTokens 同时是本步的上下文占用
+ */
+function stepUsage(reply: OpenAIReply): Record<string, unknown> {
+    return { ...usageOf(reply) }
+}
+
 export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<TurnData>> {
     const { ctx, client, store, session, input, model, system, stream, display } = params
     const turn = lastTurnNumber(session.events) + 1
@@ -216,9 +241,50 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
         },
     ]
 
+    /*
+     * 本轮事件边产生边落盘：进程在流式过程中被停掉/重启时，至少留下已经开始的
+     * 这一轮（尤其是用户消息），下一轮不会突然「失忆」。
+     * persisted 记录已写入的条数，避免重复追加。
+     */
+    let persisted = 0
+    const persistPending = async (): Promise<void> => {
+        if (events.length <= persisted) {
+            return
+        }
+        await store.appendTurn(session, events.slice(persisted))
+        persisted = events.length
+    }
+
+    const pluginTools = ctx.agentTools.list()
+    // 插件可以自己提供同名工具覆盖内置 ask
+    const askToolBuiltin = ctx.agentTools.get(ASK_TOOL_NAME) === undefined
+    const availableTools = [
+        ...pluginTools.map((record) => ({
+            name: record.tool.name,
+            description: record.tool.introduction.content,
+        })),
+        ...(askToolBuiltin ? [{ name: ASK_TOOL_NAME, description: ASK_TOOL_DESCRIPTION }] : []),
+    ]
+
     const prompt: string[] = []
     if (system !== undefined && system.trim() !== "") {
         prompt.push(system)
+    }
+    // 会话的第一轮：只触发一次，适合注入一次性的 system prompt
+    if (turn === 1) {
+        await emitSessionStart({
+            sessionId: session.meta.id,
+            mode: "run",
+            turn,
+            input,
+            cwd: session.meta.workspace ?? session.meta.cwd,
+            time: startedAt,
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            model,
+            permission: params.permission ?? ctx.settings.sandbox.access,
+            tools: availableTools,
+            prompt,
+        })
     }
     await emitOnMessage({
         sessionId: session.meta.id,
@@ -241,14 +307,14 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
 
     messages.push(...toChatMessages(session.events), { role: "user", content: input })
 
+    // 模型入参已经拼好（不能再把本轮用户消息重复算进历史），此时把开头事件落盘
+    await persistPending()
+
     const hostSession = getSession(session.meta.id)
     hostSession?.begin()
     const maxSteps = params.maxSteps ?? Number.POSITIVE_INFINITY
     let stepsExecuted = 0
-    const pluginTools = ctx.agentTools.list()
     const toolDefinitions = pluginTools.map((record) => pluginToolSchema(record.tool))
-    // 插件可以自己提供同名工具覆盖内置 ask
-    const askToolBuiltin = ctx.agentTools.get(ASK_TOOL_NAME) === undefined
     if (askToolBuiltin) {
         toolDefinitions.push(ASK_TOOL_SCHEMA)
     }
@@ -257,6 +323,11 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
     let finalModel = model
     let inputTokens: number | null = null
     let outputTokens: number | null = null
+    let cacheReadTokens: number | null = null
+    let cacheWriteTokens: number | null = null
+    let reasoningTokens: number | null = null
+    /* 最后一次请求的 prompt tokens：本轮收尾时上下文里实际占用了多少 */
+    let contextTokens: number | null = null
     const streamed = display && stream
     const markdownEnabled = display && process.stdout.isTTY === true
 
@@ -267,7 +338,7 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
             time: Date.now(),
             data: { turn, reason: { kind: "failed", code } },
         })
-        await store.appendTurn(session, events)
+        await persistPending()
         hostSession?.end()
         await emitAfterTurn({
             sessionId: session.meta.id,
@@ -356,7 +427,16 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
         }
     }
 
+    // 用户点了停止：在步与步之间收尾，不再发起新的模型调用或工具执行
+    let stopped = false
+    // 用函数读，避免第一处判断把类型收窄成 false，后面的比较被判成恒假
+    const stopRequested = (): boolean => hostSession?.stopRequested === true
+
     for (let step = 1; step <= maxSteps; step += 1) {
+        if (stopRequested()) {
+            stopped = true
+            break
+        }
         stepsExecuted = step
         params.onStep?.({ turn, step })
         events.push({ type: "step/start", seq: seq++, time: Date.now(), data: { turn, step } })
@@ -417,6 +497,7 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
         const streamResult = await client.chatStream(messages, {
             model,
             reasoning: params.reasoning,
+            ...(params.signal === undefined ? {} : { signal: params.signal }),
             tools: toolDefinitions,
             toolChoice: "auto",
             onReasoning: (text) => {
@@ -453,11 +534,29 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
         if (data.reply.text !== "") {
             finalText = data.reply.text
         }
+        if (data.interrupted === true) {
+            /*
+             * 用户停止：这一次模型调用被信号打断，收到的正文已经记进 finalText。
+             * 本轮就地收尾——不执行这次返回的工具调用，也不再进入下一步。
+             */
+            stopped = true
+        }
         if (data.reply.inputTokens !== null) {
             inputTokens = (inputTokens ?? 0) + data.reply.inputTokens
+            // 最后一次请求的 prompt tokens 就是当时占用的上下文
+            contextTokens = data.reply.inputTokens
         }
         if (data.reply.outputTokens !== null) {
             outputTokens = (outputTokens ?? 0) + data.reply.outputTokens
+        }
+        if (data.reply.cacheReadTokens !== undefined && data.reply.cacheReadTokens !== null) {
+            cacheReadTokens = (cacheReadTokens ?? 0) + data.reply.cacheReadTokens
+        }
+        if (data.reply.cacheWriteTokens !== undefined && data.reply.cacheWriteTokens !== null) {
+            cacheWriteTokens = (cacheWriteTokens ?? 0) + data.reply.cacheWriteTokens
+        }
+        if (data.reply.reasoningTokens !== undefined && data.reply.reasoningTokens !== null) {
+            reasoningTokens = (reasoningTokens ?? 0) + data.reply.reasoningTokens
         }
 
         const parts: ContentPart[] = []
@@ -482,10 +581,7 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
                 turn,
                 step,
                 message: assistant,
-                usage: {
-                    inputTokens: data.reply.inputTokens,
-                    outputTokens: data.reply.outputTokens,
-                },
+                usage: stepUsage(data.reply),
                 stream: data.chunks,
             },
         })
@@ -516,6 +612,8 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
                 step,
                 reply: data.reply.text,
             })
+            // 最终回答已经生成：先落盘，进程在收尾前退出也不会丢
+            await persistPending()
             break
         }
 
@@ -655,10 +753,16 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
             time: Date.now(),
             data: { turn, step, reason: "completed" },
         })
+        // 一步的工具调用与结果都齐了，checkpoint 一次
+        await persistPending()
+        if (stopRequested()) {
+            stopped = true
+            break
+        }
     }
 
     if (finalText === "") {
-        finalText = "（达到最大步数，未生成最终回答）"
+        finalText = stopped ? "（已停止）" : "（达到最大步数，未生成最终回答）"
     }
 
     hostSession?.end()
@@ -670,14 +774,14 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
         type: "turn/end",
         seq: seq++,
         time: Date.now(),
-        data: { turn, reason: { kind: "completed" } },
+        data: { turn, reason: { kind: stopped ? "stopped" : "completed" } },
     })
-    await store.appendTurn(session, events)
+    await persistPending()
     await emitAfterTurn({
         sessionId: session.meta.id,
         mode: "run",
         turn,
-        reason: "completed",
+        reason: stopped ? "cancelled" : "completed",
         code: null,
     })
 
@@ -686,6 +790,21 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
         ctx.elog.agent(markdownEnabled ? renderMarkdown(finalText) : finalText)
     }
 
+    const usage =
+        inputTokens === null &&
+        outputTokens === null &&
+        cacheReadTokens === null &&
+        cacheWriteTokens === null
+            ? null
+            : compactUsage({
+                  inputTokens,
+                  outputTokens,
+                  cacheReadTokens,
+                  cacheWriteTokens,
+                  reasoningTokens,
+                  contextTokens,
+              })
+
     return Result.successWithData<TurnData>({
         sessionId: session.meta.id,
         mode: "run",
@@ -693,6 +812,6 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
         steps: stepsExecuted,
         reply: finalText,
         model: finalModel,
-        usage: inputTokens === null && outputTokens === null ? null : { inputTokens, outputTokens },
+        usage,
     })
 }

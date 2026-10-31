@@ -2,6 +2,8 @@
  * 宿主 Agent 能力：让 sandbox 插件与 Agent 会话交互。
  */
 
+import type { TokenUsage } from "../../agent/usage.ts"
+
 /** Agent 运行时的 sandbox 权限；与 CLI 的 --permission 取值一致 */
 export type HostAgentPermission = "read-only" | "workspace-write" | "danger-full-access"
 
@@ -34,10 +36,8 @@ export interface HostAgentChatResult {
     readonly steps: number
     readonly reply: string
     readonly model: string
-    readonly usage: {
-        readonly inputTokens: number | null
-        readonly outputTokens: number | null
-    } | null
+    /** 本轮 token 用量：含缓存命中/写入、推理与收尾时的上下文占用 */
+    readonly usage: TokenUsage | null
 }
 
 export interface HostWorkspaceFileEntry {
@@ -72,6 +72,14 @@ export interface HostAgentApprovalRequest {
     readonly currentPermission?: string
     readonly requestedPermission?: string
     readonly justification?: string
+    /** 请求联网 */
+    readonly network?: boolean
+    /** 请求后台执行 */
+    readonly background?: boolean
+    /** 标准输入；界面按长度截断显示 */
+    readonly stdin?: string
+    /** 请求的超时毫秒 */
+    readonly timeoutMs?: number
 }
 
 /** Agent 用 ask 工具向用户提问；界面回答后 Agent 继续 */
@@ -139,6 +147,14 @@ export interface HostAgentApi {
      * 会话不在运行中（尚未开始或已结束）返回 false，调用方按下一轮处理
      */
     interject(sessionId: string, message: string): Promise<boolean>
+    /**
+     * 停止正在运行的一轮
+     *
+     * 已发出的模型调用不会被切断：循环在当前步结束后收尾，
+     * 后续步骤、工具执行都不再发起。等待中的提问与提权请求按“跳过 / 拒绝”了结。
+     * 会话不在运行中返回 false
+     */
+    stop(sessionId: string): Promise<boolean>
     /** 回复提权请求；返回是否命中待处理的请求 */
     respondApproval(approvalId: string, approved: boolean): Promise<boolean>
     /** 回答 Agent 的提问；返回是否命中待处理的提问 */

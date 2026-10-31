@@ -35,6 +35,7 @@ export class Session {
     readonly #store: SessionStore | null
     readonly #queue: SessionMessage[] = []
     #active = false
+    #stopRequested = false
 
     constructor(data: SessionData, store: SessionStore | null = null) {
         this.data = data
@@ -48,6 +49,17 @@ export class Session {
     /** Agent 循环开始后，消息进入队列而不是直接落盘 */
     begin(): void {
         this.#active = true
+        this.#stopRequested = false
+    }
+
+    /** 请求停止本轮：循环在下一步之前收尾，不再调用模型 */
+    requestStop(): void {
+        this.#stopRequested = true
+    }
+
+    /** 本轮是否被要求停止 */
+    get stopRequested(): boolean {
+        return this.#stopRequested
     }
 
     end(): void {

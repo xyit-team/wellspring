@@ -24,6 +24,26 @@ import type {
     HostModelsStateResult,
 } from "../api/host/models.ts"
 import type {
+    HostNetworkApi,
+    HostNetworkProxyInput,
+    HostNetworkResult,
+    HostNetworkState,
+} from "../api/host/network.ts"
+import type {
+    HostPluginInstallInput,
+    HostPluginsApi,
+    HostPluginListResult,
+    HostPluginMutationResult,
+} from "../api/host/plugins.ts"
+import type {
+    HostWorkspaceAddInput,
+    HostWorkspaceAddResult,
+    HostWorkspaceEntry,
+    HostWorkspaceListResult,
+    HostWorkspaceRemoveResult,
+    HostWorkspacesApi,
+} from "../api/host/workspace.ts"
+import type {
     HostPtyApi,
     HostPtyAvailability,
     HostPtyChunk,
@@ -63,6 +83,7 @@ import {
     emitBeforeTurn,
     emitInitHooks,
     emitOnMessage,
+    emitSessionStart,
     emitShutdownHooks,
     emitUserAnswer,
     listHookKinds,
@@ -223,6 +244,7 @@ interface PluginRuntime {
 
 const HOOK_API_NAME: Readonly<Record<HookKind, string>> = {
     message: "onMessage",
+    sessionStart: "onSessionStart",
     beforeTurn: "beforeTurn",
     beforeStep: "beforeStep",
     afterStep: "afterStep",
@@ -356,6 +378,9 @@ function remoteAgent(): HostAgentApi {
                 message,
             })) as boolean
         },
+        async stop(sessionId: string) {
+            return (await bridgeRequest("host.agent.stop", { sessionId })) as boolean
+        },
         async respondApproval(approvalId: string, approved: boolean) {
             return (await bridgeRequest("host.agent.respondApproval", {
                 approvalId,
@@ -417,6 +442,74 @@ function remoteModels(): HostModelsApi {
         },
         async clearKey(id: string): Promise<HostModelsState> {
             return (await bridgeRequest("host.models.clearKey", { id })) as HostModelsState
+        },
+    }
+}
+
+function remoteNetwork(): HostNetworkApi {
+    return {
+        async state(): Promise<HostNetworkState> {
+            return (await bridgeRequest("host.network.state", {})) as HostNetworkState
+        },
+        async saveProxy(input: HostNetworkProxyInput): Promise<HostNetworkResult> {
+            return (await bridgeRequest(
+                "host.network.saveProxy",
+                input as unknown as Record<string, unknown>,
+            )) as HostNetworkResult
+        },
+    }
+}
+
+function remotePlugins(): HostPluginsApi {
+    return {
+        async list(): Promise<HostPluginListResult> {
+            return (await bridgeRequest("host.plugins.list", {})) as HostPluginListResult
+        },
+        async install(input: HostPluginInstallInput): Promise<HostPluginMutationResult> {
+            return (await bridgeRequest(
+                "host.plugins.install",
+                input as unknown as Record<string, unknown>,
+                RPC_TIMEOUT_MS.pluginsInstall,
+            )) as HostPluginMutationResult
+        },
+        async remove(id: string): Promise<HostPluginMutationResult> {
+            return (await bridgeRequest("host.plugins.remove", { id })) as HostPluginMutationResult
+        },
+        async enable(id: string): Promise<HostPluginMutationResult> {
+            return (await bridgeRequest("host.plugins.enable", { id })) as HostPluginMutationResult
+        },
+        async disable(id: string): Promise<HostPluginMutationResult> {
+            return (await bridgeRequest("host.plugins.disable", { id })) as HostPluginMutationResult
+        },
+    }
+}
+
+function remoteWorkspaces(): HostWorkspacesApi {
+    return {
+        async list(): Promise<HostWorkspaceListResult> {
+            return (await bridgeRequest("host.workspaces.list", {})) as HostWorkspaceListResult
+        },
+        async add(input: HostWorkspaceAddInput): Promise<HostWorkspaceAddResult> {
+            return (await bridgeRequest(
+                "host.workspaces.add",
+                input as unknown as Record<string, unknown>,
+            )) as HostWorkspaceAddResult
+        },
+        async remove(id: string): Promise<HostWorkspaceRemoveResult> {
+            return (await bridgeRequest("host.workspaces.remove", {
+                id,
+            })) as HostWorkspaceRemoveResult
+        },
+        async rename(id: string, name: string): Promise<HostWorkspaceEntry | null> {
+            return (await bridgeRequest("host.workspaces.rename", {
+                id,
+                name,
+            })) as HostWorkspaceEntry | null
+        },
+        async touch(id: string): Promise<HostWorkspaceEntry | null> {
+            return (await bridgeRequest("host.workspaces.touch", {
+                id,
+            })) as HostWorkspaceEntry | null
         },
     }
 }
@@ -703,9 +796,11 @@ async function bootstrap(params: ConfigurePayload): Promise<{
         },
         capabilities: {
             async executeCode(input: unknown) {
+                // 沙箱自己的命令超时最长 600s，RPC 用更长的上限，避免宿主先放弃等待
                 return await bridgeRequest(
                     "host.capabilities.executeCode",
                     input as Record<string, unknown>,
+                    RPC_TIMEOUT_MS.sandboxExec,
                 )
             },
             async startBackgroundCode(input: unknown) {
@@ -730,6 +825,9 @@ async function bootstrap(params: ConfigurePayload): Promise<{
         http: remoteHttp(),
         agent: remoteAgent(),
         models: remoteModels(),
+        network: remoteNetwork(),
+        plugins: remotePlugins(),
+        workspaces: remoteWorkspaces(),
         exec: remoteExec(),
         pty: remotePty(),
     }
@@ -830,6 +928,9 @@ async function dispatchHook(name: string, payload: Record<string, unknown>): Pro
     switch (name) {
         case "onMessage":
             await emitOnMessage(payload as never)
+            return { prompt: (payload["prompt"] as string[] | undefined) ?? [] }
+        case "onSessionStart":
+            await emitSessionStart(payload as never)
             return { prompt: (payload["prompt"] as string[] | undefined) ?? [] }
         case "beforeTurn":
             await emitBeforeTurn(payload as never)
@@ -1123,15 +1224,28 @@ async function main(): Promise<void> {
                 continue
             }
             if (message.type === "event") {
-                if (message.method === "sandbox.event") {
-                    const params = message.params as { name: string; data: unknown }
-                    eventBus.receive(params.name, params.data)
-                } else if (message.method === "sandbox.agent.stream") {
-                    const params = message.params as {
-                        streamId: string
-                        event: HostAgentStreamEvent
+                /*
+                 * 事件回调出错不能拖垮 stdin 读取
+                 *
+                 * 这里在 data 监听里同步执行插件侧回调；一旦抛出就是未捕获异常，
+                 * 插件可能直接挂掉或丢掉这一帧里剩下的事件——宿主还在跑、界面却再也
+                 * 收不到任何事件，表现就是「服务端一直有日志、页面卡住不动」。
+                 */
+                try {
+                    if (message.method === "sandbox.event") {
+                        const params = message.params as { name: string; data: unknown }
+                        eventBus.receive(params.name, params.data)
+                    } else if (message.method === "sandbox.agent.stream") {
+                        const params = message.params as {
+                            streamId: string
+                            event: HostAgentStreamEvent
+                        }
+                        agentStreamHandlers.get(params.streamId)?.(params.event)
                     }
-                    agentStreamHandlers.get(params.streamId)?.(params.event)
+                } catch (error) {
+                    process.stderr.write(
+                        `事件处理失败（${message.method}）：${error instanceof Error ? error.message : String(error)}\n`,
+                    )
                 }
                 continue
             }

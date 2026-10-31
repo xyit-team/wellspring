@@ -81,6 +81,7 @@ const MESSAGES: Readonly<Record<string, string>> = {
     "plugin.command-failed": "插件命令执行失败",
     "plugin.load-failed": "插件加载失败",
     "plugin.install-failed": "插件安装失败",
+    "plugin.has-dependents": "插件被其它插件依赖，使用 --ignore 强制卸载",
     "plugin.not-found": "插件不存在",
     "service.already-running": "服务已在运行",
     "service.not-running": "没有正在运行的服务",

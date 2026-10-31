@@ -24,6 +24,7 @@ const KEYS = [
     "models.activeModel",
     "models.activeReasoning",
     "network.proxy",
+    "network.noProxy",
 ] as const
 
 type ConfigKey = (typeof KEYS)[number]
@@ -117,7 +118,35 @@ function readValue(settings: AppSetting, key: ConfigKey): unknown {
             return modelsOf(settings).activeReasoning
         case "network.proxy":
             return settings.network.proxy
+        case "network.noProxy":
+            return settings.network.proxy?.noProxy ?? []
     }
+}
+
+/** CLI 里接受 none/null/off/空串表示直连；其余按 http(s) URL 校验 */
+function normalizeProxyUrl(raw: string): string | null | string {
+    const value = raw.trim()
+    if (value === "" || value === "none" || value === "null" || value === "off") {
+        return null
+    }
+    try {
+        const url = new URL(value)
+        if (url.protocol !== "http:" && url.protocol !== "https:") {
+            return `${USAGE_CODES.invalidValue}:network.proxy（只支持 http/https）`
+        }
+    } catch {
+        return `${USAGE_CODES.invalidValue}:network.proxy`
+    }
+    return value
+}
+
+function splitNoProxy(raw: string): string[] {
+    const result: string[] = []
+    for (const item of raw.split(/[,，\s]+/)) {
+        const value = item.trim()
+        if (value !== "" && !result.includes(value)) result.push(value)
+    }
+    return result
 }
 
 function writeValue(settings: AppSetting, key: ConfigKey, raw: string): AppSetting | string {
@@ -160,8 +189,30 @@ function writeValue(settings: AppSetting, key: ConfigKey, raw: string): AppSetti
             const next = modelsOf(settings)
             return { ...settings, models: { ...next, activeReasoning: raw } }
         }
-        case "network.proxy":
-            return `${USAGE_CODES.invalidValue}:network.proxy（请直接编辑配置文件）`
+        case "network.proxy": {
+            const url = normalizeProxyUrl(raw)
+            if (typeof url === "string" && url.startsWith(USAGE_CODES.invalidValue)) {
+                return url
+            }
+            const noProxy = settings.network.proxy?.noProxy ?? []
+            return {
+                ...settings,
+                network: { proxy: url === null ? null : { type: "http", url, noProxy } },
+            }
+        }
+        case "network.noProxy": {
+            const noProxy = splitNoProxy(raw)
+            const current = settings.network.proxy
+            if (current === null && noProxy.length > 0) {
+                return `${USAGE_CODES.invalidValue}:network.noProxy（先设置 network.proxy）`
+            }
+            return {
+                ...settings,
+                network: {
+                    proxy: current === null ? null : { ...current, noProxy },
+                },
+            }
+        }
     }
 }
 

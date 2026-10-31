@@ -25,7 +25,7 @@ import type {
 import type { ExecApprovalRequest } from "../commands/agent-turn.ts"
 import type { CommandContext } from "../commands/shared.ts"
 import { executeTurn } from "../commands/conversation.ts"
-import { answerAsk } from "../agent/pending-asks.ts"
+import { answerAsk, cancelSessionAsks } from "../agent/pending-asks.ts"
 import { credentialsFile } from "../config/credentials.ts"
 import { readTextIfExists } from "../platform/file.ts"
 import { DEFAULT_SETTINGS } from "../config/defaults.ts"
@@ -133,6 +133,39 @@ function hasExecutable(name: string): boolean {
         }
     }
     return false
+}
+
+/**
+ * 目录选择框没返回路径时，区分「用户取消」与「对话框根本没起来」
+ *
+ * 以前所有失败都报「已取消」，界面因此什么都不提示：
+ * zenity 打不开显示器时会带着退出码 0 和空的 stdout 退出（只往 stderr 写一行 GTK 警告），
+ * 看起来和用户按了取消一模一样。这里按退出码归因，让上层能把真因说出来。
+ */
+function pickerOutcome(command: string, result: NativeCommandResult): HostWorkspaceCheck {
+    const cancelled: HostWorkspaceCheck = { ok: false, root: "", name: "", error: "已取消" }
+    // 用户关掉窗口：zenity / kdialog 退出码 1；osascript 是 AppleScript 的 -128
+    if (result.code === 1 || result.stderr.includes("-128")) {
+        return cancelled
+    }
+    if (result.code === null) {
+        return { ok: false, root: "", name: "", error: `无法启动 ${command}（未找到或不可执行）` }
+    }
+    const detail =
+        result.stderr
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line !== "")
+            .pop() ?? ""
+    return {
+        ok: false,
+        root: "",
+        name: "",
+        error:
+            detail === ""
+                ? `${command} 没有返回目录（退出码 ${result.code}）`
+                : `${command} 无法显示选择框：${detail}`,
+    }
 }
 
 const IGNORED_DIRECTORIES = new Set([
@@ -510,9 +543,17 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
     const cwd = options.cwd ?? process.cwd()
     const store = new SessionStore()
     const queues = new Map<string, Promise<unknown>>()
+    /**
+     * 每个会话当前这一轮的 AbortController
+     *
+     * stop() 除了标记停止，还要把正在进行的模型请求打断——
+     * 否则「停止」只是等这一轮自己跑完，慢模型要等很久。
+     */
+    const turnAborts = new Map<string, AbortController>()
     const pendingApprovals = new Map<
         string,
         {
+            readonly sessionId: string
             readonly resolve: (approved: boolean) => void
             readonly timer: ReturnType<typeof setTimeout>
         }
@@ -528,6 +569,18 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
         clearTimeout(pending.timer)
         pending.resolve(approved)
         return true
+    }
+
+    /** 停止一轮时把它挂着的提权请求按拒绝了结，避免循环卡在等待里 */
+    const settleSessionApprovals = (sessionId: string): void => {
+        for (const [approvalId, pending] of [...pendingApprovals]) {
+            if (pending.sessionId !== sessionId) {
+                continue
+            }
+            pendingApprovals.delete(approvalId)
+            clearTimeout(pending.timer)
+            pending.resolve(false)
+        }
     }
 
     const settingsPath = join(options.paths.configDir, SETTING_FILE_NAME)
@@ -601,7 +654,6 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
     /** 打开原生目录选择对话框：Linux 用 zenity/kdialog，macOS 用 osascript，Windows 用 FolderBrowserDialog */
     const pickDirectory = async (): Promise<HostWorkspaceCheck> => {
         const title = "选择工作区文件夹"
-        const cancelled: HostWorkspaceCheck = { ok: false, root: "", name: "", error: "已取消" }
         if (process.platform === "darwin") {
             const result = await runNativeCommand("osascript", [
                 "-e",
@@ -611,7 +663,7 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
             if (result.code === 0 && selected !== "") {
                 return await validateWorkspace(selected)
             }
-            return cancelled
+            return pickerOutcome("osascript", result)
         }
         if (process.platform === "win32") {
             const script = [
@@ -630,7 +682,7 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
             if (result.code === 0 && selected !== "") {
                 return await validateWorkspace(selected)
             }
-            return cancelled
+            return pickerOutcome("powershell", result)
         }
         if (hasExecutable("zenity")) {
             const result = await runNativeCommand("zenity", [
@@ -642,7 +694,7 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
             const selected = result.stdout.trim()
             return result.code === 0 && selected !== ""
                 ? await validateWorkspace(selected)
-                : cancelled
+                : pickerOutcome("zenity", result)
         }
         if (hasExecutable("kdialog")) {
             const result = await runNativeCommand("kdialog", [
@@ -654,7 +706,7 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
             const selected = result.stdout.trim()
             return result.code === 0 && selected !== ""
                 ? await validateWorkspace(selected)
-                : cancelled
+                : pickerOutcome("kdialog", result)
         }
         return {
             ok: false,
@@ -734,6 +786,7 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
                               resolvePromise(false)
                           }, APPROVAL_TIMEOUT_MS)
                           pendingApprovals.set(approvalId, {
+                              sessionId: data.meta.id,
                               resolve: (approved) => resolvePromise(approved),
                               timer,
                           })
@@ -746,6 +799,14 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
                                   currentPermission: request.currentPermission,
                                   requestedPermission: request.requestedPermission,
                                   justification: request.justification,
+                                  ...(request.network === true ? { network: true } : {}),
+                                  ...(request.background === true ? { background: true } : {}),
+                                  ...(typeof request.stdin === "string" && request.stdin !== ""
+                                      ? { stdin: request.stdin }
+                                      : {}),
+                                  ...(typeof request.timeoutMs === "number"
+                                      ? { timeoutMs: request.timeoutMs }
+                                      : {}),
                               })
                           } catch {
                               pendingApprovals.delete(approvalId)
@@ -754,30 +815,38 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
                           }
                       })
                   }
-        const result = await executeTurn({
-            ctx: context(settings, client, model, provider),
-            client,
-            store,
-            session: data,
-            mode: "run",
-            input: messageForAgent,
-            model,
-            reasoning,
-            system: input.system,
-            stream: false,
-            display: false,
-            allowExec: false,
-            permission,
-            onDelta,
-            onReasoning,
-            onTool,
-            onStep,
-            approveExec: requestApproval,
-            ...(onAsk === undefined
-                ? // 没有界面通道（agent.chat）时立即跳过提问，避免一轮对话挂到超时
-                  { askUser: async () => null }
-                : { onAsk }),
-        })
+        const turnAbort = new AbortController()
+        turnAborts.set(data.meta.id, turnAbort)
+        let result
+        try {
+            result = await executeTurn({
+                ctx: context(settings, client, model, provider),
+                signal: turnAbort.signal,
+                client,
+                store,
+                session: data,
+                mode: "run",
+                input: messageForAgent,
+                model,
+                reasoning,
+                system: input.system,
+                stream: false,
+                display: false,
+                allowExec: false,
+                permission,
+                onDelta,
+                onReasoning,
+                onTool,
+                onStep,
+                approveExec: requestApproval,
+                ...(onAsk === undefined
+                    ? // 没有界面通道（agent.chat）时立即跳过提问，避免一轮对话挂到超时
+                      { askUser: async () => null }
+                    : { onAsk }),
+            })
+        } finally {
+            turnAborts.delete(data.meta.id)
+        }
         if (!result.isSuccess()) {
             throw new Error(result.getCode() ?? "agent.failed")
         }
@@ -875,6 +944,19 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
                 return false
             }
             await session.message(content.slice(0, MAX_INTERJECT_CHARS), "interject")
+            return true
+        },
+        async stop(sessionId) {
+            const session = getSession(sessionId)
+            if (session === null || !session.active) {
+                return false
+            }
+            session.requestStop()
+            // 挂着等人的请求就地了结，循环才能读到停止标记
+            cancelSessionAsks(sessionId)
+            settleSessionApprovals(sessionId)
+            // 打断正在进行的模型请求：已收到的正文照常保留，本轮按「已停止」收尾
+            turnAborts.get(sessionId)?.abort()
             return true
         },
         async respondApproval(approvalId, approved) {

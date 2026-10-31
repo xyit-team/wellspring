@@ -12,6 +12,23 @@ export interface RpcTimeouts {
     readonly agentStream: number | null
     /** 拉取供应商模型列表：要等网络超时与重试 */
     readonly modelsFetch: number
+    /** 安装插件：写文件与解压 */
+    readonly pluginsInstall: number
+    /**
+     * 调用插件提供的 Agent 工具
+     *
+     * 工具自己决定执行多久（`api.exec` 的 timeoutMs 上限 600s），
+     * RPC 若用默认 30s 就会先超时：宿主放弃等待、插件仍在跑，
+     * 后续工具调用还会排在它后面，界面表现为「工具被中断后卡住」。
+     */
+    readonly agentTool: number
+    /**
+     * 执行沙箱命令（execute_code）
+     *
+     * 沙箱自己的 timeoutMs 最长 600s，RPC 必须比它长；否则宿主已经放弃等待，
+     * 沙箱里的进程还在跑，调用方只能看到一条「host RPC 超时」。
+     */
+    readonly sandboxExec: number
 }
 
 export const RPC_TIMEOUT_MS: RpcTimeouts = {
@@ -19,4 +36,8 @@ export const RPC_TIMEOUT_MS: RpcTimeouts = {
     agentChat: 180_000,
     agentStream: null,
     modelsFetch: 120_000,
+    pluginsInstall: 180_000,
+    /* 比 exec 的最长上限（600s）再留一点余量；不设 null，避免坏插件把宿主永久挂住 */
+    agentTool: 660_000,
+    sandboxExec: 660_000,
 }

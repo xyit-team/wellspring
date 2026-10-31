@@ -24,6 +24,7 @@ import type {
 } from "openai/resources/chat/completions"
 import type { Logger } from "pino"
 
+import { parseProviderUsage, type ProviderUsage } from "../agent/usage.ts"
 import { Result } from "../api/result/result.ts"
 import { normalizeApiKey, resolveApiKeySync } from "../config/credentials.ts"
 import { DEFAULT_SETTINGS } from "../config/defaults.ts"
@@ -54,6 +55,25 @@ export interface OpenAIReply {
     readonly id: string
     readonly inputTokens: number | null
     readonly outputTokens: number | null
+    /** 缓存命中 / 写入的 prompt tokens；供应商没报告时缺省 */
+    readonly cacheReadTokens?: number | null
+    readonly cacheWriteTokens?: number | null
+    /** 输出里的推理 token；供应商没报告时缺省 */
+    readonly reasoningTokens?: number | null
+}
+
+/** 把供应商 usage 里的缓存/推理项展开成可选字段，空值不写进回复对象 */
+function providerUsageFields(
+    usage: ProviderUsage | null,
+): Pick<OpenAIReply, "cacheReadTokens" | "cacheWriteTokens" | "reasoningTokens"> {
+    if (usage === null) {
+        return {}
+    }
+    return {
+        ...(usage.cacheReadTokens === null ? {} : { cacheReadTokens: usage.cacheReadTokens }),
+        ...(usage.cacheWriteTokens === null ? {} : { cacheWriteTokens: usage.cacheWriteTokens }),
+        ...(usage.reasoningTokens === null ? {} : { reasoningTokens: usage.reasoningTokens }),
+    }
 }
 
 export interface RespondOptions {
@@ -84,6 +104,8 @@ export interface ToolCall {
 }
 
 export interface StreamReply {
+    /** 这次流被 signal 中断（用户停止）；reply 里是已经收到的部分 */
+    readonly interrupted?: boolean
     readonly reply: OpenAIReply
     readonly chunks: readonly OpenAISessionChunk[]
     readonly toolCalls: readonly ToolCall[]
@@ -92,6 +114,13 @@ export interface StreamReply {
 }
 
 export interface ChatStreamOptions extends ChatOptions {
+    /**
+     * 中断信号：用户停止时立刻断开这次请求
+     *
+     * 已经收到的增量照常返回（`interrupted: true`），调用方按「用户停止」收尾，
+     * 不会因为打断丢掉半截回复。
+     */
+    readonly signal?: AbortSignal
     readonly onText?: (text: string) => void
     /** 思考内容增量回调；只在模型返回 reasoning_content 时触发 */
     readonly onReasoning?: (text: string) => void
@@ -220,12 +249,14 @@ export class OpenAIClient {
                 return Result.error<OpenAIReply>(OPENAI_CODES.emptyOutput)
             }
             this.#logger?.debug({ model: response.model, id: response.id }, "OpenAI Responses 调用")
+            const usage = parseProviderUsage(response.usage)
             return Result.successWithData<OpenAIReply>({
                 text,
                 model: response.model,
                 id: response.id,
-                inputTokens: response.usage?.input_tokens ?? null,
-                outputTokens: response.usage?.output_tokens ?? null,
+                inputTokens: usage?.inputTokens ?? null,
+                outputTokens: usage?.outputTokens ?? null,
+                ...providerUsageFields(usage),
             })
         } catch (error) {
             return this.failure(error, model)
@@ -253,12 +284,14 @@ export class OpenAIClient {
                 return Result.error<OpenAIReply>(OPENAI_CODES.emptyOutput)
             }
             this.#logger?.debug({ model: completion.model, id: completion.id }, "OpenAI Chat 调用")
+            const usage = parseProviderUsage(completion.usage)
             return Result.successWithData<OpenAIReply>({
                 text,
                 model: completion.model,
                 id: completion.id,
-                inputTokens: completion.usage?.prompt_tokens ?? null,
-                outputTokens: completion.usage?.completion_tokens ?? null,
+                inputTokens: usage?.inputTokens ?? null,
+                outputTokens: usage?.outputTokens ?? null,
+                ...providerUsageFields(usage),
             })
         } catch (error) {
             return this.failure(error, model)
@@ -271,35 +304,49 @@ export class OpenAIClient {
         options: ChatStreamOptions = {},
     ): Promise<Result<StreamReply>> {
         const model = options.model ?? this.#settings.model
+        /* 累积状态放在 try 外：被 signal 中断时也要把已收到的部分交回去 */
+        const chunks: OpenAISessionChunk[] = []
+        let text = ""
+        let reasoning = ""
+        let id = ""
+        let responseModel = model
+        let streamUsage: ProviderUsage | null = null
+        let finishReason: string | null = null
+        let blockStarted = false
+        const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>()
+        const collectedToolCalls = (): ToolCall[] =>
+            [...toolCallMap.entries()]
+                .sort(([left], [right]) => left - right)
+                .map(([index, entry]) => ({
+                    id: entry.id === "" ? `call_${index}` : entry.id,
+                    name: entry.name,
+                    arguments: entry.arguments,
+                }))
         try {
-            const stream = await this.#client.chat.completions.create({
-                model,
-                messages: [...messages],
-                stream: true,
-                stream_options: { include_usage: true },
-                ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
-                ...(options.maxTokens === undefined
-                    ? {}
-                    : { max_completion_tokens: options.maxTokens }),
-                ...reasoningParams(options.reasoning),
-                ...(options.tools === undefined || options.tools.length === 0
-                    ? {}
-                    : {
-                          tools: [...options.tools],
-                          tool_choice: options.toolChoice ?? "auto",
-                      }),
-            })
+            const stream = await this.#client.chat.completions.create(
+                {
+                    model,
+                    messages: [...messages],
+                    stream: true,
+                    stream_options: { include_usage: true },
+                    ...(options.temperature === undefined
+                        ? {}
+                        : { temperature: options.temperature }),
+                    ...(options.maxTokens === undefined
+                        ? {}
+                        : { max_completion_tokens: options.maxTokens }),
+                    ...reasoningParams(options.reasoning),
+                    ...(options.tools === undefined || options.tools.length === 0
+                        ? {}
+                        : {
+                              tools: [...options.tools],
+                              tool_choice: options.toolChoice ?? "auto",
+                          }),
+                },
+                // signal 是请求选项（第二个参数），放进 body 只会被当成普通字段忽略
+                options.signal === undefined ? {} : { signal: options.signal },
+            )
 
-            const chunks: OpenAISessionChunk[] = []
-            let text = ""
-            let reasoning = ""
-            let id = ""
-            let responseModel = model
-            let inputTokens: number | null = null
-            let outputTokens: number | null = null
-            let finishReason: string | null = null
-            let blockStarted = false
-            const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>()
             const push = (chunk: Record<string, unknown>): void => {
                 chunks.push({ type: "chunk", time: Date.now(), chunk })
             }
@@ -312,14 +359,21 @@ export class OpenAIClient {
                     responseModel = part.model
                 }
                 if (part.usage !== undefined && part.usage !== null) {
-                    inputTokens = part.usage.prompt_tokens
-                    outputTokens = part.usage.completion_tokens
+                    streamUsage = parseProviderUsage(part.usage)
                     push({
                         type: "usage",
                         usage: {
-                            inputTokens,
-                            outputTokens,
+                            inputTokens: streamUsage?.inputTokens ?? null,
+                            outputTokens: streamUsage?.outputTokens ?? null,
                             totalTokens: part.usage.total_tokens,
+                            ...(streamUsage?.cacheReadTokens === null ||
+                            streamUsage?.cacheReadTokens === undefined
+                                ? {}
+                                : { cacheReadTokens: streamUsage.cacheReadTokens }),
+                            ...(streamUsage?.cacheWriteTokens === null ||
+                            streamUsage?.cacheWriteTokens === undefined
+                                ? {}
+                                : { cacheWriteTokens: streamUsage.cacheWriteTokens }),
                         },
                     })
                 }
@@ -391,13 +445,7 @@ export class OpenAIClient {
             } else {
                 push({ type: "block-end", index: 0, block: { type: "text", text } })
             }
-            const toolCalls: ToolCall[] = [...toolCallMap.entries()]
-                .sort(([left], [right]) => left - right)
-                .map(([index, entry]) => ({
-                    id: entry.id === "" ? `call_${index}` : entry.id,
-                    name: entry.name,
-                    arguments: entry.arguments,
-                }))
+            const toolCalls = collectedToolCalls()
             for (const toolCall of toolCalls) {
                 push({ type: "tool-call", ...toolCall })
             }
@@ -408,12 +456,40 @@ export class OpenAIClient {
             }
             this.#logger?.debug({ model: responseModel, id }, "OpenAI Chat 流式调用")
             return Result.successWithData<StreamReply>({
-                reply: { text, model: responseModel, id, inputTokens, outputTokens },
+                reply: {
+                    text,
+                    model: responseModel,
+                    id,
+                    inputTokens: streamUsage?.inputTokens ?? null,
+                    outputTokens: streamUsage?.outputTokens ?? null,
+                    ...providerUsageFields(streamUsage),
+                },
                 chunks,
                 toolCalls,
                 reasoning,
             })
         } catch (error) {
+            if (options.signal?.aborted === true) {
+                /*
+                 * 用户主动停止：不当作失败。把已经收到的正文/思考/工具调用照常交回去，
+                 * 由调用方按「已停止」收尾——半截回复比清空更有用。
+                 */
+                this.#logger?.debug({ model }, "OpenAI 流式调用被用户中断")
+                return Result.successWithData<StreamReply>({
+                    interrupted: true,
+                    reply: {
+                        text,
+                        model: responseModel,
+                        id,
+                        inputTokens: streamUsage?.inputTokens ?? null,
+                        outputTokens: streamUsage?.outputTokens ?? null,
+                        ...providerUsageFields(streamUsage),
+                    },
+                    chunks,
+                    toolCalls: collectedToolCalls(),
+                    reasoning,
+                })
+            }
             const code = mapOpenAIError(error)
             const status = error instanceof APIError ? (error.status ?? null) : null
             const reason = error instanceof Error ? error.message : String(error)
