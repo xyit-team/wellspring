@@ -172,7 +172,11 @@ export async function runPluginCommand(
                     return failure(`${USAGE_CODES.missingValue}:path`)
                 }
                 const installed = await installPlugin(source, ctx.paths, { force })
-                ctx.elog.info(`已安装插件 ${installed.id}`)
+                ctx.elog.info(
+                    installed.dependenciesInstalled
+                        ? `已安装插件 ${installed.id}，已用 ${installed.packageManager ?? "包管理器"} 安装依赖`
+                        : `已安装插件 ${installed.id}`,
+                )
                 return success(installed)
             }
             case "link": {

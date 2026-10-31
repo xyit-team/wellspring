@@ -204,11 +204,20 @@ export function createHostPluginManager(options: HostPluginManagerOptions): Host
                                 ? "不能通过网页安装或覆盖 wellspring-web，请用 CLI 安装"
                                 : null,
                     })
-                    logger.info({ id: installed.id }, "已安装插件")
+                    logger.info(
+                        {
+                            id: installed.id,
+                            packageManager: installed.packageManager,
+                            dependenciesInstalled: installed.dependenciesInstalled,
+                        },
+                        "已安装插件",
+                    )
                     return {
                         ok: true,
                         id: installed.id,
                         restartRequired: true,
+                        packageManager: installed.packageManager,
+                        dependenciesInstalled: installed.dependenciesInstalled,
                     }
                 } finally {
                     await removePath(tempFile)

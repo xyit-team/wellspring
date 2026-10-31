@@ -40,6 +40,10 @@ export interface HostPluginMutationResult {
     readonly changed?: boolean
     /** 依赖目标插件的其它插件；禁用/卸载时要提示 */
     readonly dependents?: readonly string[]
+    /** 安装时实际使用的包管理器（没有安装依赖时为 null） */
+    readonly packageManager?: string | null
+    /** 安装时是否自动安装了依赖 */
+    readonly dependenciesInstalled?: boolean
     readonly error?: string
 }
 

@@ -1,6 +1,9 @@
 /*
  * 本地插件安装：目录或 zip 包。
  * zip 在插件根目录下的临时目录解压，校验后再搬到 plugins/<name>。
+ *
+ * 插件 package.json 可以用 packageManager 声明包管理器；声明了 dependencies 时
+ * 安装阶段会调用它自动安装依赖（没有声明则按 lockfile 推断，仍没有则报错）。
  */
 
 import { cp, readFile, readdir, rename, stat } from "node:fs/promises"
@@ -8,6 +11,13 @@ import { basename, extname, join, resolve } from "node:path"
 
 import { ensureDir, readJsonIfExists, removePath, statIfExists } from "../platform/file.ts"
 import { getPaths, type ResolvedPaths } from "../platform/path.ts"
+import {
+    hasPluginDependencies,
+    installPluginDependencies,
+    packageManagerLabel,
+    type PluginDependencyInstallResult,
+    type PluginPackageJsonLike,
+} from "./package-manager.ts"
 import { PLUGIN_NAME, pluginsRoot } from "./paths.ts"
 import { extractZip } from "./zip.ts"
 
@@ -17,14 +27,19 @@ export interface InstallPluginOptions {
     readonly force?: boolean
     /** 解析出插件名后、写入磁盘前调用；返回非空字符串表示拒绝安装 */
     readonly validateId?: (id: string) => string | null
+    /** 测试注入；默认使用真实包管理器安装依赖 */
+    readonly runInstall?: typeof import("./package-manager.ts").runPackageInstall
 }
 
 export interface InstallPluginResult {
     readonly id: string
     readonly target: string
+    /** 实际使用的包管理器（带声明版本，例如 npm@11.20.0）；没有安装依赖时为 null */
+    readonly packageManager: string | null
+    readonly dependenciesInstalled: boolean
 }
 
-interface PackageManifest {
+interface PackageManifest extends PluginPackageJsonLike {
     readonly name?: unknown
     readonly main?: unknown
     readonly wellspring?: {
@@ -86,6 +101,15 @@ async function resolveSourceName(
     return temp ? candidate : basename(sourceDir)
 }
 
+/** 复制插件目录到暂存区；node_modules 不复制，交给包管理器装 */
+async function copyToStage(source: string, stage: string): Promise<void> {
+    await cp(source, stage, {
+        recursive: true,
+        force: true,
+        filter: (path) => basename(path) !== "node_modules",
+    })
+}
+
 /** 安装本地插件目录或 zip 包 */
 export async function installPlugin(
     sourcePath: string,
@@ -112,6 +136,8 @@ export async function installPlugin(
         fromArchive = true
     }
 
+    let stage: string | null = null
+    let moved = false
     try {
         if (!(await hasEntry(sourceDir))) {
             throw new Error("插件缺少入口（index.ts/js/mjs/mts 或 package.json main）")
@@ -127,23 +153,61 @@ export async function installPlugin(
 
         const target = join(root, name)
         const existing = await statIfExists(target)
-        if (existing !== null) {
-            if (options.force !== true) {
-                throw new Error(`插件已存在：${name}`)
-            }
-            await removePath(target)
+        if (existing !== null && options.force !== true) {
+            throw new Error(`插件已存在：${name}`)
         }
 
+        const pkg = await readJsonIfExists<PackageManifest>(join(sourceDir, "package.json"))
+        const needsInstall = pkg !== null && hasPluginDependencies(pkg)
+
+        let installDir = sourceDir
+        if (needsInstall && !fromArchive) {
+            /*
+             * 目录安装不能碰源目录：复制到暂存区后再安装依赖，
+             * node_modules 不复制，避免把开发目录里的依赖带进去。
+             */
+            stage = join(root, `.install-stage-${process.pid}-${Date.now().toString(36)}`)
+            await removePath(stage)
+            await copyToStage(sourceDir, stage)
+            installDir = stage
+        }
+
+        let dependencies: PluginDependencyInstallResult = {
+            manager: null,
+            installed: false,
+            reason: null,
+        }
+        if (needsInstall) {
+            dependencies = await installPluginDependencies(installDir, pkg, {
+                ...(options.runInstall === undefined ? {} : { run: options.runInstall }),
+            })
+        }
+
+        if (existing !== null) {
+            await removePath(target)
+        }
         if (fromArchive) {
             // 与临时目录同根，rename 保持原子
             await rename(sourceDir, target)
+        } else if (stage !== null) {
+            await rename(stage, target)
+            moved = true
         } else {
             await cp(sourceDir, target, { recursive: true, force: true })
         }
-        return { id: name, target }
+        return {
+            id: name,
+            target,
+            packageManager:
+                dependencies.manager === null ? null : packageManagerLabel(dependencies.manager),
+            dependenciesInstalled: dependencies.installed,
+        }
     } finally {
         if (fromArchive) {
             await removePath(temp)
+        }
+        if (stage !== null && !moved) {
+            await removePath(stage)
         }
     }
 }

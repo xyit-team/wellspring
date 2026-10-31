@@ -295,12 +295,35 @@ if (other) {
 ```bash
 node src/index.ts plugin new my-plugin --dir ./plugins
 node src/index.ts plugin link ./plugins/my-plugin      # 开发时链接（只改文件，不启动插件）
-node src/index.ts plugin install ./plugins/my-plugin    # 或目录 / zip（只改文件）
+node src/index.ts plugin install ./plugins/my-plugin    # 目录或 zip；有依赖会按 packageManager 自动安装
 node src/index.ts plugin remove <name>                     # 被依赖时拒绝；加 --ignore 强制删除
 node src/index.ts plugin list
 ```
 
 仓库自带官方插件：[plugins/wellspring-core](plugins/wellspring-core)、[plugins/wellspring-web](plugins/wellspring-web)、[plugins/wellspring-http](plugins/wellspring-http)、[plugins/wellspring-code](plugins/wellspring-code)。
+
+### 插件依赖与 zip 分发
+
+插件自己的 `package.json` 用标准 `packageManager` 字段声明包管理器，并正常写 `dependencies`：
+
+```json
+{
+    "name": "my-plugin",
+    "version": "0.1.0",
+    "packageManager": "npm@11.20.0",
+    "dependencies": {
+        "some-package": "^1.0.0"
+    }
+}
+```
+
+- `plugin install` 安装目录或 zip 时，如果声明了 `dependencies` / `optionalDependencies`，会按
+  `packageManager` 自动执行 `npm install` / `pnpm install` / `yarn install` / `bun install`；
+- 没写 `packageManager` 时按目录里的 `package-lock.json` / `pnpm-lock.yaml` / `yarn.lock` / `bun.lock` 推断，
+  仍无法确定则拒绝安装，避免在错误的插件目录里跑错包管理器；
+- 版本号（如 `npm@11.20.0`）只作声明，实际使用 PATH 中的同名命令，不经过 corepack；
+- 自动安装会执行依赖包的生命周期脚本，只安装可信来源的插件；
+- 网页 `/plugins` 上传 zip 走同一条安装逻辑，单个 zip 上限 10 MB；安装依赖需要网络，耗时取决于依赖大小。
 
 ### 入口与生命周期
 
@@ -675,7 +698,8 @@ wellspring start
   （未缓存输入 / 缓存读取 / 缓存写入 / 输出 / 推理 / 合计）；每条回复下方的「用量」按钮显示本轮用量与缓存命中，
   点开看该轮明细。缓存命中来自供应商返回的 `prompt_cache_hit_tokens` / `prompt_tokens_details.cached_tokens`，
   供应商不返回缓存用量时只显示输入与输出
-- 网页端插件管理（`/plugins`）：列表、启用/禁用、卸载（先禁用后即时生效）、上传 zip 安装（重启生效）；
+- 网页端插件管理（`/plugins`）：列表、启用/禁用、卸载（先禁用后即时生效）、上传 zip 安装
+  （按插件 `packageManager` 自动安装依赖；重启生效）；
   禁用 `wellspring-web` 需二次确认且重启后生效
 - 思考链与工具调用：Agent 的思考内容默认折叠成一行「思考」（只显示摘要，流式时跟随最后一个完成段落），
   工具调用折叠成一行「读取文件 / 执行命令 …」（参数摘要 + 运行中 / 完成 / 失败）；点开看完整内容。

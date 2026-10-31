@@ -133,7 +133,7 @@ onMounted(() => {
                 </p>
                 <section class="plugins-install" aria-labelledby="plugins-install-title">
                     <h3 id="plugins-install-title">安装插件</h3>
-                    <p class="plugins-note">上传 zip 包（含 package.json 与 index.ts），上限 10MB；安装后重启生效。</p>
+                    <p class="plugins-note">上传 zip 包（含 package.json 与 index.ts），上限 10MB；声明了 packageManager 与 dependencies 时会自动安装依赖，可能需要几十秒。安装后重启生效。</p>
                     <div class="plugins-install-row">
                         <input ref="fileInput" class="input" type="file" accept=".zip,application/zip" />
                         <label class="plugins-force">

@@ -2456,18 +2456,25 @@ export async function installPlugin(file: File, force: boolean): Promise<void> {
         return
     }
     pluginsState.busy = true
-    setPluginsMessage("安装中…")
+    setPluginsMessage("安装中（有依赖时会自动下载）…")
     try {
         const dataBase64 = await readFileBase64(file)
-        const result = await apiJson<{ ok: boolean; id?: string; error?: string }>(
-            "/api/plugins/install",
-            jsonBody({ filename: file.name, dataBase64, force }),
-        )
+        const result = await apiJson<{
+            ok: boolean
+            id?: string
+            error?: string
+            packageManager?: string | null
+            dependenciesInstalled?: boolean
+        }>("/api/plugins/install", jsonBody({ filename: file.name, dataBase64, force }))
         if (!result.ok) {
             setPluginsMessage(result.error ?? "安装失败", "error")
             return
         }
-        setPluginsMessage(`已安装 ${result.id ?? file.name}，重启 Wellspring 后生效`)
+        const dependencyNote =
+            result.dependenciesInstalled === true
+                ? `，已用 ${result.packageManager ?? "包管理器"} 安装依赖`
+                : ""
+        setPluginsMessage(`已安装 ${result.id ?? file.name}${dependencyNote}，重启 Wellspring 后生效`)
         await loadPlugins()
     } catch (error) {
         reloadOnAuth(error)

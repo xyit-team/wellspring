@@ -12,7 +12,7 @@ export interface RpcTimeouts {
     readonly agentStream: number | null
     /** 拉取供应商模型列表：要等网络超时与重试 */
     readonly modelsFetch: number
-    /** 安装插件：写文件与解压 */
+    /** 安装插件：解压、写文件，以及按插件声明的包管理器自动安装依赖（最多 5 分钟） */
     readonly pluginsInstall: number
     /**
      * 调用插件提供的 Agent 工具
@@ -36,7 +36,7 @@ export const RPC_TIMEOUT_MS: RpcTimeouts = {
     agentChat: 180_000,
     agentStream: null,
     modelsFetch: 120_000,
-    pluginsInstall: 180_000,
+    pluginsInstall: 660_000,
     /* 比 exec 的最长上限（600s）再留一点余量；不设 null，避免坏插件把宿主永久挂住 */
     agentTool: 660_000,
     sandboxExec: 660_000,

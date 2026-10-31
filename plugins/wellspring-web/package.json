@@ -1,6 +1,7 @@
 {
     "name": "wellspring-web",
     "version": "1.19.0",
+    "packageManager": "npm@11.20.0",
     "type": "module",
     "main": "index.ts",
     "wellspring": {

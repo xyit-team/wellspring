@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { after, before, test } from "node:test"
@@ -18,6 +18,7 @@ import { createHostNetworkService } from "../src/plugin/network-service.ts"
 import { PluginSandboxClient, shutdownAllSandboxPlugins } from "../src/sandbox/plugin-client.ts"
 import { STATIC_ASSETS } from "../plugins/wellspring-web/src/assets/index.ts"
 import { startHttpHostPlugin } from "./helpers/http-host.ts"
+import { makeZip } from "./helpers/zip.ts"
 
 const projectRoot = join(import.meta.dirname, "..")
 let root = ""
@@ -930,6 +931,37 @@ test("web 插件：插件管理接口（禁用 web 允许、卸载 web 拒绝）
             body: JSON.stringify({ filename: "demo.zip", dataBase64: "!!!not-base64!!!" }),
         })
         assert.equal(badData.status, 400)
+
+        // 正常 zip：写入插件目录，响应里带依赖安装结果（这个包没有 dependencies）
+        const pluginZip = makeZip({
+            "package.json": JSON.stringify({
+                name: "zip-demo",
+                version: "1.0.0",
+                packageManager: "npm@11.20.0",
+                main: "index.ts",
+            }),
+            "index.ts": "export function setup() { return null }\n",
+        }).toString("base64")
+        const installedZip = await fetch(`${server.base}/api/plugins/install`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ filename: "zip-demo.zip", dataBase64: pluginZip }),
+        })
+        assert.equal(installedZip.status, 200)
+        const installedBody = (await installedZip.json()) as {
+            ok: boolean
+            id: string
+            restartRequired: boolean
+            dependenciesInstalled?: boolean
+        }
+        assert.equal(installedBody.ok, true)
+        assert.equal(installedBody.id, "zip-demo")
+        assert.equal(installedBody.restartRequired, true)
+        assert.equal(installedBody.dependenciesInstalled, false)
+        const installedManifest = JSON.parse(
+            await readFile(join(pluginsDir, "zip-demo", "package.json"), "utf8"),
+        ) as { name?: string }
+        assert.equal(installedManifest.name, "zip-demo")
     } finally {
         await stopWebPlugin()
     }
