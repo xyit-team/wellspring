@@ -1,0 +1,35 @@
+{
+    "name": "wellspring-web",
+    "version": "1.19.0",
+    "type": "module",
+    "main": "index.ts",
+    "wellspring": {
+        "apiVersion": 1,
+        "sandbox": {
+            "profile": "plugin",
+            "fs": {
+                "read": [
+                    "${pluginDir}"
+                ],
+                "write": [
+                    "${dataDir}"
+                ]
+            },
+            "hostApi": [
+                "logger",
+                "fs",
+                "agent",
+                "models",
+                "plugins",
+                "shutdown",
+                "event",
+                "getHost",
+                "workspaces",
+                "network"
+            ]
+        }
+    },
+    "dependencies": {
+        "@vue/compiler-sfc": "3.5.44"
+    }
+}

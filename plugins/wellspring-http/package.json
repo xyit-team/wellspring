@@ -1,0 +1,24 @@
+{
+    "name": "wellspring-http",
+    "version": "1.0.0",
+    "description": "统一创建与管理平台内 HTTP/HTTPS 服务器",
+    "type": "module",
+    "main": "index.ts",
+    "wellspring": {
+        "apiVersion": 1,
+        "sandbox": {
+            "profile": "plugin",
+            "fs": {
+                "read": [
+                    "${pluginDir}"
+                ],
+                "write": []
+            },
+            "hostApi": [
+                "logger",
+                "http",
+                "event"
+            ]
+        }
+    }
+}

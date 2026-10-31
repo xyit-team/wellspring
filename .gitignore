@@ -5,4 +5,7 @@ coverage/
 /working/
 /.tmp/
 __pycache__/
-plugins/
+/plugins/**/node_modules/
+/plugins/**/.ui-review/
+/plugins/**/frontend/dist/
+/dist/

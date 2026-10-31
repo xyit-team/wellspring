@@ -1,0 +1,20 @@
+{
+    "name": "wellspring-web-frontend",
+    "private": true,
+    "version": "0.1.0",
+    "type": "module",
+    "scripts": {
+        "build": "vite build",
+        "typecheck": "tsc --noEmit -p tsconfig.json"
+    },
+    "devDependencies": {
+        "@vitejs/plugin-vue": "^6.0.0",
+        "vite": "^7.0.0",
+        "vue": "^3.5.0"
+    },
+    "dependencies": {
+        "nprogress": "^0.2.0",
+        "vue-router": "^5.4.0",
+        "vue3-toastify": "^0.2.9"
+    }
+}
