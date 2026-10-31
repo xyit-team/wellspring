@@ -49,7 +49,9 @@ jobs:
 
             - uses: actions/setup-node@v7
               with:
-                  node-version: 24
+                  # 用 Node 26 跑发布校验：Node 24 在 GitHub runner 上跑 core-plugin
+                  # 测试时偶发 InternalCallbackScope 原生断言（本地无法复现）
+                  node-version: 26
                   registry-url: https://registry.npmjs.org/
                   cache: pnpm
 
@@ -71,10 +73,6 @@ jobs:
               run: pnpm format:check
 
             - name: 测试
-              # GitHub 的 Node 24 在并发/异步上下文收尾时偶发
-              # InternalCallbackScope 原生断言；关掉 AsyncContextFrame 走稳定实现
-              env:
-                  NODE_OPTIONS: --no-async-context-frame
               run: pnpm test
 
             - name: 构建
