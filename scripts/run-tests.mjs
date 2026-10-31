@@ -7,7 +7,7 @@
 
 import { spawnSync } from "node:child_process"
 import { readdirSync } from "node:fs"
-import { join } from "node:path"
+import { join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const TEST_ROOT = fileURLToPath(new URL("../test/", import.meta.url))
@@ -25,7 +25,16 @@ function collect(dir) {
     return files
 }
 
-const files = collect(TEST_ROOT).sort()
+const skipped = (process.env["WELLSPRING_TEST_SKIP"] ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item !== "")
+const files = collect(TEST_ROOT)
+    .sort()
+    .filter((file) => {
+        const rel = relative(process.cwd(), file).split("\\").join("/")
+        return !skipped.some((item) => rel === item || file.endsWith(item))
+    })
 if (files.length === 0) {
     console.error("没有找到测试文件")
     process.exit(1)
