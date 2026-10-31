@@ -63,7 +63,8 @@ jobs:
                     test -f "${dir}package.json" || continue
                     name="$(node -p "require('./${dir}package.json').name")"
                     version="$(node -p "require('./${dir}package.json').version")"
-                    out="release/${name}-${version}.zip"
+                    # 用绝对路径：下面要 cd 进插件目录，相对路径会解析到插件目录里
+                    out="$PWD/release/${name}-${version}.zip"
                     (
                       cd "$dir"
                       zip -qr "$out" . \
