@@ -49,6 +49,9 @@ function paths(): ResolvedPaths {
 
 const PLUGIN_SOURCE = [
     'import { EventEntity, eventBus, getHost, onMessage, onSessionStart } from "wellspring/api/host/index.ts"',
+    'import type { PluginApi } from "wellspring/api/host/index.ts"',
+    "",
+    "let pluginApi: PluginApi | null = null",
     "",
     "onMessage(({ phase, prompt }) => {",
     '    if (phase === "before") prompt.push("sandbox-rule")',
@@ -64,6 +67,7 @@ const PLUGIN_SOURCE = [
     '        name: "Sandbox Plugin",',
     '        version: "1.0.0",',
     '        status: "ok",',
+    "        init: (api: PluginApi) => { pluginApi = api },",
     "        commands: [",
     "            {",
     '                name: "hello",',
@@ -90,6 +94,17 @@ const PLUGIN_SOURCE = [
     "                run: (ctx) => {",
     "                    const host = getHost()",
     '                    ctx.output.info("host:" + host.getStatus())',
+    "                    return 0",
+    "                },",
+    "            },",
+    "            {",
+    '                name: "root-fs",',
+    '                summary: "root fs",',
+    "                run: async (ctx) => {",
+    '                    const root = ctx.argv[0] ?? ""',
+    "                    const fs = await pluginApi!.fileRoots.open(root)",
+    '                    await fs.writeText("root.txt", "root-data")',
+    '                    ctx.output.info(await fs.readText("root.txt"))',
     "                    return 0",
     "                },",
     "            },",
@@ -123,7 +138,7 @@ test("PluginSandboxClient 命令/钩子/fs/host/event 往返", { timeout: 20_000
                 apiVersion: 1,
                 sandbox: {
                     profile: "plugin",
-                    hostApi: ["logger", "fs", "event", "getHost"],
+                    hostApi: ["logger", "fs", "event", "getHost", "fileRoots"],
                 },
             },
         }),
@@ -154,7 +169,7 @@ test("PluginSandboxClient 命令/钩子/fs/host/event 往返", { timeout: 20_000
         limits: { timeoutMs: 10_000, memoryMB: 256, pids: 32, outputLimitBytes: 4096 },
         logger: pino({ level: "silent" }),
         permissions: {
-            hostApi: ["logger", "fs", "event", "getHost"],
+            hostApi: ["logger", "fs", "event", "getHost", "fileRoots"],
             workspaceRead: false,
             workspaceWrite: false,
         },
@@ -166,7 +181,7 @@ test("PluginSandboxClient 命令/钩子/fs/host/event 往返", { timeout: 20_000
         assert.equal(ready.plugin.status, "ok")
         assert.deepEqual(
             ready.commands.map((command) => command.name),
-            ["hello", "fs-roundtrip", "host-info", "publish"],
+            ["hello", "fs-roundtrip", "host-info", "root-fs", "publish"],
         )
         assert.ok(ready.hooks.includes("onMessage"))
         assert.ok(ready.hooks.includes("onSessionStart"))
@@ -187,6 +202,13 @@ test("PluginSandboxClient 命令/钩子/fs/host/event 往返", { timeout: 20_000
 
         await client.runCommand("host-info", [], pluginDir, false)
         assert.match(output.text, /host:running/)
+
+        // 任意目录文件 API：code 插件用它管理工作区
+        const external = join(root, "external-root")
+        await mkdir(external, { recursive: true })
+        await client.runCommand("root-fs", [external], pluginDir, false)
+        assert.match(output.text, /root-data/)
+        assert.equal(await readFile(join(external, "root.txt"), "utf8"), "root-data")
 
         const received: unknown[] = []
         const off = eventBus.subscribe("sandbox/demo", (event) => {
@@ -270,7 +292,13 @@ test("loader 通过 sandbox 加载插件、注册命令与远程钩子", { timeo
         })
         assert.equal(plugins.length, 1)
         assert.equal(plugins[0]?.status, "ok")
-        assert.deepEqual(plugins[0]?.commands, ["hello", "fs-roundtrip", "host-info", "publish"])
+        assert.deepEqual(plugins[0]?.commands, [
+            "hello",
+            "fs-roundtrip",
+            "host-info",
+            "root-fs",
+            "publish",
+        ])
 
         const record = registry.resolve("hello")
         assert.ok(record !== undefined)

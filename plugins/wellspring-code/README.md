@@ -1,7 +1,8 @@
 # wellspring-code
 
-浏览器里的 VS Code 风格代码编辑器。工作区列表来自 Wellspring 宿主的注册表（`api.workspaces`），
-不依赖其它插件；资源管理器、标签页、语法高亮、缩略图、搜索、命令面板、Markdown 预览全部由插件自己提供，
+浏览器里的 VS Code 风格代码编辑器。工作区由 code 插件自己管理（插件数据目录下的 `workspaces.json`），
+不依赖 `wellspring-web`，也不读宿主工作区注册表；工作区可以是你机器上的任意文件夹。
+资源管理器、标签页、语法高亮、缩略图、搜索、命令面板、Markdown 预览全部由插件自己提供，
 不依赖外部 CDN 与前端构建步骤。HTTP 服务器由 `wellspring-http` 插件统一创建。
 
 ![Wellspring Code 深色主题](docs/screenshot.png)
@@ -57,32 +58,29 @@ wellspring stop
 wellspring start
 ```
 
-文件能力来自宿主的 `workspaceFs`，根目录是**服务进程的当前目录**。所以要先进入一个能覆盖目标工作区的目录再启动服务，例如：
-
-```bash
-cd /home/me            # 覆盖 /home/me 下的所有项目
-wellspring start
-```
-
-工作区列表来自宿主的 `api.workspaces`（`<dataDir>/workspaces.json`），见下一节。
+文件能力来自宿主的按绝对目录打开的文件 API，不再受服务进程当前目录限制。启动后默认工作区是服务进程 cwd；
+点侧栏的工作区标题，在切换面板里点「添加工作区」，选择机器上的任意文件夹即可。
 
 ## 工作区
 
-工作区是宿主级概念：`wellspring-code` 通过 `api.workspaces.list()`（需要 `hostApi: workspaces`）
-读取 `<dataDir>/workspaces.json` 里的注册表，不再依赖其它插件的数据目录：
+code 插件独立管理工作区，记录在插件自己的数据目录：
 
-- 只读取注册表字段：`id` / `name` / `root` / `lastSeenAt`
-- 不读取其它插件的密码、会话或数据目录
-- 注册表里的每个工作区都会计算「是否在当前服务可访问」：根路径必须落在服务进程工作目录内，
-  否则在切换列表里置灰并说明原因
+```text
+<dataDir>/plugin-data/wellspring-code/workspaces.json
+```
+
+- 不读宿主工作区注册表（`api.workspaces`），也不依赖 `wellspring-web` 的工作区索引
+- 首次启动时把服务进程 cwd 作为默认工作区写入；之后完全由插件管理
+- 切换面板右上角的「添加工作区」会打开系统文件夹对话框，选择任意绝对目录；
+  也可以直接调用 `POST /api/workspaces/add { root, name? }`
+- 工作区可以位于服务 cwd 之外，甚至不同盘符；文件读写通过宿主按绝对目录打开的文件 API 完成
 - 点击侧边栏的工作区标题、状态栏里的路径，或运行「切换工作区…」命令打开切换面板；
   支持方向键选择、Enter 切换
 - 切换时会先处理未保存的编辑器（保存并切换 / 放弃更改 / 取消），然后重新加载文件树
 - 标签页、最近打开、目录展开状态、当前工作区都按工作区分别保存在浏览器 localStorage
 - 每个浏览器窗口通过 `x-workspace-id` 请求头发送自己选中的工作区，多个窗口互不影响；
-  没有该请求头时回退到服务端当前工作区（默认取与服务进程工作目录相同的工作区）
-- 宿主首次加载注册表时会把旧版 `wellspring-web` 插件数据目录里的工作区索引迁移过来，
-  升级后已有工作区不丢
+  没有该请求头时回退到服务端当前工作区
+- 删除工作区只从插件列表移除，不会改动磁盘上的目录（接口：`POST /api/workspaces/remove { id }`）
 
 ![工作区切换](docs/screenshot-workspaces.png)
 
@@ -91,7 +89,7 @@ workbench 侧栏
   └─ 工作区标题（点击切换）
        ├─ 主工作区    /home/me/project-a       当前
        ├─ 子工作区    /home/me/project-a/web
-       └─ 外部工作区  /srv/data                当前实例不可访问
+       └─ 外部工作区  /srv/data                 可添加的任意目录
 ```
 
 ## 配置
@@ -132,8 +130,8 @@ Caddy 的 `reverse_proxy 127.0.0.1:8788`、Tailscale Serve、Cloudflare Access �
 
 ## 功能
 
-- **工作区**：从 `wellspring-web` 索引快捷打开工作区，显示会话数；不可访问的工作区置灰说明原因；
-  切换工作区时处理未保存文件，标签与最近打开按工作区隔离
+- **工作区**：code 插件独立维护工作区列表；右上角「添加工作区」按钮打开系统目录对话框，
+  可选择机器上任意绝对文件夹；切换工作区时处理未保存文件，标签与最近打开按工作区隔离
 - **资源管理器**：懒加载目录树、目录优先排序、按扩展名着色的文件徽标、展开状态持久化、
   新建文件/文件夹、重命名、删除、复制相对/绝对路径、在树中定位当前文件
 - **编辑器**：textarea 输入 + 高亮层叠渲染；行号、当前行高亮、缩略图、语法高亮、
@@ -241,8 +239,10 @@ Caddy 的 `reverse_proxy 127.0.0.1:8788`、Tailscale Serve、Cloudflare Access �
 | POST   | `/api/auth/logout`    | 退出当前会话                                     |
 | POST   | `/api/auth/password`  | 首次设置或修改密码（修改需要当前密码）           |
 | GET    | `/api/state`          | 当前工作区根、名称、版本、只读、分支、宿主信息   |
-| GET    | `/api/workspaces`     | 宿主工作区注册表与可访问性                       |
+| GET    | `/api/workspaces`     | code 插件自己的工作区列表                        |
 | POST   | `/api/workspace`      | 切换当前工作区 `{ id }`                          |
+| POST   | `/api/workspaces/add` | 添加工作区；`{ root?, name? }`，省略 root 时打开系统目录对话框 |
+| POST   | `/api/workspaces/remove` | 从插件列表移除工作区 `{ id }`（不动目录）     |
 | GET    | `/api/host`           | 宿主状态、OS、目录与插件列表                     |
 | GET    | `/api/tree?path=`     | 目录条目，含类型、大小、mtime、徽标与语言        |
 | GET    | `/api/symbols?q=`     | 工作区符号索引（函数 / 类 / 标题等，可 limit）   |
@@ -284,8 +284,7 @@ Caddy 的 `reverse_proxy 127.0.0.1:8788`、Tailscale Serve、Cloudflare Access �
 - 没有 LSP；语法高亮是插件自带的正则词法着色，语法诊断只做结构级检查（括号/字符串/注释/JSON），不做语义分析；
   转到定义只在当前文件与已打开的标签里按符号名查找；工作区符号索引是行级正则扫描（最多 800 文件 / 512 KB 单文件），不做类型解析
 - 不使用 Monaco 等外部编辑器，避免引入打包步骤与 CDN 依赖；因此没有多光标与代码折叠
-- 服务实例的文件根是启动时的当前目录；只有落在这个根内的 `wellspring-web` 工作区可以打开，
-  根外的工作区在切换面板里置灰。想覆盖更大的范围，就在更上层目录启动服务
+- 工作区由 code 插件自己管理，可以添加任意绝对目录；添加与切换需要宿主 `agent.pickDirectory` 与 `fileRoots` 权限
 - 一次只能激活一个工作区；切换会关闭当前工作区的标签页（按工作区恢复）
 - Git：`rev-parse` / `status` / `diff` 只读；写操作仅限暂存与取消暂存（`git add` / `git restore --staged`），
   不提交、不切换分支；工作区不在仓库、没装 git 或插件只读模式下会给提示 / 拒绝操作
@@ -303,8 +302,8 @@ Caddy 的 `reverse_proxy 127.0.0.1:8788`、Tailscale Serve、Cloudflare Access �
 - 严格 CSP：`default-src 'none'`、`script-src 'self'`、`style-src 'self'`、`img-src 'self' data: blob:`
 - 写接口要求 `application/json`、限制请求体 4 MiB，并校验同源 `Origin`
 - Markdown 预览只生成转义后的 HTML；链接仅放行 `http(s)` 与 `mailto`
-- 工作区列表只来自宿主注册表（`api.workspaces`）；不读取其它插件的认证文件与会话内容，也不写对方的数据目录
-- 插件数据目录只写 `auth.json`；编辑器设置仍在浏览器 localStorage
+- 工作区列表由 code 插件自己维护；不读取其它插件的认证文件与会话内容，也不写对方的数据目录
+- 插件数据目录写 `auth.json` 与 `workspaces.json`；编辑器设置仍在浏览器 localStorage
 
 ## 图标
 
@@ -372,6 +371,6 @@ node --test test/code-workspace.test.ts test/code-plugin.test.ts
 ```
 
 - `code-workspace.test.ts` 覆盖路径规范化、读取/写入/冲突、重命名、搜索、索引与文件类型
-- `code-plugin.test.ts` 用 `DirectBackend` 启动插件，并伪造宿主的 `workspaces.json`，
-  覆盖 HTTP 路由、安全头、静态资源 ETag、写接口与工作区读取 / 切换
+- `code-plugin.test.ts` 用 `DirectBackend` 启动插件，首次启动自动把临时 cwd 作为工作区，
+  覆盖 HTTP 路由、安全头、静态资源 ETag、写接口、任意目录添加与工作区切换
 - 开发时可以用 `DirectBackend` 加载插件、把临时目录作为工作区，改完插件重启进程即可生效

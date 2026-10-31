@@ -87,7 +87,7 @@ async function startPlugin(config: Record<string, unknown> = { port: 0 }): Promi
         limits: { timeoutMs: 15_000, memoryMB: 256, pids: 32, outputLimitBytes: 16_384 },
         logger: pino({ level: "silent" }),
         permissions: {
-            hostApi: ["logger", "fs", "http", "event", "getHost", "exec", "pty", "workspaces"],
+            hostApi: ["logger", "fs", "http", "event", "getHost", "exec", "pty", "fileRoots"],
             workspaceRead: true,
             workspaceWrite: true,
         },
@@ -118,31 +118,8 @@ before(async () => {
     await writeFile(join(subWorkspace, "hello.md"), "# 子工作区\n")
     await writeFile(join(subWorkspace, "src", "nested.ts"), "export const nested = 1\n")
 
-    // 宿主工作区注册表：主工作区、子工作区与一个当前实例访问不到的路径
+    // 不再写宿主工作区注册表：code 插件首次启动会把自己管理的默认工作区写进插件数据目录
     await mkdir(paths().dataDir, { recursive: true })
-    await writeFile(
-        join(paths().dataDir, "workspaces.json"),
-        JSON.stringify({
-            v: 1,
-            workspaces: [
-                { id: "ws-main", name: "主工作区", root: workspace, createdAt: 1, lastSeenAt: 10 },
-                {
-                    id: "ws-sub",
-                    name: "子工作区",
-                    root: subWorkspace,
-                    createdAt: 1,
-                    lastSeenAt: 20,
-                },
-                {
-                    id: "ws-outside",
-                    name: "外部工作区",
-                    root: "/etc",
-                    createdAt: 1,
-                    lastSeenAt: 30,
-                },
-            ],
-        }),
-    )
     addonEvents = []
     eventBus.subscribe("wellspring-web:addon:register", (event) => {
         addonEvents.push(event.getData() as { type: string; meta: Record<string, unknown> })
@@ -173,6 +150,7 @@ test("页面与静态资源：严格 CSP、ETag 与无内联脚本", async () =>
     assert.match(html, /id="tree"/)
     assert.match(html, /id="code-input"/)
     assert.match(html, /id="palette-overlay"/)
+    assert.match(html, /id="workspace-add"/, "切换工作区面板要有添加工作区按钮")
     assert.match(html, /id="setting-ui-font"/)
     assert.match(html, /id="statusbar"|class="statusbar"/)
     assert.match(html, /<script src="\/assets\/app.js" defer>/)
@@ -659,6 +637,7 @@ test("自动补全：前缀位置、文档词与候选排序", () => {
     assert.match(CLIENT_SCRIPT, /Ctrl\+H/)
     assert.match(CLIENT_STYLES, /\.find-row \{/)
     // 工作区符号搜索
+    assert.match(CLIENT_SCRIPT, /function addWorkspace\(/)
     assert.match(CLIENT_SCRIPT, /function openWorkspaceSymbols\(/)
     assert.match(CLIENT_SCRIPT, /function renderWorkspaceSymbols\(/)
     assert.match(CLIENT_SCRIPT, /\/api\/symbols/)
@@ -937,8 +916,8 @@ test("GET /api/state 返回工作区、版本与只读状态", async () => {
         host: { platform: string; node: string }
     }
     assert.equal(data.root, workspace)
-    assert.equal(data.name, "主工作区")
-    assert.equal(data.workspaceId, "ws-main")
+    assert.equal(data.name, basename(workspace))
+    assert.match(data.workspaceId, /^[0-9a-f]{16}$/)
     assert.equal(data.hostRoot, workspace)
     assert.equal(data.version, "1.1.0")
     assert.equal(data.readOnly, false)
@@ -981,7 +960,7 @@ test("启动后向 wellspring-web 注册侧栏入口", () => {
     assert.equal(entry.meta["to"], `127.0.0.1:${port}`)
 })
 
-test("GET /api/workspaces 读取宿主工作区注册表", async () => {
+test("code 插件独立管理工作区，可添加任意文件夹", async () => {
     const response = await fetch(`${base}/api/workspaces`)
     assert.equal(response.status, 200)
     const data = (await response.json()) as {
@@ -991,37 +970,97 @@ test("GET /api/workspaces 读取宿主工作区注册表", async () => {
             root: string
             accessible: boolean
             active: boolean
-            conversationCount: number
             source: string
         }>
-        active: { id: string }
+        active: { id: string; root: string }
         hostRoot: string
         error: string | null
     }
-    assert.equal(data.active.id, "ws-main")
-    assert.equal(data.hostRoot, workspace)
     assert.equal(data.error, null)
-    const main = data.workspaces.find((entry) => entry.id === "ws-main")
-    const sub = data.workspaces.find((entry) => entry.id === "ws-sub")
-    const outside = data.workspaces.find((entry) => entry.id === "ws-outside")
-    assert.equal(main?.active, true)
-    assert.equal(main?.accessible, true)
-    assert.equal(main?.conversationCount, 0)
-    assert.equal(sub?.accessible, true)
-    assert.equal(outside?.accessible, false)
-    assert.equal(outside?.source, "host")
-    assert.match(outside?.root ?? "", /^\/etc/)
+    assert.equal(data.hostRoot, workspace)
+    assert.equal(data.workspaces.length, 1)
+    const main = data.workspaces[0]
+    assert.ok(main !== undefined)
+    assert.equal(main.root, workspace)
+    assert.equal(main.source, "plugin")
+    assert.equal(main.active, true)
+
+    // 添加一个工作区目录
+    const added = await fetch(`${base}/api/workspaces/add`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ root: subWorkspace, name: "子工作区" }),
+    })
+    assert.equal(added.status, 200)
+    const addedBody = (await added.json()) as {
+        active: { root: string; name: string }
+        workspaces: Array<{ root: string; accessible: boolean }>
+    }
+    assert.equal(addedBody.active.root, subWorkspace)
+    assert.equal(addedBody.active.name, "子工作区")
+    assert.equal(addedBody.workspaces.length, 2)
+
+    // 任意目录都可以作为工作区，不受服务进程 cwd 限制
+    const outsideRoot = join(tempRoot, "outside-root")
+    await mkdir(join(outsideRoot, "notes"), { recursive: true })
+    await writeFile(join(outsideRoot, "notes", "outside.txt"), "outside-data\n")
+    const outside = await fetch(`${base}/api/workspaces/add`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ root: outsideRoot, name: "外部工作区" }),
+    })
+    assert.equal(outside.status, 200)
+    const outsideBody = (await outside.json()) as {
+        active: { root: string; id: string }
+        workspaces: Array<{ id: string; root: string; accessible: boolean }>
+    }
+    assert.equal(outsideBody.active.root, outsideRoot)
+    const outsideEntry = outsideBody.workspaces.find((entry) => entry.root === outsideRoot)
+    assert.equal(outsideEntry?.accessible, true)
+    const outsideTree = await fetch(`${base}/api/tree?path=notes`)
+    assert.deepEqual(
+        ((await outsideTree.json()) as { entries: Array<{ name: string }> }).entries.map(
+            (entry) => entry.name,
+        ),
+        ["outside.txt"],
+    )
+    const outsideFile = await fetch(`${base}/api/file?path=notes%2Foutside.txt`)
+    assert.equal(outsideFile.status, 200)
+    assert.match(((await outsideFile.json()) as { content: string }).content, /outside-data/)
+
+    // 删掉外部工作区，回到默认工作区
+    const removed = await fetch(`${base}/api/workspaces/remove`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: outsideBody.active.id }),
+    })
+    assert.equal(removed.status, 200)
+    const catalog = (await (await fetch(`${base}/api/workspaces`)).json()) as {
+        workspaces: Array<{ id: string; root: string; active: boolean }>
+        active: { root: string }
+    }
+    assert.equal(catalog.workspaces.length, 2)
+    // 删除当前工作区后回退到列表里的第一个（默认工作区）
+    assert.equal(catalog.active.root, workspace)
 })
 
 test("切换工作区后所有文件接口跟随新根目录", async () => {
+    const catalog = (await (await fetch(`${base}/api/workspaces`)).json()) as {
+        workspaces: Array<{ id: string; root: string }>
+    }
+    const main = catalog.workspaces.find((entry) => entry.root === workspace)
+    const sub = catalog.workspaces.find((entry) => entry.root === subWorkspace)
+    assert.ok(main !== undefined)
+    assert.ok(sub !== undefined)
+
     const switched = await fetch(`${base}/api/workspace`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: "ws-sub" }),
+        body: JSON.stringify({ id: sub.id }),
     })
     assert.equal(switched.status, 200)
     const switchedBody = (await switched.json()) as { active: { id: string; root: string } }
-    assert.equal(switchedBody.active.id, "ws-sub")
+    assert.equal(switchedBody.active.id, sub.id)
     assert.equal(switchedBody.active.root, subWorkspace)
 
     const state = (await (await fetch(`${base}/api/state`)).json()) as {
@@ -1042,13 +1081,6 @@ test("切换工作区后所有文件接口跟随新根目录", async () => {
     assert.equal(file.status, 200)
     assert.match(((await file.json()) as { content: string }).content, /nested/)
 
-    const outside = await fetch(`${base}/api/workspace`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: "ws-outside" }),
-    })
-    assert.equal(outside.status, 409)
-
     const missing = await fetch(`${base}/api/workspace`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1059,7 +1091,7 @@ test("切换工作区后所有文件接口跟随新根目录", async () => {
     const back = await fetch(`${base}/api/workspace`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: "ws-main" }),
+        body: JSON.stringify({ id: main.id }),
     })
     assert.equal(back.status, 200)
     const restored = (await (await fetch(`${base}/api/state`)).json()) as { root: string }
@@ -1067,22 +1099,30 @@ test("切换工作区后所有文件接口跟随新根目录", async () => {
 })
 
 test("x-workspace-id 请求头按客户端隔离当前工作区", async () => {
+    const catalog = (await (await fetch(`${base}/api/workspaces`)).json()) as {
+        workspaces: Array<{ id: string; root: string }>
+    }
+    const main = catalog.workspaces.find((entry) => entry.root === workspace)
+    const sub = catalog.workspaces.find((entry) => entry.root === subWorkspace)
+    assert.ok(main !== undefined)
+    assert.ok(sub !== undefined)
+
     const switched = await fetch(`${base}/api/workspace`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: "ws-sub" }),
+        body: JSON.stringify({ id: sub.id }),
     })
     assert.equal(switched.status, 200)
 
     const mainState = await fetch(`${base}/api/state`, {
-        headers: { "x-workspace-id": "ws-main" },
+        headers: { "x-workspace-id": main.id },
     })
     const mainBody = (await mainState.json()) as { root: string; name: string }
     assert.equal(mainBody.root, workspace)
-    assert.equal(mainBody.name, "主工作区")
+    assert.equal(mainBody.name, basename(workspace))
 
     const mainTree = await fetch(`${base}/api/tree?path=`, {
-        headers: { "x-workspace-id": "ws-main" },
+        headers: { "x-workspace-id": main.id },
     })
     const mainNames = ((await mainTree.json()) as { entries: Array<{ name: string }> }).entries.map(
         (entry) => entry.name,
@@ -1101,7 +1141,7 @@ test("x-workspace-id 请求头按客户端隔离当前工作区", async () => {
     const restore = await fetch(`${base}/api/workspace`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: "ws-main" }),
+        body: JSON.stringify({ id: main.id }),
     })
     assert.equal(restore.status, 200)
 })

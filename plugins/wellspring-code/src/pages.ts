@@ -60,6 +60,7 @@ const SIDEBAR = `<aside class="sidebar" id="sidebar" aria-label="侧边栏">
             <button class="icon-btn sm" type="button" id="btn-new-folder" title="新建文件夹" aria-label="新建文件夹"><svg class="icon" aria-hidden="true"><use href="#i-new-folder"/></svg></button>
             <button class="icon-btn sm" type="button" id="btn-refresh-tree" title="刷新" aria-label="刷新"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button>
             <button class="icon-btn sm" type="button" id="btn-collapse-tree" title="全部折叠" aria-label="全部折叠"><svg class="icon" aria-hidden="true"><use href="#i-collapse"/></svg></button>
+            <button class="icon-btn sm" type="button" id="workspace-add-quick" title="添加工作区" aria-label="添加工作区"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg></button>
           </div>
         </header>
         <button class="workspace-caption" type="button" id="workspace-switch" title="切换工作区（Wellspring 工作区）" aria-haspopup="dialog">
@@ -347,6 +348,10 @@ const OVERLAYS = `<div class="overlay" id="workspace-overlay" hidden>
         <div class="palette-input-row workspace-palette-head">
           <span class="palette-prefix" aria-hidden="true">◈</span>
           <span class="workspace-palette-title">切换工作区</span>
+          <button class="workspace-add" type="button" id="workspace-add" title="添加任意文件夹作为工作区">
+            <svg class="icon icon-xs" aria-hidden="true"><use href="#i-plus"/></svg>
+            <span>添加工作区</span>
+          </button>
           <kbd>Esc</kbd>
         </div>
         <ul class="palette-list" id="workspace-list" role="listbox" aria-label="工作区列表"></ul>

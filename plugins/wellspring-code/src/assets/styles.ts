@@ -656,6 +656,30 @@ body.is-resizing {
     color: var(--fg-strong);
 }
 
+.workspace-add {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    padding: 4px 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface-2);
+    color: var(--fg);
+    font: inherit;
+    font-size: 0.75em;
+    cursor: pointer;
+}
+
+.workspace-add:hover {
+    background: var(--bg-selected);
+}
+
+.workspace-add:disabled {
+    opacity: 0.6;
+    cursor: progress;
+}
+
 .workspace-item {
     gap: 9px;
 }

@@ -1,6 +1,6 @@
 {
     "name": "wellspring-code",
-    "version": "1.17.0",
+    "version": "1.18.0",
     "packageManager": "npm@11.20.0",
     "description": "浏览器里的 VS Code 风格代码编辑器",
     "type": "module",
@@ -25,7 +25,8 @@
                 "getHost",
                 "exec",
                 "pty",
-                "workspaces"
+                "fileRoots",
+                "agent"
             ]
         }
     }

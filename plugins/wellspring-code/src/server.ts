@@ -3,15 +3,23 @@
  * 所有响应都带安全响应头；HTML 不含内联脚本/样式，因此 CSP 不需要 unsafe-*。
  */
 
+import { createHash } from "node:crypto"
+import { isAbsolute, resolve } from "node:path"
+
+import {
+    EventEntity,
+    eventBus,
+    getHost,
+    onInit,
+    onShutdown,
+} from "wellspring/api/host/index.ts"
 import type {
     HostFileStat,
-    HostWorkspaceEntry,
     HttpRequest,
     HttpResponse,
     HostOSInfo,
     PluginApi,
 } from "wellspring/api/host/index.ts"
-import { EventEntity, eventBus, getHost, onInit, onShutdown } from "wellspring/api/host/index.ts"
 import type { HttpServerBusHandle } from "wellspring/api/plugin/http-client.ts"
 import { registerHttpServer } from "wellspring/api/plugin/http-client.ts"
 
@@ -49,13 +57,10 @@ import {
     MAX_STAT_PATHS,
     WorkspaceError,
     WorkspaceService,
-    createScopedFs,
     detectIndent,
     nameOf,
     normalizePath,
-    relativeInside,
     workspaceNameOf,
-    type WorkspaceFs,
 } from "./workspace.ts"
 
 const MAX_API_BODY_BYTES = 4 * 1024 * 1024
@@ -74,17 +79,28 @@ const CONTENT_SECURITY_POLICY = [
     "frame-ancestors 'none'",
 ].join("; ")
 
-/** 可展示的工作区；root 为绝对路径，prefix 是相对宿主 workspaceFs 的前缀 */
+/** 插件自己的工作区；root 是用户可以任意选择的绝对目录 */
 export interface WorkspaceDescriptor {
     readonly id: string
     readonly name: string
     readonly root: string
-    readonly prefix: string | null
     readonly accessible: boolean
     readonly reason: string | null
-    readonly conversationCount: number
     readonly lastSeenAt: number
-    readonly source: "host" | "local"
+    readonly source: "plugin"
+}
+
+interface StoredWorkspace {
+    readonly id: string
+    name: string
+    readonly root: string
+    readonly createdAt: number
+    lastSeenAt: number
+}
+
+interface WorkspaceStore {
+    activeId: string | null
+    readonly workspaces: StoredWorkspace[]
 }
 
 interface WorkspaceCatalog {
@@ -92,16 +108,19 @@ interface WorkspaceCatalog {
     readonly error: string | null
 }
 
+const WORKSPACE_STORE = "workspaces.json"
+const MAX_WORKSPACE_NAME = 120
+
 let api: PluginApi | null = null
 /** 由 wellspring-http 插件托管的服务器句柄（本插件不再直接持有 hostApi.http） */
 let server: HttpServerBusHandle | null = null
 let authStore: CodeAuthStore | null = null
 const loginThrottle = new LoginThrottle()
-let baseFs: WorkspaceFs | null = null
 let workspace: WorkspaceService | null = null
 let activeWorkspace: WorkspaceDescriptor | null = null
 let hostRoot = ""
 let readOnly = false
+let workspaceStore: WorkspaceStore = { activeId: null, workspaces: [] }
 /** 按工作区 id 缓存文件服务；切换工作区不重建宿主连接 */
 const workspaceCache = new Map<string, WorkspaceService>()
 
@@ -110,9 +129,20 @@ export async function configureServer(value: PluginApi): Promise<void> {
     const store = new CodeAuthStore(value.fs)
     await store.load()
     authStore = store
-    baseFs = value.workspaceFs
     readOnly = value.pluginConfig["readOnly"] === true
     hostRoot = resolveRoot(value)
+    await loadWorkspaceStore()
+    /*
+     * 首次启动没有工作区时，把服务进程当前目录作为默认工作区写进插件自己的
+     * workspaces.json；之后完全由插件管理，不再读宿主工作区注册表。
+     */
+    if (workspaceStore.workspaces.length === 0) {
+        try {
+            await addWorkspaceRecord(hostRoot, workspaceNameOf(hostRoot))
+        } catch {
+            /* 目录不可访问时留空；用户可以在「添加工作区」里重新选择 */
+        }
+    }
     await ensureActiveWorkspace()
 }
 
@@ -171,75 +201,105 @@ function getActiveWorkspace(): WorkspaceDescriptor {
     return activeWorkspace
 }
 
-function localWorkspace(): WorkspaceDescriptor {
+function workspaceIdOf(root: string): string {
+    return createHash("sha256").update(root).digest("hex").slice(0, 16)
+}
+
+function normalizeWorkspaceName(value: unknown, fallback: string): string {
+    const text = typeof value === "string" ? value.trim() : ""
+    const name = text === "" ? fallback : text
+    return name.slice(0, MAX_WORKSPACE_NAME)
+}
+
+function normalizeStoredWorkspace(value: unknown): StoredWorkspace | null {
+    if (value === null || typeof value !== "object") return null
+    const record = value as Record<string, unknown>
+    const root = typeof record["root"] === "string" ? record["root"].trim() : ""
+    if (root === "" || !isAbsolute(root)) return null
+    const absolute = resolve(root)
+    const createdAt =
+        typeof record["createdAt"] === "number" && Number.isFinite(record["createdAt"])
+            ? record["createdAt"]
+            : Date.now()
+    const lastSeenAt =
+        typeof record["lastSeenAt"] === "number" && Number.isFinite(record["lastSeenAt"])
+            ? record["lastSeenAt"]
+            : createdAt
     return {
-        id: "local",
-        name: `${workspaceNameOf(hostRoot)}（当前目录）`,
-        root: hostRoot,
-        prefix: "",
+        id: workspaceIdOf(absolute),
+        name: normalizeWorkspaceName(record["name"], workspaceNameOf(absolute)),
+        root: absolute,
+        createdAt,
+        lastSeenAt,
+    }
+}
+
+async function loadWorkspaceStore(): Promise<void> {
+    const raw = await getApi().fs.readJson<unknown>(WORKSPACE_STORE).catch(() => null)
+    const source = raw !== null && typeof raw === "object" ? (raw as Record<string, unknown>) : {}
+    const list = Array.isArray(source["workspaces"]) ? source["workspaces"] : []
+    const workspaces: StoredWorkspace[] = []
+    const seen = new Set<string>()
+    for (const item of list) {
+        const record = normalizeStoredWorkspace(item)
+        if (record === null || seen.has(record.id)) continue
+        workspaces.push(record)
+        seen.add(record.id)
+    }
+    const activeId =
+        typeof source["activeId"] === "string" && workspaces.some((w) => w.id === source["activeId"])
+            ? source["activeId"]
+            : (workspaces[0]?.id ?? null)
+    workspaceStore = { activeId, workspaces }
+}
+
+async function saveWorkspaceStore(): Promise<void> {
+    await getApi().fs.writeJson(WORKSPACE_STORE, workspaceStore)
+}
+
+function descriptorOf(record: StoredWorkspace): WorkspaceDescriptor {
+    return {
+        id: record.id,
+        name: record.name,
+        root: record.root,
         accessible: true,
         reason: null,
-        conversationCount: 0,
-        lastSeenAt: 0,
-        source: "local",
+        lastSeenAt: record.lastSeenAt,
+        source: "plugin",
     }
 }
 
-function describeHostWorkspace(entry: HostWorkspaceEntry): WorkspaceDescriptor {
-    const prefix = relativeInside(hostRoot, entry.root)
-    return {
-        id: entry.id,
-        name: entry.name,
-        root: entry.root,
-        prefix,
-        accessible: prefix !== null,
-        reason: prefix === null ? `不在服务进程工作目录 ${hostRoot} 内，当前实例无法访问` : null,
-        conversationCount: 0,
-        lastSeenAt: entry.lastSeenAt,
-        source: "host",
-    }
-}
-
-/** 读取宿主工作区注册表；失败时回退到当前目录，并带上错误说明 */
+/** 插件自己的目录列表；不读宿主工作区注册表，也不再依赖 wellspring-web */
 async function readWorkspaceCatalog(): Promise<WorkspaceCatalog> {
-    let error: string | null = null
-    let records: readonly HostWorkspaceEntry[] = []
-    try {
-        const result = await getApi().workspaces.list()
-        records = result.workspaces
-    } catch (cause) {
-        error = `读取宿主工作区失败：${errorText(cause)}`
-    }
-    const entries: WorkspaceDescriptor[] = records.map(describeHostWorkspace)
-    if (!entries.some((entry) => entry.root === hostRoot)) {
-        entries.push(localWorkspace())
-    }
-    return { entries, error }
+    return { entries: workspaceStore.workspaces.map(descriptorOf), error: null }
 }
 
-function pickDefaultWorkspace(entries: readonly WorkspaceDescriptor[]): WorkspaceDescriptor | null {
-    const local = entries.find((entry) => entry.root === hostRoot && entry.accessible)
-    if (local !== undefined) {
-        return local
+async function workspaceServiceFor(record: StoredWorkspace): Promise<WorkspaceService> {
+    const cached = workspaceCache.get(record.id)
+    if (cached !== undefined) {
+        return cached
     }
-    const accessible = entries
-        .filter((entry) => entry.accessible)
-        .sort((left, right) => right.lastSeenAt - left.lastSeenAt)
-    return accessible[0] ?? null
+    const fs = await getApi().fileRoots.open(record.root)
+    const service = new WorkspaceService(fs)
+    workspaceCache.set(record.id, service)
+    return service
 }
 
-function applyWorkspace(entry: WorkspaceDescriptor): void {
-    if (baseFs === null) {
-        throw new Error("wellspring-code 文件能力尚未初始化")
-    }
-    activeWorkspace = entry
-    workspace = new WorkspaceService(createScopedFs(baseFs, entry.prefix ?? ""))
-    workspaceCache.set(entry.id, workspace)
+async function applyWorkspace(record: StoredWorkspace): Promise<void> {
+    const service = await workspaceServiceFor(record)
+    workspace = service
+    activeWorkspace = descriptorOf(record)
+    workspaceStore.activeId = record.id
+    await saveWorkspaceStore()
+}
+
+function findWorkspaceRecord(id: string): StoredWorkspace | null {
+    return workspaceStore.workspaces.find((item) => item.id === id) ?? null
 }
 
 /**
- * 解析请求指定的工作区：优先使用 x-workspace-id 请求头，缺省回退到服务端当前工作区。
- * 这样多个浏览器窗口可以各自停留在不同工作区，不会互相覆盖。
+ * 解析请求指定的工作区：优先使用 x-workspace-id 请求头，缺省回退到当前工作区。
+ * 多个浏览器窗口可以各自停留在不同工作区，不会互相覆盖。
  */
 async function resolveWorkspaceEntry(request: HttpRequest): Promise<WorkspaceDescriptor> {
     const requestedId = request.headers["x-workspace-id"]
@@ -247,67 +307,104 @@ async function resolveWorkspaceEntry(request: HttpRequest): Promise<WorkspaceDes
         await ensureActiveWorkspace()
         return getActiveWorkspace()
     }
-    const catalog = await readWorkspaceCatalog()
-    const entry = catalog.entries.find((item) => item.id === requestedId)
-    if (entry === undefined) {
+    const record = findWorkspaceRecord(requestedId)
+    if (record === null) {
         throw new WorkspaceError(404, "工作区不存在")
     }
-    if (!entry.accessible) {
-        throw new WorkspaceError(409, entry.reason ?? "工作区不可访问")
-    }
-    return entry
+    return descriptorOf(record)
 }
 
 async function requestWorkspace(request: HttpRequest): Promise<WorkspaceService> {
     const entry = await resolveWorkspaceEntry(request)
-    const cached = workspaceCache.get(entry.id)
-    if (cached !== undefined) {
-        return cached
+    const record = findWorkspaceRecord(entry.id)
+    if (record === null) {
+        throw new WorkspaceError(404, "工作区不存在")
     }
-    if (baseFs === null) {
-        throw new Error("wellspring-code 文件能力尚未初始化")
-    }
-    const service = new WorkspaceService(createScopedFs(baseFs, entry.prefix ?? ""))
-    workspaceCache.set(entry.id, service)
-    return service
+    return await workspaceServiceFor(record)
 }
 
 async function ensureActiveWorkspace(): Promise<void> {
-    if (activeWorkspace !== null) {
+    if (workspace !== null) {
         return
     }
-    const { entries } = await readWorkspaceCatalog()
-    const chosen = pickDefaultWorkspace(entries)
-    if (chosen !== null) {
-        applyWorkspace(chosen)
+    const record =
+        (workspaceStore.activeId === null ? null : findWorkspaceRecord(workspaceStore.activeId)) ??
+        workspaceStore.workspaces[0] ??
+        null
+    if (record === null) {
+        activeWorkspace = null
+        workspace = null
+        return
     }
+    await applyWorkspace(record)
 }
 
-function workspaceView(entry: WorkspaceDescriptor): Record<string, unknown> {
+/** 添加工作区：root 必须是已存在的目录；重复目录只刷新 lastSeenAt */
+async function addWorkspaceRecord(root: string, name?: string): Promise<StoredWorkspace> {
+    const fs = await getApi().fileRoots.open(root)
+    const absolute = fs.root
+    const existing = workspaceStore.workspaces.find((item) => item.root === absolute)
+    if (existing !== undefined) {
+        existing.lastSeenAt = Date.now()
+        existing.name = normalizeWorkspaceName(name, existing.name)
+        workspaceCache.set(existing.id, new WorkspaceService(fs))
+        workspaceStore.activeId = existing.id
+        await saveWorkspaceStore()
+        return existing
+    }
+    const now = Date.now()
+    const record: StoredWorkspace = {
+        id: workspaceIdOf(absolute),
+        name: normalizeWorkspaceName(name, workspaceNameOf(absolute)),
+        root: absolute,
+        createdAt: now,
+        lastSeenAt: now,
+    }
+    workspaceStore.workspaces.push(record)
+    workspaceStore.activeId = record.id
+    workspaceCache.set(record.id, new WorkspaceService(fs))
+    await saveWorkspaceStore()
+    return record
+}
+
+async function removeWorkspaceRecord(id: string): Promise<boolean> {
+    const index = workspaceStore.workspaces.findIndex((item) => item.id === id)
+    if (index === -1) return false
+    workspaceStore.workspaces.splice(index, 1)
+    workspaceCache.delete(id)
+    if (workspaceStore.activeId === id) {
+        workspaceStore.activeId = workspaceStore.workspaces[0]?.id ?? null
+    }
+    await saveWorkspaceStore()
+    if (activeWorkspace?.id === id) {
+        workspace = null
+        activeWorkspace = null
+        await ensureActiveWorkspace()
+    }
+    return true
+}
+
+function workspaceView(entry: WorkspaceDescriptor, activeId: string): Record<string, unknown> {
     return {
         id: entry.id,
         name: entry.name,
         root: entry.root,
-        relativeRoot: entry.prefix ?? "",
+        relativeRoot: "",
         accessible: entry.accessible,
         reason: entry.reason,
-        conversationCount: entry.conversationCount,
+        conversationCount: 0,
         lastSeenAt: entry.lastSeenAt,
         source: entry.source,
-        active: false,
+        active: entry.id === activeId,
     }
-}
-
-function workspaceViewFor(entry: WorkspaceDescriptor, activeId: string): Record<string, unknown> {
-    return { ...workspaceView(entry), active: entry.id === activeId }
 }
 
 async function workspaceCatalogResponse(request: HttpRequest): Promise<HttpResponse> {
     const current = await resolveWorkspaceEntry(request)
     const catalog = await readWorkspaceCatalog()
     return json(200, {
-        workspaces: catalog.entries.map((entry) => workspaceViewFor(entry, current.id)),
-        active: workspaceViewFor(current, current.id),
+        workspaces: catalog.entries.map((entry) => workspaceView(entry, current.id)),
+        active: workspaceView(current, current.id),
         hostRoot,
         error: catalog.error,
     })
@@ -731,7 +828,7 @@ async function route(request: HttpRequest): Promise<HttpResponse> {
             name: active.name,
             workspaceId: active.id,
             workspaceSource: active.source,
-            workspaceCount: active.conversationCount,
+            workspaceCount: workspaceStore.workspaces.length,
             hostRoot,
             version: getApi().plugin.version,
             apiVersion: getApi().apiVersion,
@@ -745,33 +842,93 @@ async function route(request: HttpRequest): Promise<HttpResponse> {
         return await workspaceCatalogResponse(request)
     }
 
+    if (method === "POST" && path === "/api/workspaces/add") {
+        const guarded = guardWrite(request)
+        if (guarded !== null) {
+            return guarded
+        }
+        const body = parseJson(request)
+        let root = readString(body["root"]).trim()
+        let name = readString(body["name"])
+        if (root === "") {
+            const picked = await getApi().agent.pickDirectory()
+            if (!picked.ok) {
+                return json(400, { error: picked.error ?? "没有选择文件夹" })
+            }
+            root = picked.root
+            name = name === "" ? picked.name : name
+        }
+        if (!isAbsolute(root)) {
+            return json(400, { error: "工作区必须是绝对路径" })
+        }
+        try {
+            const record = await addWorkspaceRecord(root, name)
+            await applyWorkspace(record)
+        } catch (error) {
+            return json(400, { error: errorText(error) })
+        }
+        const refreshed = await readWorkspaceCatalog()
+        return json(200, {
+            ok: true,
+            active: workspaceView(getActiveWorkspace(), workspaceStore.activeId ?? ""),
+            workspaces: refreshed.entries.map((entry) =>
+                workspaceView(entry, workspaceStore.activeId ?? ""),
+            ),
+            hostRoot,
+            error: refreshed.error,
+        })
+    }
+
+    if (method === "POST" && path === "/api/workspaces/remove") {
+        const guarded = guardWrite(request)
+        if (guarded !== null) {
+            return guarded
+        }
+        const body = parseJson(request)
+        const id = readString(body["id"])
+        if (id === "") {
+            return json(400, { error: "缺少工作区 id" })
+        }
+        if (workspaceStore.workspaces.length <= 1) {
+            return json(400, { error: "至少保留一个工作区" })
+        }
+        const removed = await removeWorkspaceRecord(id)
+        if (!removed) {
+            return json(404, { error: "工作区不存在" })
+        }
+        await ensureActiveWorkspace()
+        const current = getActiveWorkspace()
+        const refreshed = await readWorkspaceCatalog()
+        return json(200, {
+            ok: true,
+            active: workspaceView(current, current.id),
+            workspaces: refreshed.entries.map((entry) => workspaceView(entry, current.id)),
+            hostRoot,
+            error: refreshed.error,
+        })
+    }
+
     if (method === "POST" && path === "/api/workspace") {
         const guarded = guardWrite(request)
         if (guarded !== null) {
             return guarded
         }
-        await ensureActiveWorkspace()
         const body = parseJson(request)
         const id = readString(body["id"])
         const root = readString(body["root"])
-        const catalog = await readWorkspaceCatalog()
-        const target = catalog.entries.find((entry) =>
-            id !== "" ? entry.id === id : root !== "" ? entry.root === root : false,
-        )
-        if (target === undefined) {
+        const target =
+            id !== ""
+                ? findWorkspaceRecord(id)
+                : workspaceStore.workspaces.find((record) => record.root === resolve(root)) ?? null
+        if (target === null) {
             return json(404, { error: id !== "" ? "工作区不存在" : "缺少工作区 id" })
         }
-        if (!target.accessible) {
-            return json(409, { error: target.reason ?? "工作区不可访问" })
-        }
-        applyWorkspace(target)
-        workspaceCache.clear()
-        workspaceCache.set(target.id, getWorkspace())
+        await applyWorkspace(target)
         const refreshed = await readWorkspaceCatalog()
         return json(200, {
             ok: true,
-            active: workspaceViewFor(target, target.id),
-            workspaces: refreshed.entries.map((entry) => workspaceViewFor(entry, target.id)),
+            active: workspaceView(descriptorOf(target), target.id),
+            workspaces: refreshed.entries.map((entry) => workspaceView(entry, target.id)),
             hostRoot,
             error: refreshed.error,
         })

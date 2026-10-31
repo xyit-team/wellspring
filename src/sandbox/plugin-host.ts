@@ -607,11 +607,11 @@ const output: HostOutput = {
     print: (text = "") => bridgeNotify("host.output", { kind: "print", text }),
 }
 
-function createFileApi(scope: "fs" | "workspaceFs"): HostFileApi {
-    const call = (method: string, params: Record<string, unknown> = {}) =>
-        bridgeRequest(`host.${scope}.${method}`, params)
+type FileApiCall = (method: string, params?: Record<string, unknown>) => Promise<unknown>
+
+function fileApi(root: string, call: FileApiCall): HostFileApi {
     return {
-        root: scope,
+        root,
         async readText(path) {
             const result = (await call("readText", { path })) as { text: string | null }
             return result.text
@@ -658,6 +658,16 @@ function createFileApi(scope: "fs" | "workspaceFs"): HostFileApi {
             return result.exists
         },
     }
+}
+
+function createFileApi(scope: "fs" | "workspaceFs"): HostFileApi {
+    return fileApi(scope, (method, params = {}) => bridgeRequest(`host.${scope}.${method}`, params))
+}
+
+function createRootedFileApi(root: string): HostFileApi {
+    return fileApi(root, (method, params = {}) =>
+        bridgeRequest(`host.fileRoots.${method}`, { root, ...params }),
+    )
 }
 
 function patchConsole(): void {
@@ -785,6 +795,14 @@ async function bootstrap(params: ConfigurePayload): Promise<{
         pluginConfig: params.pluginConfig,
         fs: createFileApi("fs"),
         workspaceFs: createFileApi("workspaceFs"),
+        fileRoots: {
+            async open(root: string): Promise<HostFileApi> {
+                const result = (await bridgeRequest("host.fileRoots.open", { root })) as {
+                    root: string
+                }
+                return createRootedFileApi(result.root)
+            },
+        },
         registerCommand: (command: PluginCommand): void => {
             commands.push(command)
         },

@@ -417,6 +417,7 @@ onShutdown(() => {
 | `capabilities`             | 代码执行与网络能力                                            |
 | `http`                     | 宿主 HTTP/HTTPS/SSE/WebSocket 服务（只给 wellspring-http 用） |
 | `workspaces`               | 宿主级工作区注册表：列表 / 添加 / 移除 / 重命名 / touch       |
+| `fileRoots`                | 按绝对目录打开文件 API，需 `hostApi: fileRoots`（可信插件）   |
 | `agent`                    | 与 Agent 会话交互，`chat({ message, sessionId? })`            |
 | `network`                  | 出站代理配置：`state()` / `saveProxy({ url, noProxy? })`      |
 
@@ -473,6 +474,18 @@ const added = await api.workspaces.add({ root: "/home/me/project", name: "项目
 - 工作区 id 由目录路径派生（名称片段 + 路径哈希），同一目录重复添加不会产生重复条目
 - 最多 40 个工作区；名称 1–60 字符；注册表损坏会备份成 `workspaces.json.broken` 后按空表启动
 - 首次加载会兼容迁移旧版 `wellspring-web` 插件数据目录里的工作区索引（只读 id / 名称 / 路径 / 时间）
+
+#### fileRoots
+
+编辑器这类需要让用户选择任意目录的插件，可以用 `api.fileRoots.open(root)` 打开以绝对目录为根的
+`HostFileApi`。需要 `hostApi: fileRoots` 权限；只授予可信插件（当前只有 `wellspring-code`）。
+
+```ts
+const fs = await api.fileRoots.open("/home/me/project")
+const entries = await fs.list("src")
+```
+
+返回的 API 路径仍然只能是相对路径，宿主会再次检查越界；`open` 只接受已存在的绝对目录。
 
 #### fs / workspaceFs
 
@@ -603,7 +616,7 @@ const files = await ctx.workspaceFs.list("src")
 - bridge 请求默认 30 秒超时；`agent.stream` 不设上限（一轮对话的时长由模型与工具步骤决定，不能按固定秒数掐断），
   `agent.chat` 为 180 秒
 - `hostApi` 默认包含 `logger` / `fs` / `event` / `getHost` / `shutdown`；`workspaceFs` 仍需在 `fs.read` 里声明 `${workspace}`
-- `models` / `plugins` / `workspaces` / `http` / `exec` / `pty` / `capabilities` 需要在 `hostApi` 中显式声明；
+- `models` / `plugins` / `workspaces` / `fileRoots` / `http` / `exec` / `pty` / `capabilities` 需要在 `hostApi` 中显式声明；
   `http` 只保留给 `wellspring-http`，普通插件请走上面的 `wellspring/api/plugin/http-client.ts`
 - `hostApi: "plugins"` 提供 `api.plugins.list/install/remove/enable/disable`：安装只接受 zip（≤10MB）；
   启用/禁用与禁用后的卸载即时生效，安装与禁用 `wellspring-web` 重启后生效；卸载 `wellspring-web` 被拒绝
@@ -777,12 +790,12 @@ wellspring start
 
 打开 `http://127.0.0.1:8788`（与 Web 插件默认的 `8787` 不冲突）。
 
-- 工作区列表来自宿主注册表 `api.workspaces`（名称 / 路径 / 最近访问），在侧栏与命令面板里快捷切换；
-  不再依赖 `wellspring-web`，也不读取其它插件的数据目录
+- 工作区由 code 插件自己管理（`<dataDir>/plugin-data/wellspring-code/workspaces.json`），
+  在切换面板里可以添加机器上任意绝对目录；不依赖宿主工作区注册表，也不依赖 `wellspring-web`
 - 装了 Web 插件时，会通过事件总线注册 `nav-bottom` 扩展，在网页侧栏底部显示「代码编辑器」入口
   （指向本服务地址）；没装 Web 也不影响使用
-- 文件能力来自 `api.workspaceFs`，根目录是服务进程的当前目录；只有落在这个根内的工作区可访问，
-  根外的工作区在切换列表里置灰
+- 文件能力来自 `api.fileRoots.open(root)`，不受服务进程 cwd 限制；
+  添加与切换需要 `hostApi` 的 `fileRoots` 与 `agent`（系统目录选择）权限
 - 包含资源管理器、标签页、语法高亮、自动补全、语法诊断、括号配对高亮、缩进参考线、文件/工作区符号搜索与转到定义、
   行号、缩略图、查找替换、全文搜索、命令面板、Git 面板（改动列表 / 暂存 / 并排 diff 窗口 / 树标记）、状态栏、
   Markdown 与图片预览、深浅主题；标签 / 最近打开 / 展开状态按工作区隔离
@@ -847,7 +860,8 @@ off()
 - 配置：`<configDir>/app-setting.json`；API Key：`<configDir>/credentials.json`（0600，与环境变量分开）
 - 会话：`<dataDir>/sessions/<cwd桶>/<sessionId>/`，`turns/NNNN.jsonl.zstd` 是事件段；一轮会在开始、每步结束和收尾时各落一段，中断后已产生的部分可回放
 - 插件：`<dataDir>/plugins/<name>/`，入口导出 `setup(): WellspringPlugin`；支持 `plugin install <zip|目录>`
-- 工作区注册表：`<dataDir>/workspaces.json`（宿主级，插件通过 `api.workspaces` 访问）
+- 工作区注册表：`<dataDir>/workspaces.json`（宿主级，`wellspring-web` 通过 `api.workspaces` 访问）；
+  `wellspring-code` 使用自己的 `<dataDir>/plugin-data/wellspring-code/workspaces.json`
 - 插件配置/数据：`<configDir>/plugins/<id>.json`、`<dataDir>/plugin-data/<id>/`
 - 服务状态：`<dataDir>/service.json`
 - 日志：`<logDir>/app.log`；human 模式 Pino 只写文件，终端输出走 `elog4js`

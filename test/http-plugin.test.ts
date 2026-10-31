@@ -459,10 +459,6 @@ test("只有 wellspring-http 持有 hostApi.http，其它 HTTP 插件依赖它",
             !manifest.wellspring.sandbox.hostApi.includes("http"),
             `${pluginId} 不应再直接持有 hostApi.http`,
         )
-        assert.ok(
-            manifest.wellspring.sandbox.hostApi.includes("workspaces"),
-            `${pluginId} 应通过 hostApi workspaces 访问宿主工作区注册表`,
-        )
         const entry = await readFile(join(projectRoot, "plugins", pluginId, "index.ts"), "utf8")
         assert.match(
             entry,
@@ -470,6 +466,26 @@ test("只有 wellspring-http 持有 hostApi.http，其它 HTTP 插件依赖它",
             `${pluginId} 应依赖 wellspring-http`,
         )
     }
+
+    const webManifest = JSON.parse(
+        await readFile(join(projectRoot, "plugins", "wellspring-web", "package.json"), "utf8"),
+    ) as { wellspring: { sandbox: { hostApi: string[] } } }
+    assert.ok(
+        webManifest.wellspring.sandbox.hostApi.includes("workspaces"),
+        "wellspring-web 仍使用宿主工作区注册表",
+    )
+
+    const codeManifest = JSON.parse(
+        await readFile(join(projectRoot, "plugins", "wellspring-code", "package.json"), "utf8"),
+    ) as { wellspring: { sandbox: { hostApi: string[] } } }
+    assert.ok(
+        codeManifest.wellspring.sandbox.hostApi.includes("fileRoots"),
+        "wellspring-code 通过 fileRoots 打开任意工作区目录",
+    )
+    assert.ok(
+        !codeManifest.wellspring.sandbox.hostApi.includes("workspaces"),
+        "wellspring-code 不应再依赖宿主工作区注册表",
+    )
     // code 插件不再依赖 web：工作区注册表已经内嵌到宿主
     const codeEntry = await readFile(
         join(projectRoot, "plugins", "wellspring-code", "index.ts"),

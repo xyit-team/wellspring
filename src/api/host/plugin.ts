@@ -5,7 +5,7 @@
 
 import type { Logger } from "pino"
 
-import type { HostFileApi } from "./fs.ts"
+import type { HostFileApi, HostFileRootsApi } from "./fs.ts"
 import type { HostModelsApi } from "./models.ts"
 import type { HostNetworkApi } from "./network.ts"
 import type { HostExecApi } from "./exec.ts"
@@ -133,6 +133,8 @@ export interface PluginApi {
     readonly fs: HostFileApi
     /** 当前工作目录内的文件操作 */
     readonly workspaceFs: HostFileApi
+    /** 按绝对目录打开文件 API（需 hostApi: fileRoots；只给可信插件，例如代码编辑器） */
+    readonly fileRoots: HostFileRootsApi
     registerCommand(command: PluginCommand): void
     registerAgentTool?(tool: AgentTool): void
     /** 依赖链上的插件 data 目录；无权限返回 null */

@@ -8,7 +8,7 @@ import { createServer as createHttpsServer } from "node:https"
 import { WebSocketServer, type WebSocket } from "ws"
 import { randomUUID } from "node:crypto"
 import { cp, mkdir, rm, stat } from "node:fs/promises"
-import { basename, dirname, join, relative, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
 import type { Logger } from "pino"
 
@@ -1561,6 +1561,13 @@ export class PluginSandboxClient {
                         error instanceof Error ? error.message : String(error),
                     )
                 }
+            } else if (request.method === "host.fileRoots.open") {
+                this.#requireHostApi("fileRoots")
+                const api = await this.#resolveFileRoot(params["root"])
+                result = { root: api.root }
+            } else if (request.method.startsWith("host.fileRoots.")) {
+                this.#requireHostApi("fileRoots")
+                result = await this.#handleFileRoot(request.method, params)
             } else if (request.method.startsWith("host.fs.")) {
                 this.#requireHostApi("fs")
                 result = await this.#handleFs(request.method, params, false)
@@ -1672,7 +1679,6 @@ export class PluginSandboxClient {
         const api: HostFileApi = workspace
             ? createPluginFileApi(process.cwd())
             : createPluginFileApi(this.#pluginDataDir)
-        const path = String(params["path"] ?? "")
         const action = method.replace(/^host\.(fs|workspaceFs)\./, "")
         if (
             workspace &&
@@ -1686,6 +1692,36 @@ export class PluginSandboxClient {
                 throw new PluginSandboxError("当前 Agent 权限是 read-only，不能修改工作区文件")
             }
         }
+        return await this.#dispatchFileApi(api, action, method, params)
+    }
+
+    /** 校验绝对目录并创建以它为根的文件 API */
+    async #resolveFileRoot(rootValue: unknown): Promise<HostFileApi> {
+        const root = typeof rootValue === "string" ? rootValue.trim() : ""
+        if (root === "" || root.includes("\0") || !isAbsolute(root)) {
+            throw new PluginSandboxError("fileRoots.open 需要绝对目录路径")
+        }
+        const absolute = resolve(root)
+        const info = await stat(absolute).catch(() => null)
+        if (info === null || !info.isDirectory()) {
+            throw new PluginSandboxError(`目录不存在或不是文件夹：${root}`)
+        }
+        return createPluginFileApi(absolute)
+    }
+
+    async #handleFileRoot(method: string, params: Record<string, unknown>): Promise<unknown> {
+        const api = await this.#resolveFileRoot(params["root"])
+        const action = method.replace(/^host\.fileRoots\./, "")
+        return await this.#dispatchFileApi(api, action, method, params)
+    }
+
+    async #dispatchFileApi(
+        api: HostFileApi,
+        action: string,
+        method: string,
+        params: Record<string, unknown>,
+    ): Promise<unknown> {
+        const path = String(params["path"] ?? "")
         switch (action) {
             case "readText":
                 return { text: await api.readText(path) }

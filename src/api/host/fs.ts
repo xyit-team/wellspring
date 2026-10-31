@@ -16,6 +16,15 @@ export interface HostFileEntry extends HostFileStat {
     readonly name: string
 }
 
+/** 按绝对目录打开的文件 API；供编辑器这类需要用户自选工作区的插件使用 */
+export interface HostFileRootsApi {
+    /**
+     * 打开一个已存在的绝对目录。
+     * 返回的 HostFileApi 以该目录为根，路径仍然只能是相对路径。
+     */
+    open(root: string): Promise<HostFileApi>
+}
+
 export interface HostFileApi {
     /** 该 API 的根目录，仅用于展示/诊断 */
     readonly root: string

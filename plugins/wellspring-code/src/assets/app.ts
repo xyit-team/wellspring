@@ -601,10 +601,40 @@ function renderWorkspacePicker() {
     })
     var foot = [workspaceCountText()]
     if (app.workspaceError !== null) foot.push(app.workspaceError)
-    else foot.push("来自 Wellspring 工作区")
-    if (app.hostRoot !== "") foot.push("可访问根目录 " + app.hostRoot)
+    else foot.push("由 code 插件独立管理，可添加任意文件夹")
     foot.push("↑↓ 选择 · Enter 切换 · Esc 关闭")
     setText("workspace-foot", foot.join(" · "))
+}
+
+function addWorkspace() {
+    var button = byId("workspace-add")
+    if (button !== null) button.disabled = true
+    if (countDirty() > 0) {
+        if (button !== null) button.disabled = false
+        toast("请先保存当前工作区的未保存文件", "warning")
+        return
+    }
+    toast("请在系统对话框中选择工作区文件夹…", "info", { duration: 3000 })
+    apiSend("/api/workspaces/add", "POST", {})
+        .then(function (data) {
+            applyCatalog(data)
+            applyWorkspaceChrome()
+            saveJson(STORE_WORKSPACE, { id: data.active.id })
+            resetTreeState()
+            restoreExpanded()
+            return loadChildren("").then(function () {
+                renderTree()
+                loadScmStatus(false)
+                closeWorkspacePicker()
+                toast("已添加工作区 " + (data.active.name || data.active.root), "info")
+            })
+        })
+        .catch(function (error) {
+            toast("添加工作区失败：" + error.message, "error", { duration: 8000 })
+        })
+        .then(function () {
+            if (button !== null) button.disabled = false
+        })
 }
 
 function openWorkspacePicker() {
@@ -2648,6 +2678,7 @@ function renderDiffTab(tab) {
 var COMMANDS = [
     { id: "quick-open", label: "转到文件…", category: "文件", keys: "Ctrl+P", run: openQuickOpen },
     { id: "workspace-switch", label: "切换工作区…", category: "文件", run: openWorkspacePicker },
+    { id: "workspace-add", label: "添加工作区…", category: "文件", run: addWorkspace },
     { id: "new-file", label: "新建文件…", category: "文件", keys: "Ctrl+N", run: function () { newFileIn(defaultParent()) } },
     { id: "new-folder", label: "新建文件夹…", category: "文件", run: function () { newFolderIn(defaultParent()) } },
     { id: "save", label: "保存", category: "文件", keys: "Ctrl+S", enabled: hasActiveText, run: saveActive },
@@ -4683,7 +4714,7 @@ function showAbout() {
     var rows = [
         ["工作区", (workspace.name || "—") + (workspace.root ? " · " + workspace.root : "")],
         ["来源", workspace.source === "host" ? "Wellspring 宿主工作区注册表" : "服务进程当前目录"],
-        ["可访问根", app.hostRoot || "—"],
+        ["服务目录", app.hostRoot || "—"],
         ["分支", state.branch || "—"],
         ["宿主", (host.platform || "unknown") + " " + (host.arch || "") + " · " + (host.node || "")],
         ["插件 API", String(state.apiVersion || "")],
@@ -4774,6 +4805,10 @@ function bindWorkspacePicker() {
     if (switcher !== null) switcher.addEventListener("click", openWorkspacePicker)
     var statusRoot = byId("status-root")
     if (statusRoot !== null) statusRoot.addEventListener("click", openWorkspacePicker)
+    var addButton = byId("workspace-add")
+    if (addButton !== null) addButton.addEventListener("click", addWorkspace)
+    var quickAdd = byId("workspace-add-quick")
+    if (quickAdd !== null) quickAdd.addEventListener("click", addWorkspace)
     var overlay = byId("workspace-overlay")
     if (overlay === null) return
     overlay.addEventListener("click", function (event) {
