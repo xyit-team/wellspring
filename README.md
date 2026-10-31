@@ -1,5 +1,8 @@
 # Wellspring 源泉 —— 聚合式 Agent 平台
 
+> [!WARNING]
+> Windows 用户暂时请勿安装，我们正在解决 Windows 的 Sandbox 问题！
+
 ## 安装
 
 ```bash
