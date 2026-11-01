@@ -3307,6 +3307,12 @@ function onGlobalKeydown(event) {
         return
     }
     var lower = key.toLowerCase()
+    /*
+     * 焦点在控制台里：键盘先归终端。控制台自己的复制粘贴与 PTY 控制码都在
+     * handleConsoleKeydown 里处理，这里再走一遍全局快捷键就会做两次——
+     * 比如 Ctrl+Shift+V 既往终端粘贴、又切出 Markdown 预览。
+     */
+    if (terminalFocused() && terminalOwnsKey(lower)) return
     if (lower === "t" && event.altKey) {
         event.preventDefault()
         openWorkspaceSymbols()
@@ -4181,6 +4187,18 @@ function terminalFocused() {
     return active !== null && (active === output || active === input || active === capture)
 }
 
+/**
+ * 焦点在控制台里时，这条全局快捷键是否让位给终端
+ *
+ * 控制台是终端：Ctrl+Shift+V / Ctrl+Shift+C 是它自己的粘贴与复制，Ctrl+B、Ctrl+F、
+ * Ctrl+W、Ctrl+P 这些还得按控制码发给 PTY。以前两套处理同时生效——既往 PTY 发字节，
+ * 又顺手切预览 / 侧栏 / 标签，表现出来就是「焦点在控制台里按快捷键还在动编辑器」。
+ * 只留「关掉控制台」这一条，否则键盘焦点会困在终端里出不来。
+ */
+function terminalOwnsKey(lower) {
+    return lower !== "\u0060" && lower !== "~"
+}
+
 function syncTerminalCursorFocus() {
     var output = termOutput()
     if (output === null) return
@@ -4273,6 +4291,12 @@ function bindTerminal() {
             pasteIntoTerminal(session)
             return
         }
+        /*
+         * Ctrl+Shift+<字母> 是应用自己的组合（Ctrl+Shift+K 清屏、Ctrl+Shift+C 复制…），
+         * 不能再当控制码发给 PTY：否则清屏会顺手发 ^K 把命令行后半段删掉，
+         * 没选中文字时按 Ctrl+Shift+C 还会给前台进程一个 SIGINT。
+         */
+        if (event.ctrlKey && event.shiftKey) return
         if (session.kind !== "pty" || session.serverId === null) return
         if (event.key === "PageUp" || event.key === "PageDown") {
             event.preventDefault()

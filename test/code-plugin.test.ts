@@ -318,6 +318,104 @@ test("C 家族按行增量着色：只重算改动的行", () => {
     )
 })
 
+test("控制台持有焦点时，全局快捷键让位给终端", () => {
+    /** 从客户端脚本里取一个函数源码（配对大括号），真跑一遍而不是只看字符串 */
+    const extract = (signature: string): string => {
+        const start = CLIENT_SCRIPT.indexOf(`function ${signature}(`)
+        assert.notEqual(start, -1, `找不到 ${signature}`)
+        const open = CLIENT_SCRIPT.indexOf("{", start)
+        let depth = 0
+        for (let index = open; index < CLIENT_SCRIPT.length; index += 1) {
+            const char = CLIENT_SCRIPT[index]
+            if (char === "{") depth += 1
+            else if (char === "}") {
+                depth -= 1
+                if (depth === 0) return CLIENT_SCRIPT.slice(start, index + 1)
+            }
+        }
+        assert.fail(`${signature} 的大括号没有配对`)
+    }
+
+    interface Guard {
+        focused: boolean
+        blocked: (lower: string) => boolean
+    }
+
+    /** 按「当前焦点是谁」造一份运行环境，返回与 onGlobalKeydown 同义的闸门 */
+    const guardWithFocus = (focus: string): Guard => {
+        const nodes: Record<string, { id: string }> = {
+            output: { id: "terminal-output" },
+            input: { id: "terminal-input" },
+            capture: { id: "terminal-capture" },
+            editor: { id: "editor-input" },
+        }
+        const build = new Function(
+            "termOutput",
+            "byId",
+            "document",
+            `${extract("terminalFocused")}\n${extract("terminalOwnsKey")}\nreturn { terminalFocused: terminalFocused, terminalOwnsKey: terminalOwnsKey }`,
+        ) as (
+            termOutput: () => unknown,
+            byId: (id: string) => unknown,
+            document: { activeElement: unknown },
+        ) => { terminalFocused: () => boolean; terminalOwnsKey: (lower: string) => boolean }
+        const api = build(
+            () => nodes.output,
+            (id) =>
+                id === "terminal-input"
+                    ? nodes.input
+                    : id === "terminal-capture"
+                      ? nodes.capture
+                      : null,
+            { activeElement: nodes[focus] },
+        )
+        return {
+            focused: api.terminalFocused(),
+            blocked: (lower) => api.terminalFocused() && api.terminalOwnsKey(lower),
+        }
+    }
+
+    // 控制台的三个入口（输出区、命令框、移动端隐藏输入）都算持有焦点
+    for (const where of ["output", "input", "capture"]) {
+        const guard = guardWithFocus(where)
+        assert.equal(guard.focused, true, `${where} 应当算控制台持有焦点`)
+        // Ctrl+Shift+V 预览、Ctrl+B 侧栏、Ctrl+P 快速打开、Ctrl+S 保存：全部让位给终端
+        for (const key of ["v", "b", "p", "s", "w", "n", "f", "z"]) {
+            assert.equal(guard.blocked(key), true, `焦点在 ${where} 时 Ctrl+${key} 必须让位`)
+        }
+        // 只留「关掉控制台」：PTY 里 Escape 会送给前台程序，没这条焦点就困住了
+        assert.equal(guard.blocked("`"), false, `焦点在 ${where} 时 Ctrl+反引号 必须可用`)
+        assert.equal(guard.blocked("~"), false)
+    }
+
+    // 焦点不在控制台：快捷键一条都不能被挡
+    const outside = guardWithFocus("editor")
+    assert.equal(outside.focused, false)
+    for (const key of ["v", "b", "p", "s", "`"]) {
+        assert.equal(outside.blocked(key), false, `焦点不在控制台时 Ctrl+${key} 不能被挡`)
+    }
+
+    // 闸门必须排在 onGlobalKeydown 各条快捷键之前，尤其是 Markdown 预览那条
+    const handler = extract("onGlobalKeydown")
+    const gate = handler.indexOf("terminalFocused() && terminalOwnsKey(lower)")
+    assert.ok(gate > -1, "onGlobalKeydown 里要有这道闸门")
+    assert.ok(handler.indexOf('lower === "v" && event.shiftKey') > gate, "Ctrl+Shift+V 不能被漏掉")
+
+    // 控制台自己的粘贴/复制仍然在，不然让位之后 Ctrl+Shift+V 就什么也不做了
+    assert.match(CLIENT_SCRIPT, /event\.ctrlKey && key === "v"[\s\S]{0,80}pasteIntoTerminal/)
+    assert.match(CLIENT_SCRIPT, /event\.ctrlKey && event\.shiftKey && key === "c"/)
+
+    // 另一半：Ctrl+Shift+字母 不再当控制码发给 PTY
+    const consoleKey = /function handleConsoleKeydown\(event\) \{[\s\S]*?\n    \}/.exec(
+        CLIENT_SCRIPT,
+    )
+    assert.ok(consoleKey !== null)
+    const chord = consoleKey[0].indexOf("event.ctrlKey && event.shiftKey) return")
+    assert.ok(chord > -1, "要有 Ctrl+Shift 组合的拦截")
+    // 否则 Ctrl+Shift+K 清屏会顺手发 ^K 把命令行后半段删掉
+    assert.ok(consoleKey[0].indexOf("termKeyBytes(event)") > chord, "拦截必须排在发控制码之前")
+})
+
 test("Markdown 行分词：块引用尖括号不重复转义，围栏状态可增量维护", () => {
     const helpers = new Function(
         HIGHLIGHT_JS +
