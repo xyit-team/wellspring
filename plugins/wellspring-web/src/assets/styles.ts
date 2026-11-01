@@ -4747,4 +4747,143 @@ a,
         animation: spin 1.6s linear infinite !important;
     }
 }
+
+/* ── 完成后的步骤块 ─────────────────────────────────────────── */
+
+.proc-group {
+    border-radius: var(--radius-sm);
+}
+
+.proc-group[data-open="true"] {
+    background: var(--surface-2);
+}
+
+.proc-group-head .proc-title {
+    color: var(--fg-muted);
+    font-weight: var(--fw-medium);
+}
+
+.proc-group-body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-left: var(--space-1);
+}
+
+/* ── Agent 提交的文件 ───────────────────────────────────────── */
+
+.submit-files {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-self: stretch;
+    max-width: 100%;
+    margin-top: var(--space-2);
+}
+
+.submit-file {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    min-height: 30px;
+    padding: 2px var(--space-1) 2px var(--space-2);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    font-size: var(--text-xs);
+}
+
+.submit-file-icon {
+    flex: none;
+    display: inline-flex;
+    color: var(--fg-subtle);
+}
+
+.submit-file-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--fg);
+    font-family: var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.submit-file-size {
+    flex: none;
+    color: var(--fg-subtle);
+    font-variant-numeric: tabular-nums;
+}
+
+.submit-file-actions {
+    position: relative;
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.submit-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 45;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 190px;
+    padding: 6px;
+    border: 1px solid var(--border-control);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    box-shadow: var(--shadow-3);
+}
+
+.submit-menu-item {
+    padding: 6px var(--space-2);
+    border: 0;
+    border-radius: var(--radius-xs);
+    background: transparent;
+    color: var(--fg-muted);
+    font: inherit;
+    font-size: var(--text-xs);
+    text-align: left;
+    cursor: pointer;
+    transition:
+        background var(--dur) var(--ease),
+        color var(--dur) var(--ease);
+}
+
+.submit-menu-item:hover {
+    background: var(--surface-2);
+    color: var(--fg);
+}
+
+/* ── 提问折叠与拖放提示 ─────────────────────────────────────── */
+
+.ask-card[data-minimized="true"] .ask-question {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+}
+
+.drop-hint {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    background: var(--scrim);
+    color: var(--fg);
+    pointer-events: none;
+}
+
+.drop-hint p {
+    margin: 0;
+    font-size: var(--text-sm);
+}
 `

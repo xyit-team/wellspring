@@ -57,6 +57,16 @@ export function buildSessionSystemPrompt(
             lines.push(`- ${tool.name}：${oneLine(tool.description)}`)
         }
     }
-    lines.push("", "工具参数里的相对路径以工作目录为基准；写操作受上面的沙箱权限限制。")
+    lines.push(
+        "",
+        "## 联网与搜索",
+        "- 网页搜索优先用 execute_code 跑 curl（例如 curl -sL '<url>'，需要检索就取搜索引擎的 HTML 结果页）：" +
+            "这条路不经过供应商的联网接口。",
+        "- web_search / web_fetch 走模型提供商的联网接口。只在 curl 拿不到内容时才用，" +
+            "并且调用前先用 ask 询问用户是否允许使用供应商的联网搜索，得到同意再调用。",
+        "",
+        "工具参数里的相对路径以工作目录为基准；写操作受上面的沙箱权限限制。" +
+            "「工作区可写」与「完全访问」默认可以联网，read-only 默认断网。",
+    )
     return lines.join("\n")
 }

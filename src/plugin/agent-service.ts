@@ -16,6 +16,7 @@ import type {
     HostAgentAskRequest,
     HostAgentChatInput,
     HostAgentChatResult,
+    HostAgentOpenMode,
     HostAgentStreamEvent,
     HostAgentToolEvent,
     HostWorkspaceCheck,
@@ -28,6 +29,7 @@ import { executeTurn } from "../commands/conversation.ts"
 import { answerAsk, cancelSessionAsks } from "../agent/pending-asks.ts"
 import { credentialsFile } from "../config/credentials.ts"
 import { readTextIfExists } from "../platform/file.ts"
+import { openExternal, revealExternal } from "../platform/open-external.ts"
 import { DEFAULT_SETTINGS } from "../config/defaults.ts"
 import { loadSettings, SETTING_FILE_NAME } from "../config/loader.ts"
 import {
@@ -651,6 +653,23 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
         return await validateWorkspacePath(path)
     }
 
+    /**
+     * 用宿主系统打开路径
+     *
+     * 只接受绝对路径：界面传入的路径可能来自模型输出，以 "-" 开头的相对名会被系统命令当成参数
+     */
+    const openPath = async (path: string, mode: HostAgentOpenMode = "default"): Promise<void> => {
+        const target = typeof path === "string" ? path.trim() : ""
+        if (target === "" || !isAbsolute(target)) {
+            throw new Error(`只能打开绝对路径：${target === "" ? "（空）" : target}`)
+        }
+        if (mode === "reveal") {
+            await revealExternal(target)
+            return
+        }
+        await openExternal(target)
+    }
+
     /** 打开原生目录选择对话框：Linux 用 zenity/kdialog，macOS 用 osascript，Windows 用 FolderBrowserDialog */
     const pickDirectory = async (): Promise<HostWorkspaceCheck> => {
         const title = "选择工作区文件夹"
@@ -918,6 +937,7 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
         },
         validateWorkspace,
         pickDirectory,
+        openPath,
         async searchWorkspaceFiles(root, query) {
             return await searchWorkspaceFiles(root, query)
         },

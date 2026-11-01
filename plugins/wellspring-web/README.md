@@ -117,6 +117,7 @@ curl -s http://127.0.0.1:8787/ > <dataDir>/plugin-data/wellspring-web/page.html
 | DELETE | `/api/workspaces/<id>`                      | 移除工作区，会话转入未分组                                               |
 | GET    | `/api/files`                                | 工作区文件搜索（`workspaceId` 或 `workspaceRoot`，加 `q`）               |
 | POST   | `/api/picker`                               | 打开宿主系统的原生文件夹对话框                                           |
+| POST   | `/api/files/open`                           | 用系统默认程序打开本地文件（`mode=reveal` 在文件管理器里定位）           |
 | GET    | `/api/ungrouped/conversations`              | 未分组会话，含 `activeId`                                                |
 | PUT    | `/api/ungrouped/conversations/<cid>`        | 保存未分组会话                                                           |
 | DELETE | `/api/ungrouped/conversations/<cid>`        | 删除未分组会话                                                           |

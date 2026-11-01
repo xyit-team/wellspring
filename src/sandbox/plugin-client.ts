@@ -1236,6 +1236,16 @@ export class PluginSandboxClient {
                     throw new PluginSandboxError("宿主没有 Agent 服务")
                 }
                 result = await this.#options.agent.pickDirectory()
+            } else if (request.method === "host.agent.openPath") {
+                this.#requireHostApi("agent")
+                if (this.#options.agent === undefined) {
+                    throw new PluginSandboxError("宿主没有 Agent 服务")
+                }
+                await this.#options.agent.openPath(
+                    String(params["path"] ?? ""),
+                    params["mode"] === "reveal" ? "reveal" : "default",
+                )
+                result = null
             } else if (request.method === "host.agent.searchWorkspaceFiles") {
                 this.#requireHostApi("agent")
                 if (this.#options.agent === undefined) {

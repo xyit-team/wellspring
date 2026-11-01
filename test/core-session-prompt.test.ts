@@ -45,6 +45,13 @@ test("buildSessionSystemPrompt：环境、时间、模型、权限与工具列�
     assert.match(prompt, /没有可调用的工具/)
 })
 
+test("buildSessionSystemPrompt：网页搜索优先 curl，供应商搜索要先问", () => {
+    const prompt = buildSessionSystemPrompt(event(), os)
+    assert.match(prompt, /## 联网与搜索/)
+    assert.match(prompt, /网页搜索优先用 execute_code 跑 curl/)
+    assert.match(prompt, /先用 ask 询问用户是否允许/)
+})
+
 test("buildSessionSystemPrompt：列出工具并截断过长描述", () => {
     const prompt = buildSessionSystemPrompt(
         event({

@@ -848,6 +848,39 @@ export async function addWorkspace(): Promise<void> {
     }
 }
 
+/**
+ * 按路径添加工作区
+ *
+ * 路径由调用方给，不走原生选择框
+ */
+export async function addWorkspaceAt(root: string): Promise<boolean> {
+    const path = root.trim()
+    if (path === "") return false
+    try {
+        const created = await apiJson<{ workspace: WorkspaceView }>(
+            "/api/workspaces",
+            jsonBody({ root: path }),
+        )
+        await refreshWorkspaces()
+        await selectGroup("workspace", created.workspace.id)
+        return true
+    } catch (error) {
+        if (reloadOnAuth(error)) return false
+        toast(error instanceof Error ? error.message : String(error), "error")
+        return false
+    }
+}
+
+/** 用宿主系统打开文件：default = 默认程序，reveal = 在文件管理器里定位 */
+export async function openFile(path: string, mode: "default" | "reveal" = "default"): Promise<void> {
+    try {
+        await apiJson("/api/files/open", jsonBody({ path, mode }))
+    } catch (error) {
+        if (reloadOnAuth(error)) return
+        toast(error instanceof Error ? error.message : String(error), "error")
+    }
+}
+
 export async function removeWorkspace(id: string): Promise<void> {
     try {
         await apiJson(`/api/workspaces/${encodeURIComponent(id)}`, deleteInit())

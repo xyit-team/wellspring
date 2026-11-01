@@ -1,5 +1,5 @@
 /*
- * plugin 命令：list / install / link / remove。
+ * plugin 命令：list / new / install / update / link / enable / disable / remove。
  */
 
 import { readFile, readdir } from "node:fs/promises"
@@ -178,6 +178,19 @@ export async function runPluginCommand(
                         : `已安装插件 ${installed.id}`,
                 )
                 return success(installed)
+            }
+            case "update": {
+                const source = line.positionals[0]
+                if (source === undefined) {
+                    return failure(`${USAGE_CODES.missingValue}:path`)
+                }
+                const updated = await installPlugin(source, ctx.paths, { mode: "update" })
+                ctx.elog.info(
+                    updated.dependenciesInstalled
+                        ? `已更新插件 ${updated.id}，已用 ${updated.packageManager ?? "包管理器"} 安装依赖`
+                        : `已更新插件 ${updated.id}`,
+                )
+                return success(updated)
             }
             case "link": {
                 const source = line.positionals[0]

@@ -53,6 +53,7 @@ import type {
 import type {
     HostAgentApi,
     HostAgentChatInput,
+    HostAgentOpenMode,
     HostAgentStreamEvent,
     HostWorkspaceCheck,
     HostWorkspaceFilesResult,
@@ -365,6 +366,9 @@ function remoteAgent(): HostAgentApi {
         },
         async pickDirectory() {
             return (await bridgeRequest("host.agent.pickDirectory", {})) as HostWorkspaceCheck
+        },
+        async openPath(path: string, mode: HostAgentOpenMode = "default") {
+            await bridgeRequest("host.agent.openPath", { path, mode })
         },
         async searchWorkspaceFiles(root: string, query: string) {
             return (await bridgeRequest("host.agent.searchWorkspaceFiles", {

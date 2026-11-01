@@ -150,17 +150,17 @@ hi
 
 ## 命令
 
-| 命令                                                 | 说明                                                       |
-| ---------------------------------------------------- | ---------------------------------------------------------- |
-| `chat [context...]`                                  | 对话模式，单轮或交互式                                     |
-| `run [context...]`                                   | Agent 模式，单轮或交互式                                   |
-| `start` / `stop`                                     | 服务进程启动 / 跨进程停止                                  |
-| `session list/show/delete`                           | 会话列表、回放、删除                                       |
-| `config path/show/get/set`                           | 配置路径、查看、读写（含 models.* / plugins.<id>.<field>） |
-| `key status/set/clear/test/path`                     | 默认供应商 Key 查看、保存、清除、连通性测试                |
-| `plugin list/new/install/link/enable/disable/remove` | 插件管理                                                   |
-| `doctor`                                             | 环境诊断                                                   |
-| `version` / `help`                                   | 版本与帮助                                                 |
+| 命令                                                        | 说明                                                       |
+| ----------------------------------------------------------- | ---------------------------------------------------------- |
+| `chat [context...]`                                         | 对话模式，单轮或交互式                                     |
+| `run [context...]`                                          | Agent 模式，单轮或交互式                                   |
+| `start` / `stop`                                            | 服务进程启动 / 跨进程停止                                  |
+| `session list/show/delete`                                  | 会话列表、回放、删除                                       |
+| `config path/show/get/set`                                  | 配置路径、查看、读写（含 models.* / plugins.<id>.<field>） |
+| `key status/set/clear/test/path`                            | 默认供应商 Key 查看、保存、清除、连通性测试                |
+| `plugin list/new/install/update/link/enable/disable/remove` | 插件管理                                                   |
+| `doctor`                                                    | 环境诊断                                                   |
+| `version` / `help`                                          | 版本与帮助                                                 |
 
 全局参数：`-c/--config`、`--home`、`-l/--log-level`、`--json`、`-q/--quiet`、`-h/--help`、`-v/--version`。
 
@@ -200,7 +200,7 @@ await api.capabilities.webFetch("https://example.com")
 - `background: true` 后台执行，返回 `taskId`
 - `query_task` 查询后台任务状态与输出
 - `stop_task` 用 `ctrl_c` 发 SIGINT，`kill` 发 SIGKILL
-- `network: true` 给 bwrap 加 `--share-net`
+- `network: true` 给 bwrap 加 `--share-net`；`workspace-write` 与 `danger-full-access` 默认通网，`read-only` 默认断网，显式 `network: false` 可关
 
 `capabilities` 由 sandbox 插件经 `host.capabilities.*` RPC 调用。
 
@@ -334,6 +334,7 @@ if (other) {
 node src/index.ts plugin new my-plugin --dir ./plugins
 node src/index.ts plugin link ./plugins/my-plugin      # 开发时链接（只改文件，不启动插件）
 node src/index.ts plugin install ./plugins/my-plugin    # 目录或 zip；有依赖会按 packageManager 自动安装
+node src/index.ts plugin update  ./dist/my-plugin.zip    # 覆盖已安装的同名插件；link 进来的开发插件不会被覆盖
 node src/index.ts plugin remove <name>                     # 被依赖时拒绝；加 --ignore 强制删除
 node src/index.ts plugin list
 ```
@@ -767,6 +768,15 @@ wellspring start
 - 思考链与工具调用：Agent 的思考内容默认折叠成一行「思考」（只显示摘要，流式时跟随最后一个完成段落），
   工具调用折叠成一行「读取文件 / 执行命令 …」（参数摘要 + 运行中 / 完成 / 失败）；点开看完整内容。
   正文、思考、工具行按发生顺序穿插，和 Harness 一致；随会话保存（含正文偏移），刷新后顺序不变
+- 一轮结束后所有过程行（思考 + 工具）折成一块「步骤 · 思考 N 段 · 调用 N 次」，默认收起，展开仍逐条可点；
+  流式过程中不折叠，看得见当前在调什么
+- 流式输出时手动往上翻就停止贴底，只有自己滚回底部或点「回到底部」才恢复跟随
+- Agent 提问（ask）可以折叠：抬头保留问题，点右上角收起后只剩一行，随时展开继续答
+- Agent 提交的文件：回复下方列出本轮 `write` 写入与 sandbox 产物目录里的文件，点「打开」用系统默认程序打开，
+  右侧下拉给其它打开方式（macOS 访达、Windows 资源管理器、Linux 文件管理器）与复制完整路径
+  （宿主侧 `/api/files/open` → `api.agent.openPath`，只接受绝对路径）
+- 拖文件夹进页面即添加工作区：Firefox 等会给 `file://` 路径的浏览器直接建工作区；
+  拿不到绝对路径的浏览器提示后自动打开原生目录选择框
 - 侧栏「关闭 Wellspring」：二次确认后优雅关闭服务（等价于 `wellspring stop`），先执行插件 onShutdown
   再清理服务记录；会话与工作区数据保留，需要时重新 `wellspring start`
 - 字体与字号沿用 code 插件的设计 token：界面与代码统一使用系统等宽字体

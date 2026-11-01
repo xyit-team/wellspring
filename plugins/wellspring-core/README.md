@@ -75,5 +75,6 @@ metadata:
 ## 网络工具
 
 `web_search` / `web_fetch` 调 `openai.baseUrl`（DeepSeek）的 `/v1/tools/search`、`/v1/tools/fetch`。
+会话 system prompt 要求：网页搜索优先用 `execute_code` 跑 `curl`；确实要用供应商联网搜索时先用 `ask` 征得用户同意。
 Key 用默认供应商：`OPENAI_API_KEY` 优先，其次 `<configDir>/credentials.json`（网页「供应商」里可保存）。
 缺 Key 时工具直接返回 `web.missing-api-key` 错误，不会静默返回空结果。

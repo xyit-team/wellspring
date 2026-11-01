@@ -4,7 +4,7 @@
  * 支持 plugins-state.json 禁用插件；坏插件只记录失败，不影响其他插件。
  */
 
-import { cp, readdir, rm, stat, symlink } from "node:fs/promises"
+import { cp, lstat, readdir, readlink, rm, stat, symlink } from "node:fs/promises"
 import { basename, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -955,7 +955,16 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
     return loaded
 }
 
-/** 把本地插件目录链接进插件根目录，开发用；没有符号链接权限时退化为复制 */
+/**
+ * 链接插件目录，开发用；没有符号链接权限时退化为复制
+ *
+ * 目标位置已有条目时按条目类型决定：
+ * - 符号链接：指向同一个源则幂等返回，否则替换（源目录被删或改名后重链走这条路径）
+ * - 真实目录：报「插件已存在」，不覆盖
+ *
+ * 存在性用 lstat：悬空符号链接的 stat 为 ENOENT，会被判成不存在，
+ * 随后的 symlink 撞 EEXIST 再回落 cp，报 Cannot overwrite non-directory with directory
+ */
 export async function linkPlugin(
     sourcePath: string,
     paths: ResolvedPaths = getPaths(),
@@ -965,18 +974,37 @@ export async function linkPlugin(
     if (!PLUGIN_NAME.test(name)) {
         throw new Error(`插件目录名不合法：${name}`)
     }
+
+    const sourceInfo = await stat(source).catch(() => null)
+    if (sourceInfo === null || !sourceInfo.isDirectory()) {
+        throw new Error(`源目录不存在或不是目录：${source}`)
+    }
+
     const root = pluginsRoot(paths)
     await ensureDir(root)
     const target = join(root, name)
 
-    const existing = await stat(target).catch(() => null)
+    const existing = await lstat(target).catch(() => null)
     if (existing !== null) {
-        throw new Error(`插件已存在：${name}`)
+        if (existing.isSymbolicLink()) {
+            const previous = await readlink(target).catch(() => null)
+            if (previous !== null && resolve(root, previous) === source) {
+                return name
+            }
+            await rm(target, { force: true })
+        } else {
+            throw new Error(`插件已存在：${name}`)
+        }
     }
 
     try {
         await symlink(source, target, "dir")
-    } catch {
+    } catch (error) {
+        // 只有平台不支持符号链接才回落复制，其它错误原样抛
+        const code = (error as NodeJS.ErrnoException).code ?? ""
+        if (code !== "EPERM" && code !== "EACCES" && code !== "ENOSYS") {
+            throw error
+        }
         await cp(source, target, { recursive: true })
     }
     return name

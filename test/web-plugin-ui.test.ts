@@ -203,6 +203,9 @@ async function startWebPlugin(
                     name: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
                 }
             },
+            async openPath(_path: string, _mode?: "default" | "reveal") {
+                return
+            },
             async pickDirectory() {
                 return { ok: false, root: "", name: "", error: "已取消" }
             },

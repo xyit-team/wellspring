@@ -1,12 +1,12 @@
 /*
- * 本地插件安装：目录或 zip 包。
+ * 本地插件安装与更新：目录或 zip 包。
  * zip 在插件根目录下的临时目录解压，校验后再搬到 plugins/<name>。
  *
  * 插件 package.json 可以用 packageManager 声明包管理器；声明了 dependencies 时
  * 安装阶段会调用它自动安装依赖（没有声明则按 lockfile 推断，仍没有则报错）。
  */
 
-import { cp, readFile, readdir, rename, stat } from "node:fs/promises"
+import { cp, lstat, readFile, readdir, rename, stat } from "node:fs/promises"
 import { basename, extname, join, resolve } from "node:path"
 
 import { ensureDir, readJsonIfExists, removePath, statIfExists } from "../platform/file.ts"
@@ -23,8 +23,13 @@ import { extractZip } from "./zip.ts"
 
 const ENTRIES = ["index.ts", "index.js", "index.mjs", "index.mts"]
 
+/** install = 新装；update = 必须已装同名插件，覆盖它 */
+export type PluginInstallMode = "install" | "update"
+
 export interface InstallPluginOptions {
     readonly force?: boolean
+    /** 默认 install */
+    readonly mode?: PluginInstallMode
     /** 解析出插件名后、写入磁盘前调用；返回非空字符串表示拒绝安装 */
     readonly validateId?: (id: string) => string | null
     /** 测试注入；默认使用真实包管理器安装依赖 */
@@ -152,8 +157,18 @@ export async function installPlugin(
         }
 
         const target = join(root, name)
-        const existing = await statIfExists(target)
-        if (existing !== null && options.force !== true) {
+        /* 存在性用 lstat：悬空符号链接的 stat 是 ENOENT，update 会误判成没装 */
+        const existing = await lstat(target).catch(() => null)
+        if (options.mode === "update") {
+            if (existing === null) {
+                throw new Error(`插件未安装：${name}`)
+            }
+            if (existing.isSymbolicLink()) {
+                throw new Error(
+                    `${name} 是 link 进来的开发插件，update 不覆盖符号链接；转为安装版需先 plugin remove ${name}`,
+                )
+            }
+        } else if (existing !== null && options.force !== true) {
             throw new Error(`插件已存在：${name}`)
         }
 

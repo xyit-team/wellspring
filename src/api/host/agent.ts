@@ -120,6 +120,8 @@ export type HostAgentStreamEvent =
     /** 工具请求提升权限，等待用户批准 */
     | { readonly type: "approval"; readonly request: HostAgentApprovalRequest }
 
+export type HostAgentOpenMode = "default" | "reveal"
+
 export interface HostAgentApi {
     chat(input: HostAgentChatInput): Promise<HostAgentChatResult>
     /** 流式执行；delta 通过回调推送，Promise 在完成时返回最终结果 */
@@ -131,6 +133,13 @@ export interface HostAgentApi {
     validateWorkspace(path: string): Promise<HostWorkspaceCheck>
     /** 打开宿主系统的原生文件夹选择对话框，返回选中的目录 */
     pickDirectory(): Promise<HostWorkspaceCheck>
+    /**
+     * 用宿主系统打开本地路径
+     *
+     * default = 用系统默认程序打开；reveal = 在文件管理器里定位（macOS 访达、
+     * Windows 资源管理器、Linux 文件管理器）。路径必须是绝对路径。
+     */
+    openPath(path: string, mode?: HostAgentOpenMode): Promise<void>
     /**
      * 在工作区里搜索文件与目录
      *

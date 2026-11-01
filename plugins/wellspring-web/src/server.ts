@@ -780,6 +780,7 @@ const ALLOWED_METHODS: Readonly<Record<string, readonly string[]>> = {
     "/api/workspaces": ["GET", "POST"],
     "/api/picker": ["POST"],
     "/api/files": ["GET"],
+    "/api/files/open": ["POST"],
     "/api/approvals": ["POST"],
     "/api/ungrouped/conversations": ["GET"],
     "/api/ungrouped/conversations/active": ["POST"],
@@ -1780,6 +1781,28 @@ async function route(request: HttpRequest, stream: HttpStreamContext): Promise<H
         }
         const result = await currentApi.agent.searchWorkspaceFiles(root, query)
         return json(result.ok ? 200 : 400, result)
+    }
+
+    if (method === "POST" && path === "/api/files/open") {
+        const guarded = guardWrite(request)
+        if (guarded !== null) {
+            return guarded
+        }
+        const body = parseJson(request)
+        const target = typeof body["path"] === "string" ? body["path"].trim() : ""
+        if (target === "") {
+            return json(400, { error: "路径不能为空" })
+        }
+        if (typeof currentApi.agent.openPath !== "function") {
+            return json(501, { error: "宿主不支持用系统程序打开文件" })
+        }
+        const mode = body["mode"] === "reveal" ? "reveal" : "default"
+        try {
+            await currentApi.agent.openPath(target, mode)
+            return json(200, { ok: true, path: target, mode })
+        } catch (error) {
+            return json(400, { error: errorMessage(error) })
+        }
     }
 
     if (method === "POST" && path === "/api/picker") {

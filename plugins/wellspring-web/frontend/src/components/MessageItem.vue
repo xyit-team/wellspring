@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from "vue"
 
+import { submittedFiles } from "../logic/artifacts"
 import { formatUsageBadge } from "../logic/usage"
-import { messageBlocks } from "../logic/message-blocks"
+import { groupSteps, messageBlocks } from "../logic/message-blocks"
 import { openTurnStats } from "../store"
 import type { MarkdownMessage } from "../types"
 import MarkdownText from "./MarkdownText.vue"
+import ProcessGroup from "./ProcessGroup.vue"
 import ProcessRow from "./ProcessRow.vue"
+import SubmittedFiles from "./SubmittedFiles.vue"
 
 const props = defineProps<{
     message: MarkdownMessage
@@ -17,7 +20,16 @@ const props = defineProps<{
 const emit = defineEmits<{ copy: [text: string]; retry: [] }>()
 
 /** 正文与思考/工具行按 at（发生时的正文字符偏移）穿插，和旧版渲染顺序一致 */
-const blocks = computed(() => messageBlocks(props.message.text ?? "", props.message.process ?? []))
+const blocks = computed(() =>
+    groupSteps(
+        messageBlocks(props.message.text ?? "", props.message.process ?? []),
+        // 完成后过程收成一块，流式中保持逐行
+        !props.streaming,
+    ),
+)
+
+// 提交的文件：write 的路径与 sandbox 产物
+const files = computed(() => submittedFiles(props.message.process ?? []))
 
 const lastMarkdownIndex = computed(() => {
     for (let index = blocks.value.length - 1; index >= 0; index -= 1) {
@@ -92,6 +104,7 @@ onBeforeUnmount(() => window.clearTimeout(copyTimer))
                 <div class="msg-content">
                     <template v-for="(block, index) in blocks" :key="index">
                         <ProcessRow v-if="block.type === 'proc'" :item="block.item" />
+                        <ProcessGroup v-else-if="block.type === 'steps'" :items="block.items" />
                         <MarkdownText
                             v-else-if="block.text !== ''"
                             :text="block.text"
@@ -106,6 +119,8 @@ onBeforeUnmount(() => window.clearTimeout(copyTimer))
                 {{ typeof message.error === "string" ? message.error : "回复失败" }}
             </p>
             <p v-if="message.stopped" class="msg-stopped">已停止</p>
+
+            <SubmittedFiles v-if="message.role === 'assistant'" :files="files" />
 
             <button
                 v-if="message.role === 'assistant' && usageLabel !== null"

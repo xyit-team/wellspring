@@ -4,7 +4,7 @@
  */
 
 import { spawn } from "node:child_process"
-import { isAbsolute } from "node:path"
+import { dirname, isAbsolute } from "node:path"
 
 import { describeError } from "./exec.ts"
 import { isTermux, isWsl, platform, type PlatformName } from "./os.ts"
@@ -98,6 +98,40 @@ export function buildOpenCommands(
     return candidates
 }
 
+/**
+ * 在文件管理器里定位路径的候选命令
+ *
+ * 目录各系统都能直接打开；文件走文件管理器的选中能力
+ */
+export function buildRevealCommands(
+    rawTarget: string,
+    targetPlatform: PlatformName = platform,
+    inWsl: boolean = isWsl,
+): OpenCommand[] {
+    const { target, isUrl } = normalizeTarget(rawTarget)
+    if (isUrl) {
+        throw new Error(`reveal 只接受本地路径：${target}`)
+    }
+
+    if (targetPlatform === "windows" || inWsl) {
+        return [{ command: "explorer.exe", args: [`/select,${target}`] }]
+    }
+
+    if (targetPlatform === "macos") {
+        return [{ command: "open", args: ["-R", target] }]
+    }
+
+    // Linux / Android 的文件管理器没有统一的选中入口，退化为打开所在目录
+    const parent = dirname(target)
+    if (targetPlatform === "android") {
+        return [{ command: "xdg-open", args: [parent] }]
+    }
+    return [
+        { command: "xdg-open", args: [parent] },
+        { command: "gio", args: ["open", parent] },
+    ]
+}
+
 function spawnDetached(command: string, args: readonly string[]): Promise<void> {
     return new Promise<void>((resolve, reject) => {
         const child = spawn(command, [...args], {
@@ -117,9 +151,19 @@ function spawnDetached(command: string, args: readonly string[]): Promise<void> 
 /** 依次尝试候选命令，全部失败时抛出聚合错误 */
 export async function openExternal(rawTarget: string): Promise<void> {
     const { target } = normalizeTarget(rawTarget)
+    await runCandidates(target, buildOpenCommands(target))
+}
+
+// 在文件管理器里定位路径；文件管理器都是长驻进程，不等退出
+export async function revealExternal(rawTarget: string): Promise<void> {
+    const { target } = normalizeTarget(rawTarget)
+    await runCandidates(target, buildRevealCommands(target))
+}
+
+async function runCandidates(target: string, candidates: readonly OpenCommand[]): Promise<void> {
     const failures: string[] = []
 
-    for (const candidate of buildOpenCommands(target)) {
+    for (const candidate of candidates) {
         try {
             await spawnDetached(candidate.command, candidate.args)
             return

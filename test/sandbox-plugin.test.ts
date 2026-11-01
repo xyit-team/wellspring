@@ -999,6 +999,9 @@ test("sandbox 插件通过 host agent 与 Agent 交互", { timeout: 20_000 }, as
                     name: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
                 }
             },
+            async openPath(_path: string, _mode?: "default" | "reveal") {
+                return
+            },
             async pickDirectory() {
                 return { ok: false, root: "", name: "", error: "已取消" }
             },

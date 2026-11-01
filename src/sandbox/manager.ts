@@ -126,6 +126,17 @@ export function candidateBackends(
     }
 }
 
+/**
+ * 一次调用的实际网络策略
+ *
+ * workspace-write / danger-full-access 默认通网：装依赖、查文档都要出网，
+ * 每次都得显式 network:true 等于默认断网。read-only 仍然默认断网；
+ * 调用方显式给的 true / false 优先。
+ */
+export function resolveNetwork(requested: boolean | undefined, access: SandboxAccess): boolean {
+    return requested ?? access !== "read-only"
+}
+
 export class SandboxManager {
     readonly #options: SandboxManagerOptions
     #backend: SandboxBackend | null
@@ -334,6 +345,8 @@ export class SandboxManager {
             )
         }
 
+        const network = resolveNetwork(request.network, access)
+
         let processHandle: SandboxProcessHandle
         try {
             const baseSpec = backend.buildAgentLaunch({
@@ -341,7 +354,7 @@ export class SandboxManager {
                 scratchDir,
                 cwd,
                 access,
-                network: request.network,
+                network,
                 command: request.command,
                 argv: request.argv,
                 env,

@@ -268,7 +268,7 @@ export function setup() {
             api.registerAgentTool?.(
                 tool(
                     "web_search",
-                    "使用 DeepSeek 搜索网页",
+                    "模型提供商联网搜索（优先用 curl；用前先 ask 征得用户同意）",
                     {
                         query: "搜索词",
                         count: { type: "integer", description: "结果数", optional: true },
@@ -340,7 +340,8 @@ export function setup() {
                         },
                         network: {
                             type: "boolean",
-                            description: "true 时允许网络",
+                            description:
+                                "true 时允许网络；工作区可写与完全访问默认联网，read-only 默认断网，传 false 可关掉",
                             optional: true,
                         },
                         sandbox_permissions: {

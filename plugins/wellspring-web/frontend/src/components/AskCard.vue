@@ -24,6 +24,11 @@ function choose(option: string): void {
     custom.value = option
 }
 
+// 折叠只作用在本组件，问题抬头始终可见
+function toggleMinimized(): void {
+    store.askMinimized = !store.askMinimized
+}
+
 /** null = 跳过（回传空答案），字符串 = 用户答案 */
 function submit(answer: string | null): void {
     custom.value = ""
@@ -32,19 +37,36 @@ function submit(answer: string | null): void {
 </script>
 
 <template>
-    <section v-if="store.ask" class="ask-card" aria-labelledby="ask-question">
+    <section
+        v-if="store.ask"
+        class="ask-card"
+        :data-minimized="store.askMinimized ? 'true' : undefined"
+        aria-labelledby="ask-question"
+    >
         <header class="ask-head">
             <div class="ask-heading">
                 <p class="ask-eyebrow">Agent 提问</p>
                 <h2 class="ask-question" id="ask-question">{{ store.ask.question }}</h2>
             </div>
             <div class="ask-head-actions">
+                <button
+                    class="btn btn-icon btn-ghost"
+                    type="button"
+                    :aria-expanded="!store.askMinimized"
+                    :aria-label="store.askMinimized ? '展开提问' : '收起提问'"
+                    :title="store.askMinimized ? '展开提问' : '收起提问'"
+                    @click="toggleMinimized"
+                >
+                    <svg class="icon" aria-hidden="true">
+                        <use :href="store.askMinimized ? '#i-chevron-down' : '#i-chevron'" />
+                    </svg>
+                </button>
                 <button class="btn btn-icon btn-ghost" type="button" aria-label="跳过并关闭" @click="submit(null)">
                     <svg class="icon" aria-hidden="true"><use href="#i-x" /></svg>
                 </button>
             </div>
         </header>
-        <div class="ask-body">
+        <div v-if="!store.askMinimized" class="ask-body">
             <div class="ask-options" role="radiogroup" aria-label="候选答案">
                 <button
                     v-for="(option, index) in options"
@@ -62,7 +84,7 @@ function submit(answer: string | null): void {
                 <textarea v-model="custom" class="ask-input" rows="1" maxlength="8000" placeholder="输入你的答案"></textarea>
             </div>
         </div>
-        <footer class="ask-foot">
+        <footer v-if="!store.askMinimized" class="ask-foot">
             <div class="ask-actions">
                 <button class="btn btn-outline" type="button" @click="submit(null)">跳过</button>
                 <button class="btn btn-primary" type="button" :disabled="custom.trim() === ''" @click="submit(custom)">回答</button>

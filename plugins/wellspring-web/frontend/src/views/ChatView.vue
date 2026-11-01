@@ -82,6 +82,13 @@ function scrollToBottom(smooth = false): void {
     box.scrollTo({ top: box.scrollHeight, behavior: smooth ? "smooth" : "auto" })
 }
 
+/** 手动回到底部：同时恢复自动跟随 */
+function jumpToBottom(): void {
+    userScrolledUp = false
+    stickToBottom = true
+    scrollToBottom(true)
+}
+
 function scheduleScroll(): void {
     void nextTick(() => scrollToBottom(false))
 }
@@ -183,13 +190,55 @@ watch(
     },
 )
 
+/*
+ * 贴底跟随
+ *
+ * 流式输出时内容一直在长，几何距离长期停在阈值内，只按距离判断会把视口拽回底部
+ * 上滑标记独立记录用户意图：上滑后停止跟随，回到底部或点「回到底部」恢复
+ */
+let userScrolledUp = false
+
 function onMessagesScroll(): void {
     const box = messagesBox.value
     if (box === null) return
     const gap = box.scrollHeight - box.scrollTop - box.clientHeight
     atBottom.value = gap < 120
-    // 用户自己往上翻就别再拽回底部
+    if (userScrolledUp) {
+        if (gap < 40) {
+            userScrolledUp = false
+            stickToBottom = true
+        }
+        return
+    }
     stickToBottom = gap < 160
+}
+
+// 滚轮上滑：停止跟随
+function onUserScrollUp(): void {
+    userScrolledUp = true
+    stickToBottom = false
+}
+
+function onMessagesWheel(event: WheelEvent): void {
+    if (event.deltaY < 0) onUserScrollUp()
+}
+
+let touchStartY = 0
+
+function onMessagesTouchStart(event: TouchEvent): void {
+    touchStartY = event.touches[0]?.clientY ?? 0
+}
+
+function onMessagesTouchMove(event: TouchEvent): void {
+    const y = event.touches[0]?.clientY ?? touchStartY
+    if (y - touchStartY > 6) onUserScrollUp()
+}
+
+// 翻页键与 Home 视为离开底部
+function onMessagesKeydown(event: KeyboardEvent): void {
+    if (event.key === "PageUp" || event.key === "Home" || event.key === "ArrowUp") {
+        onUserScrollUp()
+    }
 }
 
 onMounted(() => {
@@ -290,6 +339,10 @@ function emptyCopy(): string {
             aria-label="对话消息"
             tabindex="0"
             @scroll.passive="onMessagesScroll"
+            @wheel.passive="onMessagesWheel"
+            @touchstart.passive="onMessagesTouchStart"
+            @touchmove.passive="onMessagesTouchMove"
+            @keydown="onMessagesKeydown"
         >
             <div class="messages-inner">
                 <button
@@ -343,7 +396,7 @@ function emptyCopy(): string {
                 class="scroll-bottom"
                 type="button"
                 aria-label="回到底部"
-                @click="scrollToBottom(true)"
+                @click="jumpToBottom"
             >
                 <svg class="icon icon-sm" aria-hidden="true"><use href="#i-arrow-down" /></svg>
             </button>

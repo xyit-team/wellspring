@@ -148,6 +148,9 @@ async function startWebPlugin(): Promise<string> {
                 }
                 return { ok: true, root: resolvedPath, name }
             },
+            async openPath(_path: string, _mode?: "default" | "reveal") {
+                return
+            },
             async pickDirectory() {
                 return pickerResult
             },

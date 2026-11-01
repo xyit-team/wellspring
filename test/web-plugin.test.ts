@@ -123,6 +123,9 @@ test("web 插件：首次设置密码、登录、与 Agent 聊天", { timeout: 2
                     name: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
                 }
             },
+            async openPath(_path: string, _mode?: "default" | "reveal") {
+                return
+            },
             async pickDirectory() {
                 return { ok: false, root: "", name: "", error: "已取消" }
             },
