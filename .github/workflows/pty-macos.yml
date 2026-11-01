@@ -1,0 +1,132 @@
+# macOS 上的 PTY 后端探测。
+#
+# code 插件的终端走宿主 api.pty，两条后端：node-pty 原生模块、python3 + pty-bridge.py。
+# 两条都不可用时终端打不开。node-pty 的预编译产物与 Node ABI 绑定，
+# 所以要按 Node 版本分别验证，才能对应上用户实际在用哪个版本。
+#
+# 触发：手动；或改到 PTY 相关路径时。
+
+name: pty-macos
+
+on:
+    workflow_dispatch:
+        inputs:
+            node-versions:
+                description: Node 版本列表 JSON
+                type: string
+                default: '["22", "24", "26"]'
+    push:
+        tags: ["v*"]
+    pull_request:
+        paths:
+            - "src/sandbox/plugin-client.ts"
+            - "src/sandbox/pty-bridge.py"
+            - "scripts/check-pty.mjs"
+            - ".github/workflows/pty-macos.yml"
+
+permissions:
+    contents: read
+
+concurrency:
+    group: pty-macos-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    probe:
+        runs-on: macos-15
+        timeout-minutes: 20
+        strategy:
+            fail-fast: false
+            matrix:
+                node: ${{ fromJSON(inputs.node-versions || '["22", "24", "26"]') }}
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: pnpm/action-setup@v4
+              with:
+                  version: 12.14.0
+
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: ${{ matrix.node }}
+                  cache: pnpm
+
+            - name: 安装依赖（node-pty 走 node-gyp 构建）
+              run: pnpm install --frozen-lockfile
+
+            - name: 环境信息
+              run: |
+                  sw_vers
+                  uname -m
+                  node -v
+                  echo "SHELL=${SHELL:-未设置}"
+                  command -v python3 || echo "(无 python3)"
+                  python3 -V 2>&1 || true
+                  xcode-select -p || echo "(无 CLT)"
+                  ls node_modules/node-pty/build/Release 2>/dev/null || echo "(node-pty 未构建)"
+
+            - name: PTY 后端探测
+              id: probe
+              # 探测失败不中断：这一步的产出就是结论，由后面的汇总决定成败
+              continue-on-error: true
+              run: node scripts/check-pty.mjs --json | tee "pty-node${{ matrix.node }}.json"
+
+            - name: 人类可读结果
+              if: always()
+              run: node scripts/check-pty.mjs || true
+
+            - name: 上传结果
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: pty-node${{ matrix.node }}
+                  path: pty-node${{ matrix.node }}.json
+                  if-no-files-found: warn
+
+    # 汇总：把每个 Node 版本的可选后端打在一张表里，方便对照用户报的版本
+    summary:
+        needs: probe
+        if: always()
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/download-artifact@v4
+              with:
+                  pattern: pty-node*
+                  path: results
+
+            - name: 汇总
+              run: |
+                  set -euo pipefail
+                  node -e '
+                  const fs = require("node:fs");
+                  const path = require("node:path");
+                  const root = "results";
+                  const rows = [];
+                  for (const dir of fs.readdirSync(root)) {
+                    for (const file of fs.readdirSync(path.join(root, dir))) {
+                      if (!file.endsWith(".json")) continue;
+                      const data = JSON.parse(fs.readFileSync(path.join(root, dir, file), "utf8"));
+                      rows.push({ node: data.node, usable: data.usable, results: data.results });
+                    }
+                  }
+                  rows.sort((a, b) => a.node.localeCompare(b.node));
+                  console.log("| Node | 可用后端 | node-pty | python-pty |");
+                  console.log("|---|---|---|---|");
+                  for (const row of rows) {
+                    const pick = (name) => {
+                      const hit = row.results.find((item) => item.backend === name);
+                      if (!hit) return "未测";
+                      return hit.ok ? "ok" : `FAIL：${hit.detail}`;
+                    };
+                    console.log(`| ${row.node} | ${row.usable.join(", ") || "无"} | ${pick("node-pty")} | ${pick("python-pty")} |`);
+                  }
+                  ' | tee summary.md
+
+            - name: 得出结论
+              run: |
+                  set -euo pipefail
+                  if grep -q '无 | FAIL' summary.md; then
+                    echo "至少一个 Node 版本上两条后端都不可用，终端无法打开" >&2
+                    exit 1
+                  fi
+                  echo "每个 Node 版本至少有一条后端可用"
