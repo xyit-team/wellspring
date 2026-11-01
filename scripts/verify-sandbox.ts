@@ -178,7 +178,13 @@ async function dumpProfile(manager: SandboxManager, backend: string): Promise<nu
              */
             const permissive = spawnSync(
                 spec.command,
-                ["-p", "(version 1)(allow default)", String(spec.args[2]), "-e", "console.log('ok')"],
+                [
+                    "-p",
+                    "(version 1)(allow default)",
+                    String(spec.args[2]),
+                    "-e",
+                    "console.log('ok')",
+                ],
                 { encoding: "utf8", env: { ...spec.env }, timeout: 15_000 },
             )
             console.log(
