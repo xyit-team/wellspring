@@ -67,10 +67,16 @@ test("期望值：两种后端共享不变项（读系统、写 scratch、禁止
             assert.equal(expectOf("read:workspace", backend, access), "allow")
             assert.equal(expectOf("write:scratch", backend, access), "allow")
             assert.equal(expectOf("write:devnull", backend, access), "allow")
-            assert.equal(expectOf("read:outside", backend, access), "deny")
             assert.equal(expectOf("write:outside", backend, access), "deny")
             assert.equal(expectOf("net:egress", backend, access), "deny")
         }
+    }
+})
+
+test("期望值：读边界按后端区分，Seatbelt 不承诺读收敛", () => {
+    for (const access of ACCESS_MODES) {
+        assert.equal(expectOf("read:outside", "bwrap", access), "deny")
+        assert.equal(expectOf("read:outside", "seatbelt", access), "allow")
     }
 })
 
