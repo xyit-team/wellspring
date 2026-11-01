@@ -126,6 +126,55 @@ function printTable(name: string, rows: readonly Observed[]): void {
     }
 }
 
+/** 打印 profile 与一次手工运行的完整输出，用于定位进程未启动 */
+async function dumpProfile(manager: SandboxManager, backend: string): Promise<number> {
+    const fixture = await createFixture()
+    const limits = { timeoutMs: 15_000, memoryMB: 512, pids: 64, outputLimitBytes: 1024 * 1024 }
+    const probe = PROBES[0]
+    if (probe === undefined) {
+        return 2
+    }
+    try {
+        for (const access of ACCESS_MODES) {
+            const backendImpl = candidateBackends(backend as SandboxBackendName, currentPlatform)[0]
+            if (backendImpl === undefined) {
+                return 2
+            }
+            const request: AgentCodeRequest = {
+                command: nodeCommand(backend),
+                argv: ["-e", probe.script, "/etc/passwd"],
+                workspaceDir: fixture.workspace,
+                access,
+                timeoutMs: 15_000,
+            }
+            const spec = backendImpl.buildAgentLaunch({
+                workspaceDir: fixture.workspace,
+                scratchDir: join(getPaths().dataDir, "sandbox", "dump", "scratch"),
+                cwd: fixture.workspace,
+                access,
+                command: request.command,
+                argv: [...request.argv],
+                env: { PATH: "/usr/bin:/bin", HOME: "/tmp", TMPDIR: "/tmp" },
+                limits,
+            })
+            console.log(`\n===== ${access} =====`)
+            console.log(`launcher: ${spec.command}`)
+            console.log(`target: ${String(spec.args[2])}`)
+            console.log(`env: ${JSON.stringify(spec.env)}`)
+            console.log("--- profile ---")
+            console.log(String(spec.args[1]))
+            console.log("--- 手工运行 ---")
+            const result = await manager.runAgentCode(request)
+            console.log(`exitCode=${String(result.exitCode)} signal=${String(result.signal)}`)
+            console.log(`stdout: ${result.stdout.slice(0, 1000)}`)
+            console.log(`stderr: ${result.stderr.slice(0, 4000)}`)
+        }
+    } finally {
+        await rm(fixture.root, { recursive: true, force: true })
+    }
+    return 0
+}
+
 function parseBackendArg(): SandboxBackendName | null {
     const index = process.argv.indexOf("--backend")
     if (index === -1) {
@@ -165,6 +214,10 @@ async function main(): Promise<number> {
     if (backend === undefined) {
         console.error(`\n无法构造后端实例：${status.backend}`)
         return 2
+    }
+
+    if (process.argv.includes("--dump-profile")) {
+        return await dumpProfile(manager, status.backend)
     }
 
     const fixture = await createFixture()
