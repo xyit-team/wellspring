@@ -187,6 +187,32 @@ async function dumpProfile(manager: SandboxManager, backend: string): Promise<nu
             console.log(`  对照 stdout: ${(permissive.stdout ?? "").slice(0, 500)}`)
             console.log(`  对照 stderr: ${(permissive.stderr ?? "").slice(0, 2000)}`)
 
+            /*
+             * 变体二分：在严格 profile 上逐类放开，定位 node 启动缺哪一类权限
+             * 每项只加一条 allow，能跑起来的那一类就是缺失项
+             */
+            const baseProfile = String(spec.args[1])
+            const variants: Array<[string, string]> = [
+                ["+file-read*", baseProfile.replace("(deny default)", "(deny default)\n(allow file-read*)")],
+                ["+mach-lookup", baseProfile.replace("(deny default)", "(deny default)\n(allow mach-lookup)")],
+                ["+file-write*", baseProfile.replace("(deny default)", "(deny default)\n(allow file-write*)")],
+                ["+ipc-posix", baseProfile.replace("(deny default)", "(deny default)\n(allow ipc-posix*)")],
+                ["-file-link", baseProfile.replace("(deny file-link)", "")],
+                ["+process-exec*全开", baseProfile.replace("(deny default)", "(deny default)\n(allow process-exec*)")],
+            ]
+            for (const [label, variant] of variants) {
+                const r = spawnSync(
+                    spec.command,
+                    ["-p", variant, String(spec.args[2]), "-e", "console.log('ok')"],
+                    { encoding: "utf8", env: { ...spec.env }, timeout: 15_000 },
+                )
+                const first = (r.stderr ?? "").trim().split("\n")[0] ?? ""
+                console.log(
+                    `  变体 ${label}: status=${String(r.status)} signal=${String(r.signal)} ` +
+                        `out=${(r.stdout ?? "").trim().slice(0, 20)} ${first.slice(0, 200)}`,
+                )
+            }
+
             /* 对照：系统 sandbox-exec 跑严格 profile，它会打印自己的错误信息 */
             if (existsSync("/usr/bin/sandbox-exec")) {
                 const viaCli = spawnSync(
