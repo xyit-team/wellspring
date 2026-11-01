@@ -27,7 +27,13 @@ import type { ResolvedPaths } from "../platform/path.ts"
 import { createPluginFileApi } from "../plugin/fs.ts"
 import type { PluginDataService } from "../plugin/data-access.ts"
 import type { HostCapabilities } from "../plugin/capabilities.ts"
-import { getAgentToolContext, type AgentToolContext } from "../agent/tool-context.ts"
+import {
+    getAgentToolContext,
+    registerAgentToolContext,
+    releaseAgentToolContext,
+    resolveAgentToolContext,
+    type AgentToolContext,
+} from "../agent/tool-context.ts"
 import { ensurePluginDataDir } from "../plugin/runtime.ts"
 import { auditSandbox } from "./audit.ts"
 import { ensureSpawnHelperExecutable } from "./node-pty-permissions.ts"
@@ -371,6 +377,35 @@ function hostSnapshotData(): unknown {
     }
 }
 
+/** 会改动文件系统的 fs 动作 */
+const FS_WRITE_ACTIONS: readonly string[] = [
+    "writeText",
+    "writeBytes",
+    "writeJson",
+    "mkdir",
+    "remove",
+]
+
+/*
+ * 写操作的身份来源
+ *
+ * plugin：插件自身发起（命令 / 钩子 / 界面），只看 manifest 权限
+ * agent：某次 Agent 工具调用，按那次调用的会话权限
+ * expired：带了 id 但调用已结束
+ */
+type WriteScope =
+    | { readonly kind: "plugin" }
+    | { readonly kind: "agent"; readonly context: AgentToolContext }
+    | { readonly kind: "expired" }
+
+function writeScopeOf(contextId: string | undefined): WriteScope {
+    if (contextId === undefined) {
+        return { kind: "plugin" }
+    }
+    const context = resolveAgentToolContext(contextId)
+    return context === null ? { kind: "expired" } : { kind: "agent", context }
+}
+
 export class PluginSandboxClient {
     readonly #options: PluginSandboxClientOptions
     readonly #sandboxId = randomUUID()
@@ -378,7 +413,6 @@ export class PluginSandboxClient {
     readonly #decoder = new FrameDecoder()
     readonly #eventUnsubscribes = new Map<string, () => void>()
     readonly #hookUnsubscribes: Array<() => void> = []
-    #activeContext: AgentToolContext | null = null
     readonly #httpServers = new Map<
         string,
         {
@@ -441,16 +475,24 @@ export class PluginSandboxClient {
             },
             call: async (...args: unknown[]): Promise<AgentCallToolResult> => {
                 const input = args.length === 1 ? args[0] : args
-                const previous = this.#activeContext
-                this.#activeContext = getAgentToolContext()
+                /*
+                 * 每次工具调用登记独立 id，随 RPC 下发
+                 * 插件在调用期间把它回填到每个 host 请求上，宿主按 id 查回上下文
+                 */
+                const context = getAgentToolContext()
+                const contextId = context === null ? undefined : registerAgentToolContext(context)
                 try {
                     return (await this.#request(
                         "plugin.agentTool",
                         { name: meta.name, args: input },
                         RPC_TIMEOUT_MS.agentTool,
+                        contextId,
                     )) as AgentCallToolResult
                 } finally {
-                    this.#activeContext = previous
+                    // 调用结束即注销，之后同 id 的请求（定时器、后台续作）查不到上下文
+                    if (contextId !== undefined) {
+                        releaseAgentToolContext(contextId)
+                    }
                 }
             },
         }))
@@ -606,7 +648,12 @@ export class PluginSandboxClient {
         return result
     }
 
-    async #request(method: string, params: unknown, timeoutMs = 30_000): Promise<unknown> {
+    async #request(
+        method: string,
+        params: unknown,
+        timeoutMs = 30_000,
+        contextId?: string,
+    ): Promise<unknown> {
         if (this.#closed || this.#child === null) {
             throw new PluginSandboxError("插件 sandbox 已关闭")
         }
@@ -628,7 +675,15 @@ export class PluginSandboxClient {
                 },
                 timer,
             })
-            this.#send({ v: 1, type: "request", id, method, params, timeoutMs })
+            this.#send({
+                v: 1,
+                type: "request",
+                id,
+                method,
+                params,
+                timeoutMs,
+                ...(contextId === undefined ? {} : { contextId }),
+            })
         })
     }
 
@@ -1207,6 +1262,15 @@ export class PluginSandboxClient {
     async #handleRequest(request: RpcRequest): Promise<void> {
         try {
             const params = (request.params ?? {}) as Record<string, unknown>
+            /*
+             * 调用身份按请求带来的 contextId 解析
+             *
+             * 没有 contextId：插件自身发起（命令 / 钩子 / 界面），由 manifest 权限把关
+             * 有 contextId 但查不到：那次工具调用已结束
+             */
+            const contextId = request.contextId
+            const context = resolveAgentToolContext(contextId)
+            const expired = contextId !== undefined && context === null
             let result: unknown
             if (request.method === "host.agent.chat") {
                 this.#requireHostApi("agent")
@@ -1590,7 +1654,7 @@ export class PluginSandboxClient {
                 result = { root: api.root }
             } else if (request.method.startsWith("host.fileRoots.")) {
                 this.#requireHostApi("fileRoots")
-                result = await this.#handleFileRoot(request.method, params)
+                result = await this.#handleFileRoot(request.method, params, contextId)
             } else if (request.method.startsWith("host.fs.")) {
                 this.#requireHostApi("fs")
                 result = await this.#handleFs(request.method, params, false)
@@ -1599,7 +1663,7 @@ export class PluginSandboxClient {
                 if (!this.#options.permissions.workspaceRead) {
                     throw new PluginSandboxError("插件没有 workspace 读权限")
                 }
-                result = await this.#handleFs(request.method, params, true)
+                result = await this.#handleFs(request.method, params, true, contextId)
             } else if (request.method === "host.event.subscribe") {
                 this.#requireHostApi("event")
                 const name = String(params["name"] ?? "")
@@ -1620,16 +1684,16 @@ export class PluginSandboxClient {
                     throw new PluginSandboxError("宿主没有 capabilities 服务")
                 }
                 const name = request.method.slice("host.capabilities.".length)
-                if (name === "executeCode") {
-                    result = await this.#options.capabilities.executeCode(
-                        params as never,
-                        this.#activeContext ?? undefined,
-                    )
-                } else if (name === "startBackgroundCode") {
-                    result = await this.#options.capabilities.startBackgroundCode(
-                        params as never,
-                        this.#activeContext ?? undefined,
-                    )
+                if (name === "executeCode" || name === "startBackgroundCode") {
+                    if (expired) {
+                        throw new PluginSandboxError("Agent 上下文已失效：权限校验失败")
+                    }
+                    const input = params as never
+                    const explicit = context ?? undefined
+                    result =
+                        name === "executeCode"
+                            ? await this.#options.capabilities.executeCode(input, explicit)
+                            : await this.#options.capabilities.startBackgroundCode(input, explicit)
                 } else if (name === "queryTask") {
                     result = this.#options.capabilities.queryTask(
                         typeof params["taskId"] === "string" ? params["taskId"] : undefined,
@@ -1698,24 +1762,29 @@ export class PluginSandboxClient {
         method: string,
         params: Record<string, unknown>,
         workspace: boolean,
+        contextId?: string,
     ): Promise<unknown> {
         const api: HostFileApi = workspace
             ? createPluginFileApi(process.cwd())
             : createPluginFileApi(this.#pluginDataDir)
         const action = method.replace(/^host\.(fs|workspaceFs)\./, "")
-        if (
-            workspace &&
-            ["writeText", "writeBytes", "writeJson", "mkdir", "remove"].includes(action)
-        ) {
+        if (workspace && FS_WRITE_ACTIONS.includes(action)) {
             if (!this.#options.permissions.workspaceWrite) {
                 throw new PluginSandboxError("插件没有 workspace 写权限")
             }
-            const context = this.#activeContext
-            if (context !== null && context.permission === "read-only") {
-                throw new PluginSandboxError("当前 Agent 权限是 read-only，不能修改工作区文件")
-            }
+            this.#assertWriteAllowed(writeScopeOf(contextId), "工作区")
         }
         return await this.#dispatchFileApi(api, action, method, params)
+    }
+
+    // 只读会话与已结束的调用都拒绝写
+    #assertWriteAllowed(scope: WriteScope, target: string): void {
+        if (scope.kind === "expired") {
+            throw new PluginSandboxError("Agent 上下文已失效：权限校验失败")
+        }
+        if (scope.kind === "agent" && scope.context.permission === "read-only") {
+            throw new PluginSandboxError(`当前 Agent 权限是 read-only，不能修改${target}文件`)
+        }
     }
 
     /** 校验绝对目录并创建以它为根的文件 API */
@@ -1732,9 +1801,16 @@ export class PluginSandboxClient {
         return createPluginFileApi(absolute)
     }
 
-    async #handleFileRoot(method: string, params: Record<string, unknown>): Promise<unknown> {
+    async #handleFileRoot(
+        method: string,
+        params: Record<string, unknown>,
+        contextId?: string,
+    ): Promise<unknown> {
         const api = await this.#resolveFileRoot(params["root"])
         const action = method.replace(/^host\.fileRoots\./, "")
+        if (FS_WRITE_ACTIONS.includes(action)) {
+            this.#assertWriteAllowed(writeScopeOf(contextId), "工作区")
+        }
         return await this.#dispatchFileApi(api, action, method, params)
     }
 

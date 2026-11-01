@@ -3,6 +3,7 @@
  * 由宿主通过 bwrap/direct backend 启动；stdio 上跑 frame 协议，插件代码只通过 bridge 访问宿主。
  */
 
+import { AsyncLocalStorage } from "node:async_hooks"
 import { Readable } from "node:stream"
 import { pathToFileURL } from "node:url"
 
@@ -166,6 +167,15 @@ const pending = new Map<
     }
 >()
 
+/*
+ * 当前 Agent 工具调用的 id：宿主在 plugin.agentTool 信封上下发
+ *
+ * 插件在这条调用期间发出的每个 host 请求都原样回填，宿主据此判断权限与归属
+ * 插件的工具调用可以并发（两个会话同调一个插件），身份跟着调用链走
+ * 脱离调用链的异步续作（定时器 / 后台任务）取不到 id
+ */
+const toolContext = new AsyncLocalStorage<string>()
+
 function bridgeRequest(
     method: string,
     params: unknown,
@@ -198,6 +208,7 @@ function bridgeRequest(
             },
             timer,
         })
+        const contextId = toolContext.getStore()
         writeFrame({
             v: 1,
             type: "request",
@@ -205,6 +216,7 @@ function bridgeRequest(
             method,
             params,
             ...(timeoutMs === null ? {} : { timeoutMs }),
+            ...(contextId === undefined ? {} : { contextId }),
         })
     })
 }
@@ -1063,10 +1075,18 @@ async function handleHostRequest(request: RpcRequest): Promise<void> {
             if (tool === undefined) {
                 throw new Error(`Agent 工具不存在：${params.name}`)
             }
-            result = await withHookOwner(
-                runtime.owner,
-                async () => (await tool.call(params.args)) as AgentCallToolResult,
-            )
+            /* 身份在 RPC 信封上，不在工具参数里 */
+            const contextId =
+                typeof request.contextId === "string" && request.contextId !== ""
+                    ? request.contextId
+                    : undefined
+            result = await withHookOwner(runtime.owner, async () => {
+                const invoke = async (): Promise<AgentCallToolResult> =>
+                    (await tool.call(params.args)) as AgentCallToolResult
+                return contextId === undefined
+                    ? await invoke()
+                    : await toolContext.run(contextId, invoke)
+            })
         } else if (request.method === "plugin.init") {
             if (runtime === null) {
                 throw new Error("插件尚未初始化")

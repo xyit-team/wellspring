@@ -1,6 +1,7 @@
 // 插件工具调用上下文：宿主能力在调用期间读取当前 Agent 权限
 
 import { AsyncLocalStorage } from "node:async_hooks"
+import { randomUUID } from "node:crypto"
 
 import type { SandboxAccess } from "../config/types.ts"
 import type { Elog } from "../logger/elog4js.ts"
@@ -35,6 +36,41 @@ export interface AgentToolContext {
 
 const storage = new AsyncLocalStorage<AgentToolContext>()
 
+/*
+ * 跨进程的身份注册表：一次 Agent 工具调用一个 id
+ *
+ * 插件工具调用走 RPC 出宿主进程，插件回访宿主时（host.capabilities.*、host.workspaceFs.*）
+ * 不在发起调用的 async 链上，ALS 取不到值
+ * 传的是 id，上下文本身留在宿主进程：AgentToolContext 含函数与 elog，不可序列化
+ * 并发调用各有各的 id，与调用退出顺序无关
+ */
+const registry = new Map<string, AgentToolContext>()
+
+/** 登记一次工具调用，返回跨进程传递的 id */
+export function registerAgentToolContext(context: AgentToolContext): string {
+    const id = `agent-ctx-${randomUUID()}`
+    registry.set(id, context)
+    return id
+}
+
+/** 注销一次工具调用的身份；此后的同名请求查不到上下文 */
+export function releaseAgentToolContext(id: string): void {
+    registry.delete(id)
+}
+
+/** 按 id 取回上下文；缺失或已注销返回 null */
+export function resolveAgentToolContext(id: string | undefined | null): AgentToolContext | null {
+    if (id === undefined || id === null || id === "") {
+        return null
+    }
+    return registry.get(id) ?? null
+}
+
+/** 当前登记数，用于测试与诊断 */
+export function activeAgentToolContextCount(): number {
+    return registry.size
+}
+
 export async function withAgentToolContext<T>(
     context: AgentToolContext,
     task: () => Promise<T>,
@@ -42,6 +78,7 @@ export async function withAgentToolContext<T>(
     return await storage.run(context, task)
 }
 
+/** 进程内的当前上下文 */
 export function getAgentToolContext(): AgentToolContext | null {
     return storage.getStore() ?? null
 }

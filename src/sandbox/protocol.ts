@@ -19,6 +19,14 @@ export interface RpcRequest {
     readonly method: string
     readonly params?: unknown
     readonly timeoutMs?: number
+    /**
+     * Agent 工具调用身份（宿主侧注册表的 key）
+     *
+     * 宿主在 plugin.agentTool 上下发，插件在这条调用期间发出的 host 请求原样回填
+     * 可选：不带表示请求由插件自身发起（命令 / 钩子 / 界面）
+     * 带了已注销的 id 由宿主拒绝，无回落路径
+     */
+    readonly contextId?: string
 }
 
 export interface RpcResponse {
@@ -64,6 +72,9 @@ function validateMessage(value: unknown): RpcMessage {
     if (type === "request") {
         if (typeof value["id"] !== "string" || typeof value["method"] !== "string") {
             throw new SandboxProtocolError("sandbox.protocol", "request 缺少 id/method")
+        }
+        if (value["contextId"] !== undefined && typeof value["contextId"] !== "string") {
+            throw new SandboxProtocolError("sandbox.protocol", "contextId 不是字符串")
         }
         return value as unknown as RpcRequest
     }
