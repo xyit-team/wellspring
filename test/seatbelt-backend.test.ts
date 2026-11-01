@@ -79,8 +79,13 @@ test("read-only：写规则只覆盖 scratch，workspace 只读", () => {
     const write = ruleLine(text, "allow file-write*")
     assert.ok(write.includes('(subpath "/scratch/1")'), write)
     assert.ok(!write.includes('(subpath "/ws")'), "read-only 下 workspace 不得可写")
-    const read = ruleLine(text, "allow file-read*")
-    assert.ok(read.includes('(subpath "/ws")'), "read-only 仍要能读 workspace")
+})
+
+test("读全局放开：路径枚举会让 node 在 dyld 阶段 SIGABRT", () => {
+    const text = profile()
+    assert.ok(text.includes("(allow file-read*)"), "读侧必须是全局放行")
+    /* 读规则带路径过滤即回到会崩溃的形态 */
+    assert.ok(!text.includes("(allow file-read* (subpath"), "读规则不得带 subpath 过滤")
 })
 
 test("workspace-write：写规则放开 workspace", () => {
@@ -158,9 +163,7 @@ test("plugin launch：插件目录与宿主 SDK 只读，只写插件数据目�
     const write = ruleLine(text, "allow file-write*")
     assert.ok(write.includes('(subpath "/data/core")'), write)
     assert.ok(!write.includes('(subpath "/plugins/core")'), "插件代码不得可写")
-    const read = ruleLine(text, "allow file-read*")
-    assert.ok(read.includes('(subpath "/plugins/core")'), read)
-    assert.ok(read.includes('(subpath "/data/host")'), read)
+    assert.ok(text.includes("(allow file-read*)"), "读侧全局放行")
     assert.ok(!text.includes("(allow network*)"), "插件默认不出网")
     assert.equal(spec.cwd, pluginInput.pluginDir)
 })
