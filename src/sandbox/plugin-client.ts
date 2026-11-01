@@ -8,6 +8,7 @@ import { createServer as createHttpsServer } from "node:https"
 import { WebSocketServer, type WebSocket } from "ws"
 import { randomUUID } from "node:crypto"
 import { cp, mkdir, rm, stat } from "node:fs/promises"
+import { createRequire } from "node:module"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
 import type { Logger } from "pino"
@@ -29,6 +30,7 @@ import type { HostCapabilities } from "../plugin/capabilities.ts"
 import { getAgentToolContext, type AgentToolContext } from "../agent/tool-context.ts"
 import { ensurePluginDataDir } from "../plugin/runtime.ts"
 import { auditSandbox } from "./audit.ts"
+import { ensureSpawnHelperExecutable } from "./node-pty-permissions.ts"
 import { RPC_TIMEOUT_MS } from "./rpc-timeouts.ts"
 import { getHost } from "../api/host/host.ts"
 import { getSession as findSession } from "../session/registry.ts"
@@ -272,6 +274,17 @@ async function loadNodePty(): Promise<NodePtyModule | null> {
                 const spawnPty = module.spawn ?? module.default?.spawn
                 if (typeof spawnPty !== "function") {
                     nodePtyError = "node-pty 已加载但没有导出 spawn"
+                    return null
+                }
+                const permission = ensureSpawnHelperExecutable({
+                    moduleDir: dirname(
+                        createRequire(import.meta.url).resolve("node-pty/package.json"),
+                    ),
+                    platform: process.platform,
+                    arch: process.arch,
+                })
+                if (permission.error !== null) {
+                    nodePtyError = permission.error
                     return null
                 }
                 nodePtyError = null
