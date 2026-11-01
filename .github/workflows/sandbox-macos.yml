@@ -90,6 +90,10 @@ jobs:
                   codesign --verify --strict "bin/$dir/seatbelt-run"
                   "bin/$dir/seatbelt-run" --self-test
 
+            - name: 诊断：严格 profile 下启动 node
+              if: always()
+              run: node scripts/verify-sandbox.ts --backend seatbelt --dump-profile || true
+
             - name: 沙箱探针矩阵
               run: |
                   set -o pipefail
