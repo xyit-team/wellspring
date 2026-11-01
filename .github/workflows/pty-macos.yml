@@ -65,6 +65,29 @@ jobs:
                   xcode-select -p || echo "(无 CLT)"
                   ls node_modules/node-pty/build/Release 2>/dev/null || echo "(node-pty 未构建)"
 
+            - name: node-pty 产物与执行位
+              if: always()
+              run: |
+                  set +e
+                  echo "--- node-pty 实际位置 ---"
+                  node -e 'console.log(require.resolve("node-pty/package.json"))' 2>&1 | head -3
+                  echo "--- 原生模块与 spawn-helper ---"
+                  find node_modules/.pnpm -maxdepth 6                     \( -name 'pty.node' -o -name 'spawn-helper*' -o -name '*.node' \)                     -path '*node-pty*' 2>/dev/null | head -10
+                  echo "--- 执行位 ---"
+                  find node_modules/.pnpm -maxdepth 6 -name 'spawn-helper*' -path '*node-pty*'                     -exec ls -l {} \; 2>/dev/null | head -5
+
+            - name: 系统 python3（不经 Homebrew）
+              if: always()
+              run: |
+                  set +e
+                  echo "--- /usr/bin/python3 是否存在 ---"
+                  ls -l /usr/bin/python3 2>&1 || echo "(无)"
+                  echo "--- 直接导入 pty ---"
+                  /usr/bin/python3 -c "import pty, termios" 2>&1 | head -3
+                  echo "exit=$?"
+                  echo "--- 受限 PATH 下的探测（模拟未装 brew python）---"
+                  PATH=/usr/bin:/bin:/usr/sbin:/sbin node scripts/check-pty.mjs || true
+
             - name: PTY 后端探测
               id: probe
               # 探测失败不中断：这一步的产出就是结论，由后面的汇总决定成败
