@@ -88,6 +88,18 @@ jobs:
                   echo "--- 受限 PATH 下的探测（模拟未装 brew python）---"
                   PATH=/usr/bin:/bin:/usr/sbin:/sbin node scripts/check-pty.mjs || true
 
+            - name: 修 spawn-helper 执行位后重测
+              if: always()
+              run: |
+                  set +e
+                  before=$(node scripts/check-pty.mjs --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).usable.join(",")||"none"))')
+                  echo "chmod 前可用：$before"
+                  find node_modules/.pnpm -path '*node-pty*' -name 'spawn-helper' -exec chmod +x {} \;
+                  echo "--- chmod 后权限 ---"
+                  find node_modules/.pnpm -path '*node-pty*' -name 'spawn-helper' -exec ls -l {} \; | head -3
+                  after=$(node scripts/check-pty.mjs --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).usable.join(",")||"none"))')
+                  echo "chmod 后可用：$after"
+
             - name: PTY 后端探测
               id: probe
               # 探测失败不中断：这一步的产出就是结论，由后面的汇总决定成败
