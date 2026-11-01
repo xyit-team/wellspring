@@ -255,6 +255,7 @@ export function parseProbeOutput(stdout: string): { ok: boolean; code?: string }
 /** 把一次运行归约成 actual + detail */
 export function classifyResult(input: {
     readonly exitCode: number | null
+    readonly signal?: string | null
     readonly stdout: string
     readonly stderr: string
 }): { actual: Actual; detail: string } {
@@ -263,9 +264,10 @@ export function classifyResult(input: {
         if (input.exitCode === 0) {
             return { actual: "error", detail: "探针没有输出结果" }
         }
-        /* 探针未启动时按 deny 计，带上 stderr 首行 */
+        /* 探针未启动时按 deny 计，带上退出状态与 stderr 首行 */
+        const exit = input.signal ? `signal=${input.signal}` : `exit=${String(input.exitCode)}`
         const reason = input.stderr.trim().split("\n")[0] ?? ""
-        return { actual: "deny", detail: `exit=${String(input.exitCode)} ${reason}`.trim() }
+        return { actual: "deny", detail: `${exit} ${reason}`.trim() }
     }
     return {
         actual: parsed.ok ? "allow" : "deny",
