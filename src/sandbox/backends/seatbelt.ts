@@ -188,9 +188,6 @@ export function buildSeatbeltProfile(input: SeatbeltProfileInput): string {
     const realpath = input.realpath ?? defaultRealpath
     const writable = input.access === "workspace-write"
 
-    const readRoots: string[] = [...SYSTEM_READ_SUBTREES]
-    readRoots.push(input.workspaceDir, input.scratchDir, ...input.readPaths)
-
     const writeRoots: string[] = [input.scratchDir, join(input.scratchDir, "tmp")]
     if (writable) {
         writeRoots.push(input.workspaceDir)
@@ -224,8 +221,10 @@ export function buildSeatbeltProfile(input: SeatbeltProfileInput): string {
         ";; node worker_threads",
         "(allow ipc-posix-shm)",
         "",
-        `;; 读：系统、运行时、workspace（${writable ? "可写" : "只读"}）`,
-        rule("allow file-read*", readRoots, realpath),
+        ";; 读全局放开",
+        ";; 路径枚举下 node 在 dyld 与 xattr 阶段 SIGABRT，实测只有全局放行可启动",
+        ";; 写边界不受影响，见下方 file-write* 规则",
+        "(allow file-read*)",
         "",
         ";; 写：scratch 恒定可写，workspace 由 access 决定",
         rule("allow file-write*", writeRoots, realpath),
@@ -440,6 +439,7 @@ export class SeatbeltBackend implements SandboxBackend {
             return ["绕开 Seatbelt，直接以宿主身份执行"]
         }
         return [
+            "fs: 读未收敛，路径枚举下 node 无法启动，仅写边界为严格模式",
             "memory: 没有 cgroup v2，物理内存只由 --max-old-space-size 约束 V8 堆",
             "network: network=false 时 SBPL 拒绝出网；置 true 即整体放开，没有域名粒度",
             "fs: Seatbelt 按路径匹配，预先存在的同 inode 硬链接可以读穿",
