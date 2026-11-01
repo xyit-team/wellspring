@@ -26,6 +26,7 @@ import {
     titleFromText,
 } from "./logic/conversations"
 import { collectReferences } from "./logic/mentions"
+import { createSaveTracker } from "./logic/saves"
 import { parseNoProxy } from "./logic/network"
 import {
     defaultVisibleFrom,
@@ -35,6 +36,7 @@ import {
 } from "./logic/windowing"
 import { normalizeUsage, sumUsage } from "./logic/usage"
 import {
+    adoptLiveConversations,
     isNetworkError,
     retryDelayMs,
     serverAhead,
@@ -319,6 +321,13 @@ interface ConversationRuntime {
     stopRequested: boolean
     /** 正在向服务端续接这一轮（resume 事件到达前 controller 还是空的） */
     resuming: boolean
+    /**
+     * 这一轮正在用的会话对象（runTurn / resumeTurn 里那个响应式代理）
+     *
+     * 切换工作区会整体替换 store.conversations，正在跑的这一轮却还在往这个对象里
+     * 追加增量。记下来，重新加载列表时才能把它换回列表，见 localAheadConversations()。
+     */
+    conversation: Conversation | null
 }
 
 const runtimes = new Map<string, ConversationRuntime>()
@@ -332,6 +341,7 @@ function runtimeOf(conversationId: string): ConversationRuntime {
             streaming: null,
             stopRequested: false,
             resuming: false,
+            conversation: null,
         }
         runtimes.set(conversationId, runtime)
     }
@@ -369,6 +379,30 @@ function setResuming(conversationId: string, resuming: boolean): void {
 function setStreaming(conversationId: string, message: MarkdownMessage | null): void {
     runtimeOf(conversationId).streaming = message
     store.streamingVersion += 1
+}
+
+/**
+ * 还没落盘的会话
+ *
+ * 一轮刚写完、PUT 还在路上时，服务端快照仍是上一版。这期间切工作区再切回来，
+ * 列表里就会少最后一条回复。记下来，落地前继续用本地对象，见 localAheadConversations()。
+ */
+const pendingSaves = createSaveTracker<Conversation>()
+
+/**
+ * 本地比服务端快照新的会话（id → 会话对象）
+ *
+ * 两种都算：正在流式输出的（内容还在增量里），以及刚写完、PUT 还没落地的
+ * （服务端手上还是上一版）。已经落地又不在跑的以服务端快照为准。
+ */
+function localAheadConversations(): Map<string, Conversation> {
+    const ahead = pendingSaves.pending()
+    for (const [id, runtime] of runtimes) {
+        if (runtime.conversation === null) continue
+        if (runtime.streaming === null) continue
+        ahead.set(id, runtime.conversation)
+    }
+    return ahead
 }
 
 /** 这个会话是否正在跑一轮（含别的窗口发起的，由服务端 running 列表补） */
@@ -686,7 +720,8 @@ export async function loadConversations(): Promise<void> {
             conversations.push(conv)
         }
         conversations.sort((a, b) => b.updatedAt - a.updatedAt)
-        store.conversations = conversations
+        // 本地更新的会话继续用本地对象：不然切工作区回来时流式输出就断了
+        store.conversations = adoptLiveConversations(conversations, localAheadConversations())
         store.activeId =
             typeof data.activeId === "string" &&
             conversations.some((conv) => conv.id === data.activeId)
@@ -898,13 +933,22 @@ function endpointFor(conv: Conversation): string {
 
 function saveConversation(conv: Conversation): void {
     const endpoint = endpointFor(conv)
+    // body 先取快照：PUT 在路上时消息还可能被继续追加
+    const body = JSON.stringify(conversationPayload(conv))
+    const token = pendingSaves.begin(conv)
     void apiJson(`${endpoint}/${encodeURIComponent(conv.id)}`, {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(conversationPayload(conv)),
-    }).catch((error) => {
-        reloadOnAuth(error)
+        body,
     })
+        .then(() => {
+            pendingSaves.settle(conv.id, token)
+        })
+        .catch((error) => {
+            // 失败时故意不清：那份内容只有本地有，清掉的话切一次工作区就看不见了，
+            // 等下一次保存成功再交给服务端
+            reloadOnAuth(error)
+        })
 }
 
 export async function submitMessage(text: string): Promise<boolean> {
@@ -987,6 +1031,8 @@ async function runTurn(input: Conversation, text: string): Promise<void> {
     const conv = reactiveConversation(input)
     const runtime = runtimeOf(conv.id)
     runtime.stopRequested = false
+    // 记住这一轮用的对象：切工作区会换掉列表，回来时要靠它接上流式输出
+    runtime.conversation = conv
     const assistant: MarkdownMessage = {
         role: "assistant",
         text: "",
@@ -1093,6 +1139,8 @@ async function runTurn(input: Conversation, text: string): Promise<void> {
             (liveAssistant.stopped === true && !runtime.stopRequested)
         finalizeProcess(liveAssistant)
         setStreaming(conv.id, null)
+        // 这一轮到此为止：之后的列表刷新以服务端落盘的快照为准
+        runtime.conversation = null
         setController(conv.id, null)
         markRunning(conv.id, false)
         conv.updatedAt = Date.now()
@@ -1612,6 +1660,8 @@ async function resumeTurn(input: Conversation, options: { since?: number } = {})
     /** 已经为同一轮重放了几次（防止服务端一直不出事件时反复重连） */
     let rounds = 0
     setResuming(conv.id, true)
+    // 同 runTurn：续接也在往这个对象里写，切工作区回来还要用它
+    runtime.conversation = conv
     const abort = new AbortController()
     /** 服务端这一轮是否还在跑 */
     let live = false
@@ -1752,6 +1802,7 @@ async function resumeTurn(input: Conversation, options: { since?: number } = {})
             }
             finalizeProcess(settled)
             setStreaming(conv.id, null)
+            runtime.conversation = null
             setController(conv.id, null)
             conv.updatedAt = Date.now()
             moveToFront(conv)

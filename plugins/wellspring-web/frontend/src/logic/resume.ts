@@ -16,6 +16,25 @@ export function shouldTakeover(active: boolean, tail: MarkdownMessage | null): b
 }
 
 /**
+ * 用本地更新的会话对象替换刚加载的列表里的同 id 会话
+ *
+ * 会话列表是按工作区整份重新拉取的（切换工作区、跨工作区打开会话）。
+ * 正在跑的那一轮还在往本地旧对象里追加增量，刚收尾的那一轮也可能还没 PUT 落地，
+ * 而列表里是新拉下来的快照对象——界面渲染快照，内容就全落在看不见的地方，
+ * 只有等下一次拉列表才「突然」出现。这里把本地对象换回去，增量才接得上。
+ *
+ * `local` 只放「本地确实比服务端快照新」的会话（在流的、没落盘的），
+ * 其余一律以服务端快照为准。
+ */
+export function adoptLiveConversations<T extends { id: string }>(
+    loaded: readonly T[],
+    local: ReadonlyMap<string, T>,
+): T[] {
+    if (local.size === 0) return [...loaded]
+    return loaded.map((conv) => local.get(conv.id) ?? conv)
+}
+
+/**
  * 本地看这一轮是不是停在半路：最后一条是还没回复的用户消息，
  * 或回复带着刷新打断（interrupted）/ 仍在流式（streaming）的标记。
  *

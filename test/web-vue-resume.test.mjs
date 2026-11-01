@@ -7,6 +7,7 @@ import { test } from "node:test"
 
 import { normalizeConversation } from "../plugins/wellspring-web/frontend/src/logic/conversations.ts"
 import {
+    adoptLiveConversations,
     isNetworkError,
     retryDelayMs,
     serverAhead,
@@ -18,6 +19,27 @@ import {
 
 const assistant = (extra = {}) => ({ role: "assistant", text: "半截", at: 1, ...extra })
 const user = (extra = {}) => ({ role: "user", text: "问题", at: 1, ...extra })
+
+test("adoptLiveConversations：跨工作区切回来时保留正在跑的会话对象", () => {
+    // 服务端快照里的同 id 会话是另一个对象（没有流式增量），本地在跑的要换回去
+    const snapshot = { id: "c1", messages: [] }
+    const live = { id: "c1", messages: [] }
+    const other = { id: "c2", messages: [] }
+    const merged = adoptLiveConversations([snapshot, other], new Map([["c1", live]]))
+    assert.equal(merged[0], live)
+    // 没在跑的会话仍用服务端快照
+    assert.equal(merged[1], other)
+})
+
+test("adoptLiveConversations：没有正在跑的会话时原样返回", () => {
+    const a = { id: "c1", messages: [] }
+    const b = { id: "c2", messages: [] }
+    const merged = adoptLiveConversations([a, b], new Map())
+    assert.deepEqual(merged, [a, b])
+    // 顺序不变
+    assert.equal(merged[0], a)
+    assert.equal(merged[1], b)
+})
 
 test("shouldTakeover：服务端说还在跑就一定接管", () => {
     assert.equal(shouldTakeover(true, null), true)
