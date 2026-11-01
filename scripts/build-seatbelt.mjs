@@ -72,9 +72,15 @@ if (!existsSync(source)) {
     fail(`找不到源码：${source}`)
 }
 
-const clang = run("xcrun", ["--find", "clang"])
+const clang = run("xcrun", ["--sdk", "macosx", "--find", "clang"])
 if (!clang.ok) {
     fail("找不到 clang：xcode-select --install\n" + `${clang.output}`)
+}
+
+/* 显式绑定 SDK：不带 -isysroot 时系统头文件路径为空，dlfcn.h 会报 file not found */
+const sdk = run("xcrun", ["--sdk", "macosx", "--show-sdk-path"])
+if (!sdk.ok || sdk.output === "") {
+    fail("找不到 macOS SDK：xcode-select --install\n" + `${sdk.output}`)
 }
 
 const targets = buildAll ? ["arm64", "x64"] : [process.arch]
@@ -94,6 +100,8 @@ function build(arch) {
         "-O2",
         "-arch",
         CLANG_ARCH[arch],
+        "-isysroot",
+        sdk.output,
         "-mmacosx-version-min=11.0",
         "-Wall",
         "-Wextra",
