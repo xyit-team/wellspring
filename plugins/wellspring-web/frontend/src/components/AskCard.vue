@@ -1,17 +1,33 @@
 <script setup lang="ts">
-import { computed, ref } from "vue"
+import { computed, ref, watch } from "vue"
 
 import { answerAsk, store } from "../store"
 
 const custom = ref("")
 const options = computed(() => store.ask?.options ?? [])
 
+/*
+ * 换下一问时清空草稿
+ *
+ * AskCard 常驻挂载（只在内层 section 上 v-if），custom 会跨提问保留，
+ * 下一问点「跳过」就会带上上一轮输入过的答案。按 ask 对象身份比对，
+ * askId 缺失时同样能触发。
+ */
+watch(
+    () => store.ask,
+    () => {
+        custom.value = ""
+    },
+)
+
 function choose(option: string): void {
     custom.value = option
 }
 
-function submit(answer?: string): void {
-    void answerAsk(answer ?? custom.value)
+/** null = 跳过（回传空答案），字符串 = 用户答案 */
+function submit(answer: string | null): void {
+    custom.value = ""
+    void answerAsk(answer)
 }
 </script>
 
@@ -49,7 +65,7 @@ function submit(answer?: string): void {
         <footer class="ask-foot">
             <div class="ask-actions">
                 <button class="btn btn-outline" type="button" @click="submit(null)">跳过</button>
-                <button class="btn btn-primary" type="button" :disabled="custom.trim() === ''" @click="submit()">回答</button>
+                <button class="btn btn-primary" type="button" :disabled="custom.trim() === ''" @click="submit(custom)">回答</button>
             </div>
         </footer>
     </section>
