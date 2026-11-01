@@ -188,19 +188,28 @@ async function dumpProfile(manager: SandboxManager, backend: string): Promise<nu
             console.log(`  对照 stderr: ${(permissive.stderr ?? "").slice(0, 2000)}`)
 
             /*
-             * 变体二分：在严格 profile 上逐类放开，定位 node 启动缺哪一类权限
-             * 每项只加一条 allow，能跑起来的那一类就是缺失项
+             * 变体二分：严格 profile 上逐段放开读白名单，定位 node 启动缺哪条路径
+             * 每项只加一条 subpath，能跑起来的那条就是缺失项
              */
             const baseProfile = String(spec.args[1])
-            const variants: Array<[string, string]> = [
-                ["+file-read*", baseProfile.replace("(deny default)", "(deny default)\n(allow file-read*)")],
-                ["+mach-lookup", baseProfile.replace("(deny default)", "(deny default)\n(allow mach-lookup)")],
-                ["+file-write*", baseProfile.replace("(deny default)", "(deny default)\n(allow file-write*)")],
-                ["+ipc-posix", baseProfile.replace("(deny default)", "(deny default)\n(allow ipc-posix*)")],
-                ["-file-link", baseProfile.replace("(deny file-link)", "")],
-                ["+process-exec*全开", baseProfile.replace("(deny default)", "(deny default)\n(allow process-exec*)")],
+            const readAnchor = "(allow file-read-metadata)"
+            const extraReads = [
+                "/private/var",
+                "/private/tmp",
+                "/private/var/folders",
+                "/private/var/db",
+                "/dev",
+                "/Library",
+                "/usr/local",
+                "/opt",
+                "/Users",
+                "/private",
             ]
-            for (const [label, variant] of variants) {
+            for (const extra of extraReads) {
+                const variant = baseProfile.replace(
+                    readAnchor,
+                    `${readAnchor}\n(allow file-read* (subpath "${extra}"))`,
+                )
                 const r = spawnSync(
                     spec.command,
                     ["-p", variant, String(spec.args[2]), "-e", "console.log('ok')"],
@@ -208,10 +217,22 @@ async function dumpProfile(manager: SandboxManager, backend: string): Promise<nu
                 )
                 const first = (r.stderr ?? "").trim().split("\n")[0] ?? ""
                 console.log(
-                    `  变体 ${label}: status=${String(r.status)} signal=${String(r.signal)} ` +
-                        `out=${(r.stdout ?? "").trim().slice(0, 20)} ${first.slice(0, 200)}`,
+                    `  变体 +读 ${extra}: status=${String(r.status)} signal=${String(r.signal)} ` +
+                        `out=${(r.stdout ?? "").trim().slice(0, 10)} ${first.slice(0, 150)}`,
                 )
             }
+
+            /* env 对照：HOME/TMPDIR 指向 scratch（与真实运行一致） */
+            const scratchLike = join(getPaths().dataDir, "sandbox", "dump", "scratch")
+            const envAlt = { ...spec.env, HOME: scratchLike, TMPDIR: join(scratchLike, "tmp") }
+            const envProbe = spawnSync(
+                spec.command,
+                ["-p", baseProfile, String(spec.args[2]), "-e", "console.log('ok')"],
+                { encoding: "utf8", env: envAlt, timeout: 15_000 },
+            )
+            console.log(
+                `  env(HOME/TMPDIR=scratch): status=${String(envProbe.status)} signal=${String(envProbe.signal)}`,
+            )
 
             /* 对照：系统 sandbox-exec 跑严格 profile，它会打印自己的错误信息 */
             if (existsSync("/usr/bin/sandbox-exec")) {
