@@ -1052,7 +1052,7 @@ kbd {
     font-variant-numeric: tabular-nums;
 }
 
-/* 运行中提示：工作区行的小圆点与会话行的呼吸点 */
+/* 运行中提示：工作区行是呼吸的小圆点 */
 .ws-running {
     flex: none;
     width: 6px;
@@ -1063,13 +1063,32 @@ kbd {
     animation: ws-running-pulse 1.6s var(--ease) infinite;
 }
 
+/*
+ * 会话行是底边滚动的脉冲条
+ *
+ * 会话行里标题与时间已经把横向位置占满，再塞一个圆点只能挤在中间；
+ * 改贴底边一条细脉冲，既有「这一轮在跑」的动势，又不和文字抢位置。
+ * 绝对定位相对 .conv（最近的定位祖先），两端留出与圆角半径相当的间距，
+ * 不压到标题、时间和删除按钮。
+ */
 .conv-running {
-    flex: none;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--accent);
-    animation: ws-running-pulse 1.6s var(--ease) infinite;
+    position: absolute;
+    right: var(--space-3);
+    bottom: 0;
+    left: var(--space-3);
+    height: 2px;
+    border-radius: 1px;
+    background-image: linear-gradient(
+        90deg,
+        transparent 0%,
+        color-mix(in srgb, var(--accent) 40%, transparent) 35%,
+        var(--accent) 50%,
+        color-mix(in srgb, var(--accent) 40%, transparent) 65%,
+        transparent 100%
+    );
+    background-repeat: no-repeat;
+    background-size: 40% 100%;
+    animation: conv-running-sweep 1.7s linear infinite;
 }
 
 @keyframes ws-running-pulse {
@@ -1082,9 +1101,24 @@ kbd {
     }
 }
 
+/* 从左侧外滚到右侧外：两端 100% 是 background-position 的极值，位移全程可见 */
+@keyframes conv-running-sweep {
+    from {
+        background-position: -100% 0;
+    }
+    to {
+        background-position: 200% 0;
+    }
+}
+
 @media (prefers-reduced-motion: reduce) {
-    .ws-running,
+    .ws-running {
+        animation: none;
+    }
+    /* 不滚动：留一条静止的低对比底线，仍然表示「在跑」 */
     .conv-running {
+        background-image: none;
+        background-color: color-mix(in srgb, var(--accent) 45%, transparent);
         animation: none;
     }
 }
