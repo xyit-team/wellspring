@@ -16,6 +16,7 @@
 
 import { spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
+import { createServer, type Server } from "node:net"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -32,6 +33,7 @@ import {
     ACCESS_MODES,
     PROBES,
     classifyResult,
+    EGRESS_HOST,
     isMountBackend,
     probeArgs,
     probeTag,
@@ -76,6 +78,7 @@ async function runProbe(
     access: SandboxAccess,
     fixture: Fixture,
     index: number,
+    egressPort: number,
 ): Promise<Observed> {
     const expected = probe.expect({ backend, access })
     const request: AgentCodeRequest = {
@@ -83,7 +86,7 @@ async function runProbe(
         argv: [
             "-e",
             probe.script,
-            ...probeArgs(probe.id, backend, fixture, probeTag(access, index)),
+            ...probeArgs(probe.id, backend, fixture, probeTag(access, index), egressPort),
         ],
         workspaceDir: fixture.workspace,
         access,
@@ -273,6 +276,21 @@ function parseBackendArg(): SandboxBackendName | null {
     return value as SandboxBackendName
 }
 
+/** 回环监听：出网探针连它，连得上说明沙箱放行了网络 */
+async function startEgressListener(): Promise<{ server: Server; port: number }> {
+    const server = createServer((socket) => socket.destroy())
+    await new Promise<void>((resolveListen, rejectListen) => {
+        server.once("error", rejectListen)
+        server.listen(0, EGRESS_HOST, () => resolveListen())
+    })
+    const address = server.address()
+    if (address === null || typeof address === "string") {
+        server.close()
+        throw new Error("回环监听没有拿到端口")
+    }
+    return { server, port: address.port }
+}
+
 async function main(): Promise<number> {
     initPaths()
     const preferred = parseBackendArg() ?? "auto"
@@ -305,14 +323,26 @@ async function main(): Promise<number> {
     }
 
     const fixture = await createFixture()
+    const egress = await startEgressListener()
     const all: Observed[] = []
     try {
         for (const access of ACCESS_MODES) {
             for (const [index, probe] of PROBES.entries()) {
-                all.push(await runProbe(manager, probe, status.backend, access, fixture, index))
+                all.push(
+                    await runProbe(
+                        manager,
+                        probe,
+                        status.backend,
+                        access,
+                        fixture,
+                        index,
+                        egress.port,
+                    ),
+                )
             }
         }
     } finally {
+        egress.server.close()
         await rm(fixture.root, { recursive: true, force: true })
     }
 

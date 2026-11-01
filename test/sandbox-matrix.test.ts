@@ -60,7 +60,7 @@ test("探针表：id 唯一且覆盖全部 access 模式", () => {
     }
 })
 
-test("期望值：两种后端共享不变项（读系统、写 scratch、禁止出网）", () => {
+test("期望值：两种后端共享不变项（读系统、写 scratch、写沙箱外被拒）", () => {
     for (const backend of ["bwrap", "seatbelt"]) {
         for (const access of ACCESS_MODES) {
             assert.equal(expectOf("read:system", backend, access), "allow")
@@ -68,7 +68,17 @@ test("期望值：两种后端共享不变项（读系统、写 scratch、禁止
             assert.equal(expectOf("write:scratch", backend, access), "allow")
             assert.equal(expectOf("write:devnull", backend, access), "allow")
             assert.equal(expectOf("write:outside", backend, access), "deny")
-            assert.equal(expectOf("net:egress", backend, access), "deny")
+        }
+    }
+})
+
+test("期望值：出网跟随默认策略，只有 read-only 断网", () => {
+    for (const backend of ["bwrap", "seatbelt"]) {
+        for (const access of ACCESS_MODES) {
+            assert.equal(
+                expectOf("net:egress", backend, access),
+                access === "read-only" ? "deny" : "allow",
+            )
         }
     }
 })
@@ -114,7 +124,9 @@ test("probeArgs：mount 后端用沙箱内路径，host 后端用宿主路径", 
         "/fixture/outside/probe-t1.txt",
     ])
     assert.deepEqual(probeArgs("write:devnull", "bwrap", fixture, "t0"), ["/dev/null"])
-    assert.equal(probeArgs("net:egress", "bwrap", fixture, "t0").length, 1)
+    /* 出网探针连宿主回环监听，不依赖外网可达性 */
+    const egress = probeArgs("net:egress", "bwrap", fixture, "t0", 41234)
+    assert.deepEqual(egress, ["127.0.0.1:41234"])
     assert.equal(probeArgs("link:hardlink", "bwrap", fixture, "t2").length, 2)
     assert.deepEqual(probeArgs("unknown:probe", "bwrap", fixture, "t0"), [])
 })

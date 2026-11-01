@@ -6,6 +6,7 @@
  */
 
 import type { SandboxAccess } from "../src/config/types.ts"
+import { resolveNetwork } from "../src/sandbox/manager.ts"
 
 /** 探针的期望结果 */
 export type Outcome = "allow" | "deny"
@@ -66,7 +67,18 @@ export function writeProbeScript(): string {
     ].join("\n")
 }
 
-export const NETWORK_TARGET = "http://1.1.1.1"
+/**
+ * 出网探针的目标：宿主起的回环监听
+ *
+ * 用回环端口而不是外网地址：外网不可达时无法区分「沙箱拦了」与「这台机器就没网」
+ * 端口由 harness 起监听后经 probeArgs 传入；没有监听时连不上，等同于 deny
+ */
+export const EGRESS_HOST = "127.0.0.1"
+export const DEFAULT_EGRESS_PORT = 1
+
+export function egressTarget(port: number = DEFAULT_EGRESS_PORT): string {
+    return `${EGRESS_HOST}:${port}`
+}
 
 export const ACCESS_MODES: readonly SandboxAccess[] = ["read-only", "workspace-write"]
 
@@ -135,18 +147,24 @@ export const PROBES: readonly Probe[] = [
     },
     {
         id: "net:egress",
-        label: "未申请时的出网",
+        label: "未显式申请时的出网",
         script: [
-            "const target = process.argv[1]",
-            "fetch(target, { signal: AbortSignal.timeout(3000) })",
-            "  .then(() => process.stdout.write(JSON.stringify({ ok: true })))",
-            "  .catch((error) => process.stdout.write(JSON.stringify({ ok: false, code: error.name })))",
+            "const net = require('node:net')",
+            "const index = process.argv[1].lastIndexOf(':')",
+            "const host = process.argv[1].slice(0, index)",
+            "const port = Number(process.argv[1].slice(index + 1))",
+            "const report = (ok, code) => process.stdout.write(JSON.stringify(ok ? { ok: true } : { ok: false, code }))",
+            "const socket = net.connect({ host, port })",
+            "socket.setTimeout(3000, () => { socket.destroy(); report(false, 'TimeoutError') })",
+            "socket.once('connect', () => { socket.destroy(); report(true) })",
+            "socket.once('error', (error) => report(false, error.code ?? error.name))",
         ].join("\n"),
-        expect: () => "deny",
-        why: ({ backend }) =>
-            backend === "bwrap"
-                ? "bwrap 用 --unshare-all，未 --share-net 时无路由"
-                : "Seatbelt 只在 network=true 时才写 (allow network*)",
+        /* 与产品默认一致：read-only 断网，workspace-write / danger-full-access 通网 */
+        expect: ({ access }) => (resolveNetwork(undefined, access) ? "allow" : "deny"),
+        why: ({ access }) =>
+            access === "read-only"
+                ? null
+                : "默认通网：只有 read-only 与显式 network=false 才断网；判据是宿主回环监听能否连上",
     },
     {
         id: "link:hardlink",
@@ -197,6 +215,7 @@ export function probeArgs(
     backend: string,
     fixture: FixturePaths,
     tag: string,
+    egressPort: number = DEFAULT_EGRESS_PORT,
 ): readonly string[] {
     const mount = isMountBackend(backend)
     switch (probeId) {
@@ -217,7 +236,7 @@ export function probeArgs(
         case "write:devnull":
             return ["/dev/null"]
         case "net:egress":
-            return [NETWORK_TARGET]
+            return [egressTarget(egressPort)]
         case "link:hardlink":
             return [
                 mount ? "/workspace/demo.txt" : `${fixture.workspace}/demo.txt`,
