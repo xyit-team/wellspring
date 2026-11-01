@@ -1,0 +1,111 @@
+# macOS Seatbelt 沙箱真机验证。
+#
+# 在 GitHub 托管的 macOS runner 上编译 seatbelt-run，再跑 scripts/verify-sandbox.ts 的
+# 探针矩阵（9 个探针 × 2 种 access），把 SBPL profile 是否被内核接受、实际拦住哪些操作
+# 变成可回归的结论。
+#
+# 触发：
+#   1. 手动触发（可指定 runner，默认 macos-15）
+#   2. pull_request 改到 sandbox 相关路径时
+#   3. 推 v* 标签时
+#
+# tag 与 paths 写在同一个 push 里时 tags 那条不触发，分支变更交给 pull_request
+# 矩阵结果作为 artifact 保留，--json 输出可直接对照 enforcementNotes。
+
+name: sandbox-macos
+
+on:
+    push:
+        tags: ["v*"]
+    pull_request:
+        paths:
+            - "src/sandbox/**"
+            - "native/seatbelt-run/**"
+            - "scripts/verify-sandbox.ts"
+            - "scripts/sandbox-matrix.ts"
+            - "scripts/build-seatbelt.mjs"
+    workflow_dispatch:
+        inputs:
+            backend:
+                description: 验证的后端
+                type: choice
+                options: [seatbelt, auto]
+                default: seatbelt
+            runner:
+                description: runner 标签
+                type: string
+                default: macos-15
+            require-launcher:
+                description: 缺少随包 seatbelt-run 时视为失败
+                type: boolean
+                default: true
+
+permissions:
+    contents: read
+
+concurrency:
+    group: sandbox-macos-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    seatbelt:
+        runs-on: ${{ inputs.runner || 'macos-15' }}
+        timeout-minutes: 15
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: pnpm/action-setup@v4
+              with:
+                  version: 12.14.0
+
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: 26
+                  cache: pnpm
+
+            - name: 安装依赖
+              run: pnpm install --frozen-lockfile
+
+            - name: 环境信息
+              run: |
+                  sw_vers
+                  uname -m
+                  node -v
+                  command -v sandbox-exec || echo "(无 /usr/bin/sandbox-exec)"
+
+            - name: 编译 seatbelt-run
+              run: pnpm seatbelt:build
+
+            - name: 确认产物与自检
+              if: ${{ github.event_name != 'workflow_dispatch' || inputs.require-launcher }}
+              run: |
+                  set -euo pipefail
+                  arch="$(uname -m)"
+                  case "$arch" in
+                    arm64) dir=darwin-arm64 ;;
+                    x86_64) dir=darwin-x64 ;;
+                    *) echo "未知架构：$arch"; exit 1 ;;
+                  esac
+                  test -x "bin/$dir/seatbelt-run" || { echo "缺少 bin/$dir/seatbelt-run"; exit 1; }
+                  codesign --verify --strict "bin/$dir/seatbelt-run"
+                  "bin/$dir/seatbelt-run" --self-test
+
+            - name: 沙箱探针矩阵
+              run: |
+                  set -o pipefail
+                  node scripts/verify-sandbox.ts --backend ${{ inputs.backend || 'seatbelt' }} --json \
+                    | tee matrix.txt
+
+            - name: 上传矩阵结果
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: sandbox-matrix
+                  path: matrix.txt
+                  if-no-files-found: warn
+
+            - name: 失败时打印矩阵
+              if: failure()
+              run: |
+                  test -f matrix.txt && cat matrix.txt
+                  find "$HOME/Library/Logs" -name '*.log' 2>/dev/null | head -3 | xargs -r tail -40
