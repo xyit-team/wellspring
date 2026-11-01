@@ -14,6 +14,8 @@
  * 退出码：0 全部符合预期，1 有偏差，2 环境不可用
  */
 
+import { spawnSync } from "node:child_process"
+import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -168,6 +170,35 @@ async function dumpProfile(manager: SandboxManager, backend: string): Promise<nu
             console.log(`exitCode=${String(result.exitCode)} signal=${String(result.signal)}`)
             console.log(`stdout: ${result.stdout.slice(0, 1000)}`)
             console.log(`stderr: ${result.stderr.slice(0, 4000)}`)
+
+            /*
+             * 对照：同一个 launcher、同一个 target，只把 profile 换成 (allow default)
+             * 能跑说明 loader 与 env 没问题，问题在 profile 规则
+             * 不能跑说明问题在 launcher 或 env
+             */
+            const permissive = spawnSync(
+                spec.command,
+                ["-p", "(version 1)(allow default)", String(spec.args[2]), "-e", "console.log('ok')"],
+                { encoding: "utf8", env: { ...spec.env }, timeout: 15_000 },
+            )
+            console.log(
+                `对照(allow default): status=${String(permissive.status)} signal=${String(permissive.signal)}`,
+            )
+            console.log(`  对照 stdout: ${(permissive.stdout ?? "").slice(0, 500)}`)
+            console.log(`  对照 stderr: ${(permissive.stderr ?? "").slice(0, 2000)}`)
+
+            /* 对照：系统 sandbox-exec 跑严格 profile，它会打印自己的错误信息 */
+            if (existsSync("/usr/bin/sandbox-exec")) {
+                const viaCli = spawnSync(
+                    "/usr/bin/sandbox-exec",
+                    ["-p", String(spec.args[1]), String(spec.args[2]), "-e", "console.log('ok')"],
+                    { encoding: "utf8", env: { ...spec.env }, timeout: 15_000 },
+                )
+                console.log(
+                    `对照(sandbox-exec): status=${String(viaCli.status)} signal=${String(viaCli.signal)}`,
+                )
+                console.log(`  sandbox-exec stderr: ${(viaCli.stderr ?? "").slice(0, 2000)}`)
+            }
         }
     } finally {
         await rm(fixture.root, { recursive: true, force: true })
