@@ -97,8 +97,15 @@ export const PROBES: readonly Probe[] = [
         id: "read:outside",
         label: "读 workspace 外的私有文件",
         script: readProbeScript(),
-        expect: () => "deny",
-        why: () => "这是沙箱存在的主要理由之一：凭证不该对模型可见",
+        /*
+         * bwrap 用只读挂载，未挂载路径不可见
+         * Seatbelt 读全局放开，此探针确认读侧确实未收敛
+         */
+        expect: ({ backend }) => (backend === "seatbelt" ? "allow" : "deny"),
+        why: ({ backend }) =>
+            backend === "seatbelt"
+                ? "Seatbelt 报 partial 的一项：读未收敛，路径枚举下 node 无法启动"
+                : null,
     },
     {
         id: "write:workspace",
