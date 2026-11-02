@@ -7,16 +7,13 @@
 # 触发：
 #   1. 手动触发（可指定 runner，默认 macos-15）
 #   2. pull_request 改到 sandbox 相关路径时
-#   3. 推 v* 标签时
+# 不随 tag 发布触发：探测不参与发版，macOS runner 槽位留给真正需要的运行
 #
-# tag 与 paths 写在同一个 push 里时 tags 那条不触发，分支变更交给 pull_request
 # 矩阵结果作为 artifact 保留，--json 输出可直接对照 enforcementNotes。
 
 name: sandbox-macos
 
 on:
-    push:
-        tags: ["v*"]
     pull_request:
         paths:
             - "src/sandbox/**"

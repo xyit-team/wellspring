@@ -4,7 +4,8 @@
 # 两条都不可用时终端打不开。node-pty 的预编译产物与 Node ABI 绑定，
 # 所以要按 Node 版本分别验证，才能对应上用户实际在用哪个版本。
 #
-# 触发：手动；或改到 PTY 相关路径时。
+# 触发：手动；或改到 PTY 相关路径时。不随 tag 发布触发：
+#   macOS runner 并发有限，同批 3 个矩阵任务会互相抢槽，与发版无关的探测占着槽位
 
 name: pty-macos
 
@@ -15,8 +16,6 @@ on:
                 description: Node 版本列表 JSON
                 type: string
                 default: '["22", "24", "26"]'
-    push:
-        tags: ["v*"]
     pull_request:
         paths:
             - "src/sandbox/plugin-client.ts"
@@ -37,6 +36,8 @@ jobs:
         timeout-minutes: 20
         strategy:
             fail-fast: false
+            # 逐个跑：macOS 并发槽有限，同时开 3 个会有 job 长期排队直到被取消
+            max-parallel: 1
             matrix:
                 node: ${{ fromJSON(inputs.node-versions || '["22", "24", "26"]') }}
         steps:
