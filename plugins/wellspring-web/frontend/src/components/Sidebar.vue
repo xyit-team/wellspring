@@ -50,7 +50,7 @@ onBeforeUnmount(() => {
 })
 
 const activeConversations = computed(() =>
-    store.conversations.filter((conv) => conv.messages.length > 0),
+    store.conversations.filter((conv) => (conv.messageCount ?? conv.messages.length) > 0),
 )
 
 /** 会话是否正在跑一轮（含别的窗口发起的） */
@@ -71,7 +71,9 @@ const workspaceTitle = computed(() => {
 /** 当前分组要回落的地址：有最近会话就去它的 /c/:id，否则回空白对话页 */
 function chatPath(): string {
     const conv = store.conversations.find((item) => item.id === store.activeId)
-    return conv !== undefined && conv.messages.length > 0 ? conversationPath(conv) : "/"
+    return conv !== undefined && (conv.messageCount ?? conv.messages.length) > 0
+        ? conversationPath(conv)
+        : "/"
 }
 
 async function onSelectWorkspace(id: string): Promise<void> {

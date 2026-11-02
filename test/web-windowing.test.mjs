@@ -131,10 +131,17 @@ test("earlierVisibleFrom：从轮中间开始也能对齐后再退", () => {
  * Node 起不来，所以这里直接对源码做不变量检查。
  */
 function functionBody(source, name) {
-    const start = source.indexOf(`export function ${name}(`)
-    assert.ok(start >= 0, `源码里找不到 ${name}`)
-    const next = source.indexOf("\nexport function ", start + 1)
-    return source.slice(start, next === -1 ? source.length : next)
+    // loadEarlier 现在是 async：展开完本地窗口后还要向服务端取更早的一页
+    const start = [
+        source.indexOf(`export function ${name}(`),
+        source.indexOf(`export async function ${name}(`),
+    ].find((index) => index >= 0)
+    assert.ok(start !== undefined && start >= 0, `源码里找不到 ${name}`)
+    const next = ["\nexport function ", "\nexport async function "]
+        .map((token) => source.indexOf(token, start + 1))
+        .filter((index) => index >= 0)
+        .sort((left, right) => left - right)[0]
+    return source.slice(start, next === undefined ? source.length : next)
 }
 
 test("读窗口的函数里不写 store.windowStarts", async () => {
@@ -150,8 +157,8 @@ test("读窗口的函数里不写 store.windowStarts", async () => {
             `${name} 不该在读取时写 windowStarts`,
         )
     }
-    // 只有 loadEarlier 会写，删除会话时清账
-    assert.match(functionBody(source, "loadEarlier"), /store\.windowStarts\[[^\]]+\] = next/)
+    // 只有 loadEarlier 会写（展开本地窗口、取回更早一页后都会动起点），删除会话时清账
+    assert.match(functionBody(source, "loadEarlier"), /store\.windowStarts\[[^\]]+\] =/)
     assert.match(source, /delete store\.windowStarts\[id\]/)
 })
 

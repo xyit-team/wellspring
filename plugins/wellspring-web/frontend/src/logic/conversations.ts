@@ -2,6 +2,9 @@
 
 export var MAX_MESSAGES = 400
 
+// 一页正文条数，服务端按字符预算再收一次
+export var MESSAGE_PAGE_LIMIT = 40
+
 export var MAX_MESSAGE_CHARS = 32000
 
 export var MAX_CONVERSATION_TEXT_CHARS = 600000
@@ -132,6 +135,16 @@ export function normalizeConversation(value) {
     if (messages.length > MAX_MESSAGES) {
         messages.splice(0, messages.length - MAX_MESSAGES)
     }
+    // 分片加载：列表只给条数，正文按页读
+    // messagesFrom 是 messages[0] 在整段正文里的下标，0 表示已到开头
+    var declaredCount = typeof value.messageCount === "number" && isFinite(value.messageCount) && value.messageCount >= 0
+        ? Math.floor(value.messageCount)
+        : messages.length
+    var declaredFrom = typeof value.messagesFrom === "number" && isFinite(value.messagesFrom) && value.messagesFrom >= 0
+        ? Math.floor(value.messagesFrom)
+        : 0
+    var total = Math.max(declaredCount, messages.length)
+    var from = Math.min(declaredFrom, total)
     return {
         id: value.id,
         serverSessionId: typeof value.serverSessionId === "string" ? value.serverSessionId : null,
@@ -146,7 +159,9 @@ export function normalizeConversation(value) {
             typeof value.workspaceRoot === "string" && value.workspaceRoot !== ""
                 ? value.workspaceRoot
                 : null,
-        messages: messages
+        messages: messages,
+        messageCount: total,
+        messagesFrom: from
     }
 }
 
@@ -185,7 +200,12 @@ export function conversationPayload(conv, overrideMessages = undefined) {
         reasoning: conv.reasoning === undefined ? null : conv.reasoning,
         permission: conv.permission === undefined ? null : conv.permission,
         workspaceRoot: conv.workspaceRoot,
-        messages: messages
+        messages: messages,
+        // 分片保存：messagesFrom 之前的部分沿用服务端正文
+        messagesFrom:
+            typeof conv.messagesFrom === "number" && isFinite(conv.messagesFrom) && conv.messagesFrom > 0
+                ? Math.floor(conv.messagesFrom)
+                : 0
     }
 }
 

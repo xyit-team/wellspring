@@ -683,7 +683,16 @@ test("web 插件：写接口校验、登录限流与宿主状态", { timeout: 20
             headers: { "content-type": "application/json", cookie },
             body: JSON.stringify({ approved: false }),
         })
-        assert.equal(unknownApproval.status, 404)
+        /*
+         * 没接受不等于接口出错：面板可能来自刷新后的重放，这次调用早就处理过了。
+         * 回 404 只会让用户看到一个没意义的报错，所以改成 200 + accepted: false。
+         */
+        assert.equal(unknownApproval.status, 200)
+        assert.deepEqual(await unknownApproval.json(), {
+            ok: false,
+            accepted: false,
+            stale: true,
+        })
 
         const badApproval = await fetch(`${server.base}/api/approvals/apv_test`, {
             method: "POST",

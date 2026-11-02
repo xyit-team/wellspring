@@ -226,6 +226,16 @@ interface ProcessView {
     open?: boolean
 }
 
+/** 列表接口只回摘要：正文不在里面 */
+type ConversationSummaryView = Omit<ConversationView, "messages"> & { messageCount: number }
+
+/** /messages 分页：from 是这一页在整段正文里的起点 */
+interface ConversationPageView {
+    from: number
+    total: number
+    messages: ConversationView["messages"]
+}
+
 interface ConversationView {
     id: string
     title: string
@@ -434,13 +444,28 @@ test("工作区：手动添加、会话落盘、跨重启保留", { timeout: 30_
         assert.equal(workspaceA?.name, "正式 A")
         const conversations = (await (
             await request(base, cookie, `/api/workspaces/${idA}/conversations`)
-        ).json()) as { activeId: string | null; conversations: ConversationView[] }
+        ).json()) as { activeId: string | null; conversations: ConversationSummaryView[] }
         assert.equal(conversations.activeId, "conv-a-1")
         assert.equal(conversations.conversations[0]?.serverSessionId, "sess-a")
-        assert.equal(conversations.conversations[0]?.messages[1]?.turn, 3, "轮次持久化")
-        assert.equal(conversations.conversations[0]?.messages[1]?.steps, 5, "步数持久化")
+        /*
+         * 列表只回摘要：正文整包回传会让响应体超过 wellspring-http 的转发上限
+         * （2.5MB），会话一多前端直接拿到 502。这里锁住「列表不带正文」。
+         */
+        assert.equal(
+            (conversations.conversations[0] as { messages?: unknown }).messages,
+            undefined,
+            "列表不再回传正文",
+        )
+        const page = (await (
+            await request(base, cookie, `/api/workspaces/${idA}/conversations/conv-a-1/messages`)
+        ).json()) as ConversationPageView
+        assert.equal(page.total, 2, "摘要里的条数与分页一致")
+        assert.equal(conversations.conversations[0]?.messageCount, page.total)
+        assert.equal(page.from, 0)
+        assert.equal(page.messages[1]?.turn, 3, "轮次持久化")
+        assert.equal(page.messages[1]?.steps, 5, "步数持久化")
         // token 用量（含缓存命中与上下文占用）随会话保存，刷新后统计不丢
-        assert.deepEqual(conversations.conversations[0]?.messages[1]?.usage, {
+        assert.deepEqual(page.messages[1]?.usage, {
             inputTokens: 100,
             outputTokens: 5,
             cacheReadTokens: 80,
@@ -451,7 +476,7 @@ test("工作区：手动添加、会话落盘、跨重启保留", { timeout: 30_
         assert.equal(conversations.conversations[0]?.model, "deepseek-chat")
         assert.equal(conversations.conversations[0]?.reasoning, "high")
         assert.equal(conversations.conversations[0]?.permission, "read-only")
-        const process = conversations.conversations[0]?.messages[1]?.process ?? []
+        const process = page.messages[1]?.process ?? []
         assert.equal(process.length, 2, "思考链与工具调用随会话持久化")
         assert.equal(process[0]?.kind, "reasoning")
         assert.equal(process[0]?.text, "先读文件再回答。")
@@ -979,13 +1004,21 @@ test("未分组：移除工作区后会话保留并可继续", { timeout: 20_000
             conversations: Array<{
                 id: string
                 workspaceRoot: string | null
-                messages: Array<{ text: string }>
+                messageCount: number
             }>
         }
         const moved = ungrouped.conversations.find((item) => item.id === conversation.id)
         assert.ok(moved, "会话保留在未分组")
         assert.equal(moved?.workspaceRoot, workspaceRoot, "保留原工作区目录以便继续对话")
-        assert.equal(moved?.messages[0]?.text, "hello")
+        assert.equal(moved?.messageCount, 1, "未分组的列表同样只给条数")
+        const movedPage = (await (
+            await request(
+                base,
+                cookie,
+                `/api/ungrouped/conversations/${conversation.id}/messages`,
+            )
+        ).json()) as ConversationPageView
+        assert.equal(movedPage.messages[0]?.text, "hello")
 
         const stream = await request(base, cookie, "/api/chat/stream", "POST", {
             message: "继续",
@@ -1080,6 +1113,105 @@ test("工作区：旧 wellspring-web 索引迁移到宿主注册表", { timeout:
             await readFile(join(root, "data", "workspaces.json"), "utf8"),
         ) as { workspaces: Array<{ root: string }> }
         assert.equal(hostRegistry.workspaces[0]?.root, migratedRoot, "迁移结果写进宿主注册表")
+    } finally {
+        await stopWebPlugin()
+    }
+})
+
+/**
+ * 正文分页：列表只给摘要，正文按页取，保存时不能把没加载的部分写丢
+ *
+ * 这条守的是「会话大到顶不住事件转发上限」之后的正确性：
+ * 前端手里只有最近一页，PUT 时带 messagesFrom 告诉服务端从哪开始，
+ * 服务端必须把更早的正文接回去，而不是整段覆盖。
+ */
+test("工作区：正文分页读取与分片保存", { timeout: 30_000 }, async () => {
+    const workspaceRoot = join(root, "demo-paged")
+    await mkdir(workspaceRoot, { recursive: true })
+    const base = await startWebPlugin()
+    try {
+        const cookie = await authenticate(base)
+        const workspace = await addWorkspace(base, cookie, workspaceRoot, "分页")
+        const endpoint = `/api/workspaces/${workspace.id}/conversations`
+        const now = Date.now()
+        const all = Array.from({ length: 120 }, (_, index) => ({
+            role: index % 2 === 0 ? "user" : "assistant",
+            text: `消息 ${index}`,
+            at: now + index,
+        }))
+        const conversation = {
+            id: "conv-paged",
+            title: "分页会话",
+            createdAt: now,
+            updatedAt: now,
+            serverSessionId: null,
+            messages: all,
+        }
+        const created = await request(base, cookie, `${endpoint}/conv-paged`, "PUT", conversation)
+        assert.equal(created.status, 200)
+
+        // 列表只给条数，不带正文
+        const list = (await (await request(base, cookie, endpoint)).json()) as {
+            conversations: ConversationSummaryView[]
+        }
+        assert.equal(list.conversations[0]?.messageCount, 120)
+        assert.equal(
+            (list.conversations[0] as { messages?: unknown }).messages,
+            undefined,
+            "列表不带正文",
+        )
+
+        // 不传 before 就是「从末尾往前一页」
+        const latest = (await (
+            await request(base, cookie, `${endpoint}/conv-paged/messages`)
+        ).json()) as ConversationPageView
+        assert.equal(latest.total, 120)
+        assert.equal(latest.from, 80)
+        assert.equal(latest.messages.length, 40)
+        assert.equal(latest.messages[39]?.text, "消息 119")
+
+        // 往前翻：before 是这一页的结束下标（不含）
+        const middle = (await (
+            await request(base, cookie, `${endpoint}/conv-paged/messages?before=80&limit=40`)
+        ).json()) as ConversationPageView
+        assert.equal(middle.from, 40)
+        assert.equal(middle.messages[0]?.text, "消息 40")
+
+        const head = (await (
+            await request(base, cookie, `${endpoint}/conv-paged/messages?before=40&limit=40`)
+        ).json()) as ConversationPageView
+        assert.equal(head.from, 0)
+        assert.equal(head.messages[0]?.text, "消息 0")
+
+        // 只带回最近一页保存：更早的 80 条必须还在
+        const tail = all.slice(80)
+        const partial = await request(base, cookie, `${endpoint}/conv-paged`, "PUT", {
+            ...conversation,
+            updatedAt: now + 1000,
+            messages: [...tail, { role: "user", text: "新消息", at: now + 500 }],
+            messagesFrom: 80,
+        })
+        assert.equal(partial.status, 200)
+        const merged = (await (
+            await request(base, cookie, `${endpoint}/conv-paged/messages?before=80&limit=40`)
+        ).json()) as ConversationPageView
+        assert.equal(merged.total, 121, "更早的正文没有被覆盖掉")
+        assert.equal(merged.from, 40)
+        assert.equal(merged.messages[0]?.text, "消息 40", "前缀保留")
+        assert.equal(merged.messages[39]?.text, "消息 79")
+
+        // 分片参数非法时按「整段正文」处理，不能把会话写坏
+        const whole = await request(base, cookie, `${endpoint}/conv-paged`, "PUT", {
+            ...conversation,
+            updatedAt: now + 2000,
+            messages: [{ role: "user", text: "只剩一条", at: now + 3 }],
+        })
+        assert.equal(whole.status, 200)
+        const reset = (await (
+            await request(base, cookie, `${endpoint}/conv-paged/messages`)
+        ).json()) as ConversationPageView
+        assert.equal(reset.total, 1)
+        assert.equal(reset.messages[0]?.text, "只剩一条")
     } finally {
         await stopWebPlugin()
     }

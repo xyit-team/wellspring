@@ -12,6 +12,8 @@ import {
     activeConversation,
     activeStreaming,
     conversationPath,
+    conversationTotal,
+    unloadedCount,
     copyText,
     exportConversation,
     hiddenCount,
@@ -33,13 +35,14 @@ const router = useRouter()
 
 const conversation = computed(() => activeConversation())
 const hidden = computed(() => hiddenCount(conversation.value))
+// 服务端未取回的正文条数
+const unloaded = computed(() => unloadedCount(conversation.value))
 /** 按钮按轮说话：50 轮的会话被折掉 40 轮，比「还有 83 条」好读 */
 const hiddenRounds = computed(() => hiddenRoundCount(conversation.value))
-const earlierLabel = computed(() =>
-    hiddenRounds.value > 0
-        ? `加载更早（还有 ${hiddenRounds.value} 轮）`
-        : `加载更早（还有 ${hidden.value} 条）`,
-)
+const earlierLabel = computed(() => {
+    if (hiddenRounds.value > 0) return `加载更早（还有 ${hiddenRounds.value} 轮）`
+    return `加载更早（还有 ${hidden.value + unloaded.value} 条）`
+})
 const visibleMessages = computed(() => {
     const conv = conversation.value
     if (conv === null) return []
@@ -48,18 +51,20 @@ const visibleMessages = computed(() => {
 const topbarTitle = computed(() => {
     if (store.group === "none") return "未选择工作区"
     const conv = conversation.value
-    if (conv !== null && conv.messages.length > 0) return conv.title
+    if (conv !== null && conversationTotal(conv) > 0) return conv.title
     return store.group === "ungrouped" ? "未分组" : "新对话"
 })
 const topbarMeta = computed(() => {
     if (store.group === "none") return "工作区由你手动添加"
     const conv = conversation.value
-    if (conv === null || conv.messages.length === 0) {
+    if (conv === null || conversationTotal(conv) === 0) {
         return store.group === "ungrouped"
             ? "未分组"
             : `会话保存在「${store.workspace?.name ?? "工作区"}」`
     }
-    const parts = [`${conv.messages.length} 条消息`]
+    // 分片加载时显示「已加载 / 总共」
+    const total = conversationTotal(conv)
+    const parts = [unloaded.value > 0 ? `${conv.messages.length} / ${total} 条消息` : `${total} 条消息`]
     let turns = 0
     let steps = 0
     let model = ""
@@ -135,14 +140,14 @@ function syncRouteToConversation(): void {
     const conv = store.conversations.find((item) => item.id === id)
     if (route.name === "chat") {
         // 新会话在发第一条消息之前没有可恢复的地址，留在 /
-        if (conv !== undefined && conv.messages.length > 0) {
+        if (conv !== undefined && conversationTotal(conv) > 0) {
             void router.replace(conversationPath(conv))
         }
         return
     }
     if (route.name !== "conversation") return
     if (id === routeConversationId()) return
-    if (conv !== undefined && conv.messages.length > 0) {
+    if (conv !== undefined && conversationTotal(conv) > 0) {
         void router.replace(conversationPath(conv))
     } else {
         void router.replace("/")
@@ -278,7 +283,8 @@ async function onLoadEarlier(): Promise<void> {
     if (box === null || conv === null) return
     const before = box.scrollHeight
     const offset = box.scrollTop
-    loadEarlier(conv)
+    // 展开本地窗口，到头后取更早一页
+    await loadEarlier(conv)
     await nextTick()
     box.scrollTop = offset + (box.scrollHeight - before)
 }
@@ -346,7 +352,7 @@ function emptyCopy(): string {
         >
             <div class="messages-inner">
                 <button
-                    v-if="hidden > 0 && conversation"
+                    v-if="hidden + unloaded > 0 && conversation"
                     class="load-earlier"
                     type="button"
                     @click="onLoadEarlier"

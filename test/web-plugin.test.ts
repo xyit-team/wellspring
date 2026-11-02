@@ -267,7 +267,40 @@ test("web 插件：首次设置密码、登录、与 Agent 聊天", { timeout: 2
             headers: { "content-type": "application/json", cookie },
             body: JSON.stringify({ answer: "x" }),
         })
-        assert.equal(missingAsk.status, 404)
+        /*
+         * 没接受不等于接口出错：面板很可能来自「刷新后的重放」，这一问早就答过了。
+         * 以前这里回 404，用户点一下就看到一个没意义的报错。
+         */
+        assert.equal(missingAsk.status, 200)
+        assert.deepEqual(await missingAsk.json(), { ok: false, accepted: false, stale: true })
+
+        /*
+         * 答过的提问不能靠刷新重连续接再弹一次
+         *
+         * resume 是照 buffer 原样重放，答完的 ask 如果不从缓冲里抹掉，
+         * 刷新一次就又弹出来，再点一次还会因为宿主已消费掉而失败。
+         */
+        const askStream = await fetch(`${base}/api/chat/stream`, {
+            method: "POST",
+            headers: { "content-type": "application/json", cookie },
+            body: JSON.stringify({ message: "ask", workspaceId, conversationId: "conv-ask" }),
+        })
+        assert.equal(askStream.status, 200)
+        assert.match(await askStream.text(), /"question":"用哪个分支？"/)
+        const answeredOnce = await fetch(`${base}/api/asks/ask_test`, {
+            method: "POST",
+            headers: { "content-type": "application/json", cookie },
+            body: JSON.stringify({ answer: "main" }),
+        })
+        assert.equal(answeredOnce.status, 200)
+        assert.equal(((await answeredOnce.json()) as { accepted: boolean }).accepted, true)
+        const replayText = await (
+            await fetch(`${base}/api/chat/resume?conversationId=conv-ask&since=0`, {
+                headers: { accept: "text/event-stream", cookie },
+            })
+        ).text()
+        assert.match(replayText, /"type":"ask","request":null/, "重放里那一问已被清空")
+        assert.doesNotMatch(replayText, /用哪个分支？/, "重放不该再把答过的问题弹出来")
 
         // 权限切换器：permission 透传到宿主 Agent，非法值被拒绝
         const permissionChat = await fetch(`${base}/api/chat`, {

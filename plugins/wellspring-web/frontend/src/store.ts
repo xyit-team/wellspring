@@ -19,10 +19,12 @@ import {
 import {
     MAX_MESSAGES,
     MAX_MESSAGE_CHARS,
+    MESSAGE_PAGE_LIMIT,
     conversationPath,
     conversationPayload,
     formatRelativeTime,
     normalizeConversation,
+    normalizeMessage,
     titleFromText,
 } from "./logic/conversations"
 import { collectReferences } from "./logic/mentions"
@@ -132,6 +134,9 @@ export const VISIBLE_ROUNDS = 10
 
 /** 每点一次「加载更早」多露出来的轮数 */
 export const ROUND_PAGE = 10
+
+// 一页正文的条数，服务端按字符预算再收一次
+export const MESSAGE_PAGE = MESSAGE_PAGE_LIMIT
 export const UNGROUPED = "ungrouped"
 const PERMISSION_STORAGE_KEY = "wellspring.web.permission"
 const SEND_MODE_STORAGE_KEY = "wellspring.web.sendMode"
@@ -162,7 +167,12 @@ export interface Conversation {
     reasoning: string | null
     permission: string | null
     workspaceRoot: string | null
+    // 已加载的一段正文，分片加载时是尾部若干条
     messages: MarkdownMessage[]
+    // 正文总条数，含未加载部分
+    messageCount?: number
+    // messages[0] 在正文里的下标，0 表示已到开头
+    messagesFrom?: number
 }
 
 interface ChatStreamEvent {
@@ -729,6 +739,8 @@ export async function loadConversations(): Promise<void> {
                 : (conversations[0]?.id ?? null)
         legacyMigrated = false
         void migrateLegacyStore()
+        // 摘要无正文：先取最近一页，续接与窗口按真实条数计算
+        await ensureMessagesLoaded(activeConversation())
         void maybeResume()
     } catch (error) {
         if (reloadOnAuth(error)) return
@@ -740,6 +752,7 @@ export async function selectConversation(id: string): Promise<void> {
     // 会话之间互不影响：别的会话在跑也照样可以切过去，那一轮在后台继续
     store.activeId = id
     await rememberActive(id)
+    await ensureMessagesLoaded(activeConversation())
     void maybeResume()
 }
 
@@ -790,6 +803,7 @@ export async function openConversation(id: string): Promise<boolean> {
             }
             store.activeId = id
             await rememberActive(id)
+            await ensureMessagesLoaded(activeConversation())
             void maybeResume()
             return true
         } catch (error) {
@@ -1420,7 +1434,14 @@ export async function answerAsk(answer: string | null): Promise<void> {
     const askId = ask.askId
     if (askId === undefined) return
     try {
-        await apiJson(`/api/asks/${encodeURIComponent(askId)}`, jsonBody({ answer: answer ?? "" }))
+        const result = await apiJson<{ accepted?: boolean }>(
+            `/api/asks/${encodeURIComponent(askId)}`,
+            jsonBody({ answer: answer ?? "" }),
+        )
+        // 未接受：提问已作答，面板来自重放时同属此情况
+        if (result !== null && result.accepted === false) {
+            toast("这一问已经答过了", "info", 1800)
+        }
     } catch (error) {
         reloadOnAuth(error)
         toast(error instanceof Error ? error.message : String(error), "error")
@@ -1432,10 +1453,13 @@ export async function respondApproval(approved: boolean): Promise<void> {
     if (approval === null) return
     store.approval = null
     try {
-        await apiJson(
+        const result = await apiJson<{ accepted?: boolean }>(
             `/api/approvals/${encodeURIComponent(approval.approvalId)}`,
             jsonBody({ approved }),
         )
+        if (result !== null && result.accepted === false) {
+            toast("这次调用已经处理过了", "info", 1800)
+        }
     } catch (error) {
         reloadOnAuth(error)
         toast(error instanceof Error ? error.message : String(error), "error")
@@ -1484,6 +1508,72 @@ export function hiddenRoundCount(conv: Conversation | null): number {
     return hiddenRounds(conv.messages, visibleFrom(conv))
 }
 
+// 正文总条数，分片加载后 messages 只是其中一段
+export function conversationTotal(conv: Conversation | null): number {
+    if (conv === null) return 0
+    const declared = conv.messageCount
+    if (typeof declared === "number" && isFinite(declared) && declared >= conv.messages.length) {
+        return Math.floor(declared)
+    }
+    return conv.messages.length
+}
+
+// 尚未从服务端加载的消息条数
+export function unloadedCount(conv: Conversation | null): number {
+    if (conv === null) return 0
+    const from = conv.messagesFrom
+    if (typeof from !== "number" || !isFinite(from) || from <= 0) return 0
+    return Math.floor(from)
+}
+
+interface MessagePage {
+    from: number
+    total: number
+    messages: MarkdownMessage[]
+}
+
+// 取一页正文，before 是结束下标（不含）
+async function fetchMessagePage(conv: Conversation, before: number): Promise<MessagePage | null> {
+    const endpoint = endpointFor(conv)
+    const url = `${endpoint}/${encodeURIComponent(conv.id)}/messages?before=${before}&limit=${MESSAGE_PAGE}`
+    try {
+        const data = await apiJson<{ from?: number; total?: number; messages?: unknown[] }>(url)
+        const messages: MarkdownMessage[] = []
+        for (const raw of Array.isArray(data.messages) ? data.messages : []) {
+            const message = normalizeMessage(raw) as MarkdownMessage | null
+            if (message !== null) messages.push(message)
+        }
+        const total =
+            typeof data.total === "number" && isFinite(data.total)
+                ? Math.floor(data.total)
+                : messages.length
+        const from = typeof data.from === "number" && isFinite(data.from) ? Math.floor(data.from) : 0
+        return { from, total, messages }
+    } catch (error) {
+        if (reloadOnAuth(error)) return null
+        toast(error instanceof Error ? error.message : String(error), "error")
+        return null
+    }
+}
+
+/*
+ * 补齐当前会话的尾部正文
+ *
+ * 列表接口只回摘要，进入页面与切换会话时先取最近一页
+ * 按条数计算窗口的逻辑依赖这段正文
+ */
+export async function ensureMessagesLoaded(conv: Conversation | null): Promise<void> {
+    if (conv === null || conv.messages.length > 0) return
+    const total = conversationTotal(conv)
+    if (total <= 0) return
+    const page = await fetchMessagePage(conv, total)
+    if (page === null) return
+    const live = reactiveConversation(conv)
+    live.messages = page.messages
+    live.messagesFrom = page.from
+    live.messageCount = page.total
+}
+
 export { MAX_MESSAGES }
 
 export function rememberReference(path: string): void {
@@ -1493,16 +1583,29 @@ export function rememberReference(path: string): void {
     if (store.pickedReferences.length > 20) store.pickedReferences.shift()
 }
 
-/**
- * 往回多露一页
+/*
+ * 往回加载一页
  *
- * 走到头就记 0（等于全部展开），不改动其它会话的窗口。
+ * 先展开本地窗口，展开到头后从服务端取更早的一页
+ * 取回的一段放在最前并保持可见，返回是否加载到内容
  */
-export function loadEarlier(conv: Conversation): void {
+export async function loadEarlier(conv: Conversation): Promise<boolean> {
     const current = visibleFrom(conv)
-    if (current <= 0) return
-    const next = earlierVisibleFrom(conv.messages, current, ROUND_PAGE)
-    store.windowStarts[conv.id] = next
+    if (current > 0) {
+        store.windowStarts[conv.id] = earlierVisibleFrom(conv.messages, current, ROUND_PAGE)
+        return true
+    }
+    const before = unloadedCount(conv)
+    if (before <= 0) return false
+    const page = await fetchMessagePage(conv, before)
+    if (page === null || page.messages.length === 0) return false
+    const live = reactiveConversation(conv)
+    live.messages = [...page.messages, ...live.messages]
+    live.messagesFrom = page.from
+    live.messageCount = page.total
+    // 新取回的一段直接可见
+    store.windowStarts[conv.id] = 0
+    return true
 }
 
 /** 会话被删掉时清掉它的窗口记录，别让这张表无限涨 */
@@ -1537,8 +1640,15 @@ export async function copyText(text: string): Promise<void> {
 
 export function exportConversation(conv: Conversation | null): void {
     if (conv === null || conv.messages.length === 0) {
-        toast("当前会话还是空的", "warn")
+        if (conv !== null && conversationTotal(conv) > 0) {
+            toast("正文还没加载完，先点「加载更早」再导出", "warn")
+        } else {
+            toast("当前会话还是空的", "warn")
+        }
         return
+    }
+    if (unloadedCount(conv) > 0) {
+        toast("只导出已加载的部分；要完整导出请先点「加载更早」", "warn", 4200)
     }
     const lines = [`# ${conv.title}`, ""]
     for (const message of conv.messages) {

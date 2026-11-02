@@ -29,6 +29,10 @@ export const MAX_REASONING_CHARS = 24_000
 /** 工具参数与结果在存储里的上限 */
 export const MAX_TOOL_ARGUMENT_CHARS = 4_000
 export const MAX_TOOL_RESULT_CHARS = 8_000
+// 正文分页：单页条数上限
+export const MESSAGE_PAGE_LIMIT = 40
+// 单页正文字符预算
+export const MESSAGE_PAGE_CHARS = 120_000
 export const CONVERSATION_ID = /^[A-Za-z0-9_-]{1,64}$/
 export const WORKSPACE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
 const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
@@ -136,6 +140,39 @@ interface StoredState {
 export interface WorkspaceConversations {
     readonly activeId: string | null
     readonly conversations: readonly StoredConversation[]
+}
+
+/*
+ * 列表用会话摘要：不带正文，只带总条数
+ *
+ * 正文整包回传会超过 wellspring-http 的转发上限 2.5MB，接口返回 502
+ * 正文走 /messages 分页接口
+ */
+export interface ConversationSummary {
+    readonly id: string
+    readonly title: string
+    readonly createdAt: number
+    readonly updatedAt: number
+    readonly serverSessionId: string | null
+    readonly provider: string | null
+    readonly model: string | null
+    readonly reasoning: string | null
+    readonly permission: string | null
+    readonly workspaceRoot: string | null
+    readonly messageCount: number
+}
+
+export interface WorkspaceIndex {
+    readonly activeId: string | null
+    readonly conversations: readonly ConversationSummary[]
+}
+
+/** 会话正文的一页：messages[0] 在正文里的下标是 from */
+export interface ConversationPage {
+    readonly id: string
+    readonly from: number
+    readonly total: number
+    readonly messages: readonly StoredMessage[]
 }
 
 function dirnameOfPath(path: string): string {
@@ -452,6 +489,96 @@ function normalizeConversations(value: unknown): StoredConversation[] {
     return conversations.slice(0, MAX_CONVERSATIONS)
 }
 
+// 会话转列表摘要
+export function summarizeConversation(conversation: StoredConversation): ConversationSummary {
+    return {
+        id: conversation.id,
+        title: conversation.title,
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+        serverSessionId: conversation.serverSessionId,
+        provider: conversation.provider,
+        model: conversation.model,
+        reasoning: conversation.reasoning,
+        permission: conversation.permission,
+        workspaceRoot: conversation.workspaceRoot,
+        messageCount: conversation.messages.length,
+    }
+}
+
+function toIndex(state: WorkspaceConversations): WorkspaceIndex {
+    return {
+        activeId: state.activeId,
+        conversations: state.conversations.map(summarizeConversation),
+    }
+}
+
+/*
+ * 从 end 往前切一页：条数与字符预算双限，至少 1 条
+ *
+ * 条数对齐前端的按轮窗口，字符预算应对超长消息
+ * 单页体积保持在 wellspring-http 转发上限以内
+ */
+function pageStart(messages: readonly StoredMessage[], end: number, limit: number): number {
+    const floor = Math.max(0, end - Math.max(1, limit))
+    let from = end
+    let chars = 0
+    while (from > floor) {
+        const message = messages[from - 1]
+        if (message === undefined) {
+            break
+        }
+        const size = messageSize(message)
+        if (from < end && chars + size > MESSAGE_PAGE_CHARS) {
+            break
+        }
+        chars += size
+        from -= 1
+    }
+    return from
+}
+
+// 取 [from, end) 这一段正文；end 缺省到末尾
+export function conversationPage(
+    conversation: StoredConversation,
+    before: number,
+    limit: number,
+): ConversationPage {
+    const total = conversation.messages.length
+    const rawEnd = Number.isFinite(before) ? Math.floor(before) : total
+    const end = Math.min(Math.max(0, rawEnd), total)
+    const cap = Math.min(Math.max(1, Math.floor(limit) || MESSAGE_PAGE_LIMIT), MAX_MESSAGES)
+    const from = pageStart(conversation.messages, end, cap)
+    return { id: conversation.id, from, total, messages: conversation.messages.slice(from, end) }
+}
+
+// 消息身份：role 与 at 相同即同一条
+function messageKey(message: StoredMessage): string {
+    return `${message.role}:${message.at}`
+}
+
+/*
+ * 合并只带回一段正文的保存
+ *
+ * 分片加载时前端只有最近一页，from 落在服务端正文范围内就保留前缀
+ * 服务端被裁剪导致对不上时按消息身份补齐
+ */
+function mergePartialMessages(
+    existing: StoredConversation,
+    incoming: StoredConversation,
+    from: number,
+): StoredConversation {
+    if (from <= existing.messages.length) {
+        return {
+            ...incoming,
+            messages: [...existing.messages.slice(0, from), ...incoming.messages],
+        }
+    }
+    const seen = new Set(existing.messages.map(messageKey))
+    const extra = incoming.messages.filter((message) => !seen.has(messageKey(message)))
+    return { ...incoming, messages: [...existing.messages, ...extra] }
+}
+
 export interface ConflictResult {
     /** 服务端已有更新的版本 */
     readonly conflict: StoredConversation
@@ -537,11 +664,26 @@ export class ConversationStore {
         return (await this.#readState(id)).conversations.length
     }
 
-    async readConversations(id: string): Promise<WorkspaceConversations | null> {
+    // 列表：只回摘要，正文走 readMessagePage
+    async readConversations(id: string): Promise<WorkspaceIndex | null> {
         if (!this.#exists(id)) {
             return null
         }
-        return await this.#readState(id)
+        return toIndex(await this.#readState(id))
+    }
+
+    // 读一页正文；before 缺省到末尾
+    async readMessagePage(
+        id: string,
+        conversationId: string,
+        before: number,
+        limit: number,
+    ): Promise<ConversationPage | null> {
+        const conversation = await this.findConversation(id, conversationId)
+        if (conversation === null) {
+            return null
+        }
+        return conversationPage(conversation, before, limit)
     }
 
     async findConversation(id: string, conversationId: string): Promise<StoredConversation | null> {
@@ -630,8 +772,21 @@ export class ConversationStore {
         }
     }
 
-    async readUngrouped(): Promise<WorkspaceConversations> {
-        return await this.#readStateFile(this.#ungroupedPath())
+    async readUngrouped(): Promise<WorkspaceIndex> {
+        return toIndex(await this.#readStateFile(this.#ungroupedPath()))
+    }
+
+    async readUngroupedMessagePage(
+        conversationId: string,
+        before: number,
+        limit: number,
+    ): Promise<ConversationPage | null> {
+        const state = await this.#readStateFile(this.#ungroupedPath())
+        const conversation = state.conversations.find((item) => item.id === conversationId)
+        if (conversation === undefined) {
+            return null
+        }
+        return conversationPage(conversation, before, limit)
     }
 
     async ungroupedCount(): Promise<number> {
@@ -694,7 +849,13 @@ export class ConversationStore {
                 ...normalized,
                 workspaceRoot: workspaceRoot ?? normalized.workspaceRoot,
             }
-            const trimmedConversation = trimConversation(withRoot)
+            // 分片保存：messagesFrom 之前的部分沿用服务端正文
+            const partialFrom = countOf((value as Record<string, unknown>)["messagesFrom"])
+            const merged =
+                partialFrom !== undefined && partialFrom > 0 && existing !== undefined
+                    ? mergePartialMessages(existing, withRoot, partialFrom)
+                    : withRoot
+            const trimmedConversation = trimConversation(merged)
             const conversations = state.conversations.filter(
                 (item) => item.id !== trimmedConversation.conversation.id,
             )

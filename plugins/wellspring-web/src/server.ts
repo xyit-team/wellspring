@@ -34,6 +34,7 @@ import { renderVueHome, themeAttribute } from "./pages.ts"
 import { THEME_COOKIE, parseTheme } from "./theme.ts"
 import {
     CONVERSATION_ID,
+    MESSAGE_PAGE_LIMIT,
     WORKSPACE_ID,
     ConversationStore,
     normalizeWorkspaceName,
@@ -218,6 +219,52 @@ function recordChatTurnEvent(turn: ChatTurn, chunk: string): void {
             listener.write(chunk)
         } catch {
             turn.listeners.delete(listener)
+        }
+    }
+}
+
+/*
+ * 已作答的提问与已审批的命令：清空本轮缓冲里对应的那条事件
+ *
+ * resume 按 turn.events 原样重放，缓冲里留着 ask 会让刷新后的页面再次弹出同一个提问
+ * 这里改写成 request: null，前端忽略 request 非对象的事件
+ */
+function settleBufferedRequest(kind: "ask" | "approval", id: string): void {
+    for (const turn of chatTurns.values()) {
+        for (let index = 0; index < turn.events.length; index += 1) {
+            const chunk = turn.events[index]
+            if (chunk === undefined || !chunk.includes(id)) {
+                continue
+            }
+            const body = chunk.startsWith("data: ") ? chunk.slice(6).trimEnd() : ""
+            if (body === "") {
+                continue
+            }
+            let parsed: unknown
+            try {
+                parsed = JSON.parse(body)
+            } catch {
+                continue
+            }
+            if (parsed === null || typeof parsed !== "object") {
+                continue
+            }
+            const record = parsed as Record<string, unknown>
+            if (record["type"] !== kind) {
+                continue
+            }
+            const request = record["request"]
+            if (request === null || typeof request !== "object") {
+                continue
+            }
+            const requestId =
+                kind === "ask"
+                    ? (request as Record<string, unknown>)["askId"]
+                    : (request as Record<string, unknown>)["approvalId"]
+            if (requestId !== id) {
+                continue
+            }
+            turn.events[index] = `data: ${JSON.stringify({ type: kind, request: null })}\n\n`
         }
     }
 }
@@ -790,6 +837,19 @@ const ALLOWED_METHODS: Readonly<Record<string, readonly string[]>> = {
     "/api/chat/interject": ["POST"],
     "/api/chat/stop": ["POST"],
     "/api/chat/running": ["GET"],
+}
+
+// 分页参数：before 缺省到末尾
+function pageBefore(url: URL): number {
+    const text = url.searchParams.get("before")
+    const value = text === null ? Number.NaN : Number(text)
+    return Number.isFinite(value) ? value : Number.POSITIVE_INFINITY
+}
+
+function pageLimit(url: URL): number {
+    const text = url.searchParams.get("limit")
+    const value = text === null ? Number.NaN : Number(text)
+    return Number.isFinite(value) && value > 0 ? value : MESSAGE_PAGE_LIMIT
 }
 
 /** SPA 外壳：Vue 客户端路由由前端接管，服务端对已知客户端路径回同一份壳 */
@@ -1728,7 +1788,11 @@ async function route(request: HttpRequest, stream: HttpStreamContext): Promise<H
             return json(501, { error: "宿主不支持回答提问" })
         }
         const accepted = await currentApi.agent.respondAsk(askId, answer)
-        return json(accepted ? 200 : 404, { ok: accepted, accepted })
+        if (accepted) {
+            settleBufferedRequest("ask", askId)
+        }
+        // 未接受：提问已作答或本轮已收尾，面板来自重放时同属此情况
+        return json(200, { ok: accepted, accepted, stale: !accepted })
     }
 
     if (path.startsWith("/api/approvals/")) {
@@ -1756,7 +1820,10 @@ async function route(request: HttpRequest, stream: HttpStreamContext): Promise<H
             return json(501, { error: "宿主不支持审批" })
         }
         const accepted = await currentApi.agent.respondApproval(approvalId, approved)
-        return json(accepted ? 200 : 404, { ok: accepted, accepted })
+        if (accepted) {
+            settleBufferedRequest("approval", approvalId)
+        }
+        return json(200, { ok: accepted, accepted, stale: !accepted })
     }
 
     if (method === "GET" && path === "/api/files") {
@@ -1974,6 +2041,31 @@ async function route(request: HttpRequest, stream: HttpStreamContext): Promise<H
             return methodNotAllowed(["GET", "PUT", "DELETE"])
         }
 
+        if (segments.length === 4 && segments[3] === "messages") {
+            if (method !== "GET") {
+                return methodNotAllowed(["GET"])
+            }
+            let conversationId = ""
+            try {
+                conversationId = decodeURIComponent(segments[2] ?? "")
+            } catch {
+                return json(400, { error: "会话 id 不合法" })
+            }
+            if (!CONVERSATION_ID.test(conversationId)) {
+                return json(400, { error: "会话 id 不合法" })
+            }
+            const page = await store.readMessagePage(
+                workspaceId,
+                conversationId,
+                pageBefore(url),
+                pageLimit(url),
+            )
+            if (page === null) {
+                return json(404, { error: "会话不存在" })
+            }
+            return json(200, page)
+        }
+
         return json(404, { error: "Not Found" })
     }
 
@@ -1997,9 +2089,13 @@ async function route(request: HttpRequest, stream: HttpStreamContext): Promise<H
     }
 
     if (path.startsWith("/api/ungrouped/conversations/")) {
+        const rest = path.slice("/api/ungrouped/conversations/".length)
+        const slash = rest.indexOf("/")
+        const idPart = slash === -1 ? rest : rest.slice(0, slash)
+        const tail = slash === -1 ? "" : rest.slice(slash + 1)
         let conversationId = ""
         try {
-            conversationId = decodeURIComponent(path.slice("/api/ungrouped/conversations/".length))
+            conversationId = decodeURIComponent(idPart)
         } catch {
             return json(400, { error: "会话 id 不合法" })
         }
@@ -2007,6 +2103,23 @@ async function route(request: HttpRequest, stream: HttpStreamContext): Promise<H
             return json(400, { error: "会话 id 不合法" })
         }
         const store = getConversationStore()
+        if (tail === "messages") {
+            if (method !== "GET") {
+                return methodNotAllowed(["GET"])
+            }
+            const page = await store.readUngroupedMessagePage(
+                conversationId,
+                pageBefore(url),
+                pageLimit(url),
+            )
+            if (page === null) {
+                return json(404, { error: "会话不存在" })
+            }
+            return json(200, page)
+        }
+        if (tail !== "") {
+            return json(404, { error: "Not Found" })
+        }
         if (method === "PUT") {
             const guarded = guardWrite(request)
             if (guarded !== null) {
