@@ -876,10 +876,20 @@ async function bootstrap(params: ConfigurePayload): Promise<{
 
     let created: WellspringPlugin | null = null
     await withHookOwner(pluginId, async () => {
-        created = validatePlugin(await (module.setup as () => unknown)())
-        if (created.status !== "ok") {
-            throw new Error(`插件自报状态：${created.status}`)
+        const declared = validatePlugin(await (module.setup as () => unknown)())
+        if (declared.status !== "ok") {
+            throw new Error(`插件自报状态：${declared.status}`)
         }
+        /*
+         * 版本以 package.json 为准：清单是分发单位，插件自己再写一遍只会漂移
+         * （plugin list 读清单、网页读 setup() 返回值，两处曾出现过不同数字）
+         */
+        if (params.pluginVersion !== declared.version) {
+            logger.warn(
+                `插件 version 以 package.json 为准：${pluginId} 声明 ${declared.version}，清单 ${params.pluginVersion}`,
+            )
+        }
+        created = { ...declared, version: params.pluginVersion }
         commands.push(...(created.commands ?? []))
         agentTools.push(...(created.agentTools ?? []))
     })

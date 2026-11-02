@@ -229,7 +229,7 @@ export function setup() {
     return {
         id: "wellspring-core",
         name: "Wellspring Core",
-        version: "1.1.0",
+        version: "1.3.1",
         status: "ok" as const,
         init(pluginApi: PluginApi) {
             api = pluginApi

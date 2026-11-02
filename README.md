@@ -370,10 +370,20 @@ node src/index.ts plugin list
 
 - `publish-npm.yml`：类型检查、全量测试、构建、tarball 冒烟后发布 npm；
 - `release.yml`：把 `plugins/*/` 打包成 `<插件名>-<版本>.zip`（不含 `node_modules`，附带根 LICENSE），
-  连同 `SHA256SUMS` 一起附到同名 GitHub Release。
+  连同 `SHA256SUMS` 与 `PLUGINS.md`（插件清单）一起附到同名 GitHub Release。
 
 Release 里的插件 zip 可以直接用 `wellspring plugin install <zip>` 或网页「插件管理」上传安装；
 依赖会按插件 `package.json` 的 `packageManager` 在安装端自动安装。
+
+**插件版本独立于宿主版本**，以各自 `package.json` 的 `version` 为准（`setup()` 里写的 `version`
+由宿主覆盖，两者不一致时打一条 warning）。规则只有一条：**改动过某个插件的代码，就要涨它的版本**。
+
+- 发版前 `release.yml` 会拿上一个 tag 比对，改了代码却没涨版本会直接失败（`scripts/check-plugin-versions.mjs`）；
+  只改插件目录里的 `README.md` 不算改动；
+- 同一个版本号只会对应一份内容：打包固定 mtime 并去掉额外字段，`SHA256SUMS` 因此可以用来判断
+  两个 Release 里的同名插件是不是同一份；
+- `PLUGINS.md` 列出每个插件的版本与内容摘要，跨 Release 一眼看出哪个插件换了版本；
+- 升级插件：下载新 zip 后 `wellspring plugin update <zip>`，覆盖同名插件并保留插件数据。
 
 ### 入口与生命周期
 

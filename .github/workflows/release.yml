@@ -9,6 +9,9 @@
 #   - 带根目录 LICENSE
 #   - 不含 node_modules / .ui-review / frontend/dist；依赖由安装端按 packageManager 自动安装
 #
+# 插件版本以各自 package.json 的 version 为准（setup() 里写的 version 会被宿主覆盖）：
+# 改动过 plugins/<name>/ 的代码就必须涨版本，否则同一个文件名会对应不同内容，
+# plugin list 与 SHA256SUMS 都分辨不出新旧。校验见「校验插件版本」。
 # npm 包发布由 publish-npm.yml 负责，本工作流只产 Release 产物。
 
 name: release
@@ -36,6 +39,9 @@ jobs:
         timeout-minutes: 10
         steps:
             - uses: actions/checkout@v7
+              with:
+                  # 校验插件版本要跟上一个 tag 比对，浅克隆里没有 tag 与历史
+                  fetch-depth: 0
 
             - uses: actions/setup-node@v7
               with:
@@ -53,6 +59,18 @@ jobs:
                   fi
                   echo "版本对得上：$tag"
 
+            - name: 校验插件版本
+              # 改动过某个插件的代码，就必须涨它的 package.json version
+              if: github.event_name == 'push'
+              run: |
+                  set -euo pipefail
+                  if ! base="$(git describe --tags --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null)"; then
+                    echo "没有上一个 tag，跳过插件版本校验"
+                    exit 0
+                  fi
+                  echo "与 $base 比对"
+                  node scripts/check-plugin-versions.mjs --base "$base"
+
             - name: 打包官方插件
               run: |
                   set -euo pipefail
@@ -67,15 +85,23 @@ jobs:
                     out="$PWD/release/${name}-${version}.zip"
                     (
                       cd "$dir"
-                      zip -qr "$out" . \
+                      # 内容相同就要打出相同字节：固定 mtime 并去掉额外字段，
+                      # SHA256SUMS 才能用来判断两版是不是同一份内容
+                      find . -name node_modules -prune -o -exec touch -t 200001010000 {} +
+                      zip -qrX "$out" . \
                         -x 'node_modules/*' '*/node_modules/*' \
                            '.git/*' '*/.git/*' \
                            '*/.ui-review/*' \
                            '*/frontend/dist/*' \
                            '*.log'
                     )
-                    # 插件目录里没有根 LICENSE，统一带上仓库的 MIT 许可证
-                    zip -q -j "$out" LICENSE
+                    # 插件目录里没有根 LICENSE，统一带上仓库的 MIT 许可证；
+                    # 副本必须固定 mtime，直接 -j 追加会带上当前时间，两次打包字节就不同
+                    license_dir="$(mktemp -d)"
+                    cp LICENSE "$license_dir/LICENSE"
+                    touch -t 200001010000 "$license_dir/LICENSE"
+                    zip -qjX "$out" "$license_dir/LICENSE"
+                    rm -rf "$license_dir"
                     if ! unzip -Z1 "$out" | grep -qx 'package.json'; then
                       echo "${out} 缺少根目录 package.json"
                       exit 1
@@ -93,6 +119,19 @@ jobs:
                   done
                   test "$count" -gt 0
                   sha256sum release/*.zip > release/SHA256SUMS
+                  # 插件清单：跨 Release 一眼看出哪个插件换了版本
+                  {
+                    echo "| 插件 | 版本 | sha256 |"
+                    echo "| --- | --- | --- |"
+                    for dir in plugins/*/; do
+                      test -f "${dir}package.json" || continue
+                      name="$(node -p "require('./${dir}package.json').name")"
+                      version="$(node -p "require('./${dir}package.json').version")"
+                      sha="$(sha256sum "release/${name}-${version}.zip" | cut -d' ' -f1)"
+                      echo "| ${name} | ${version} | ${sha:0:16} |"
+                    done
+                  } > release/PLUGINS.md
+                  cat release/PLUGINS.md
                   cat release/SHA256SUMS
                   ls -lh release
 
@@ -125,7 +164,7 @@ jobs:
               run: |
                   set -euo pipefail
                   repo="$GITHUB_REPOSITORY"
-                  files=(assets/*.zip assets/SHA256SUMS)
+                  files=(assets/*.zip assets/SHA256SUMS assets/PLUGINS.md)
                   for file in "${files[@]}"; do
                     test -f "$file" || { echo "缺少产物：$file"; exit 1; }
                   done
