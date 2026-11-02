@@ -5,7 +5,7 @@
 import { existsSync } from "node:fs"
 
 import { apiKeyStatusSync, credentialsFile } from "../config/credentials.ts"
-import { describePaths, platform } from "../platform/index.ts"
+import { describePaths, isAndroid, platform } from "../platform/index.ts"
 import { SandboxManager } from "../sandbox/manager.ts"
 import { success, type CommandContext, type CommandOutcome } from "./shared.ts"
 
@@ -13,6 +13,16 @@ interface Check {
     readonly name: string
     readonly ok: boolean
     readonly detail: string
+    /** 失败时补一行下一步；成功项不打印 */
+    readonly hint?: string
+}
+
+/** sandbox 不可用时的下一步；Android 与 Linux 的出路不同 */
+function sandboxHint(): string {
+    if (isAndroid) {
+        return "插件仍可用 Node permission model（只限制文件读写）；Agent 命令需 sandbox.mode=best-effort 才以宿主身份执行"
+    }
+    return "装上 bwrap，或把 sandbox.mode 设为 best-effort（以宿主身份执行，无隔离）"
 }
 
 export async function runDoctorCommand(ctx: CommandContext): Promise<CommandOutcome> {
@@ -73,6 +83,7 @@ export async function runDoctorCommand(ctx: CommandContext): Promise<CommandOutc
         name: "sandbox",
         ok: sandboxOk,
         detail: `${ctx.settings.sandbox.mode}/${sandboxProbe.backend}/${ctx.settings.sandbox.access}${sandboxProbe.available ? "" : `：${sandboxProbe.reason ?? "不可用"}`}`,
+        ...(sandboxOk ? {} : { hint: sandboxHint() }),
     })
 
     const plugins = await ctx.loadPlugins()
@@ -86,6 +97,9 @@ export async function runDoctorCommand(ctx: CommandContext): Promise<CommandOutc
     for (const check of checks) {
         const tag = check.ok ? "[ OK  ]" : "[FAIL ]"
         ctx.elog.print(`${tag} ${check.name.padEnd(10)} ${check.detail}`)
+        if (!check.ok && check.hint !== undefined) {
+            ctx.elog.print(`${" ".repeat(19)}${check.hint}`)
+        }
     }
 
     return success({ checks })

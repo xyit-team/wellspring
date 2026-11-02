@@ -766,7 +766,7 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
             }
             if (sandboxBackend === null && sandboxSetting.backend === "auto" && !isLinux) {
                 /*
-                 * Windows 无内核级后端，退回 Node permission model
+                 * 非 Linux（Windows、Android/Termux）没有内核级后端，退回 Node permission model
                  * 只限制文件读写，仅给插件用，不做 Agent 命令后端
                  */
                 const nodePermission = new NodePermissionBackend()

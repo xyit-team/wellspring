@@ -5,10 +5,9 @@
 
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { accessSync, constants } from "node:fs"
 import { readdir, stat } from "node:fs/promises"
 import { homedir } from "node:os"
-import { basename, delimiter, isAbsolute, join, relative, resolve, sep } from "node:path"
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import type {
     HostAgentApi,
@@ -28,6 +27,7 @@ import type { CommandContext } from "../commands/shared.ts"
 import { executeTurn } from "../commands/conversation.ts"
 import { answerAsk, cancelSessionAsks } from "../agent/pending-asks.ts"
 import { credentialsFile } from "../config/credentials.ts"
+import { findExecutable } from "../platform/executable.ts"
 import { readTextIfExists } from "../platform/file.ts"
 import { openExternal, revealExternal } from "../platform/open-external.ts"
 import { DEFAULT_SETTINGS } from "../config/defaults.ts"
@@ -123,18 +123,7 @@ function runNativeCommand(command: string, args: readonly string[]): Promise<Nat
 }
 
 function hasExecutable(name: string): boolean {
-    for (const dir of (process.env["PATH"] ?? "").split(delimiter)) {
-        if (dir === "") {
-            continue
-        }
-        try {
-            accessSync(join(dir, name), constants.X_OK)
-            return true
-        } catch {
-            /* 继续找 */
-        }
-    }
-    return false
+    return findExecutable(name) !== null
 }
 
 /**

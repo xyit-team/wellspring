@@ -10,6 +10,8 @@ import type { ResolvedPaths } from "../src/platform/path.ts"
 import { DirectBackend } from "../src/sandbox/backends/direct.ts"
 import {
     BwrapBackend,
+    bwrapMissingReason,
+    bwrapProbeFailureReason,
     buildBwrapLaunch,
     buildBwrapPluginLaunch,
     resolveNodeRuntime,
@@ -17,7 +19,7 @@ import {
 import { NodePermissionBackend } from "../src/sandbox/backends/node-permission.ts"
 import { SeatbeltBackend } from "../src/sandbox/backends/seatbelt.ts"
 import { flushSandboxAudit } from "../src/sandbox/audit.ts"
-import { candidateBackends, SandboxManager } from "../src/sandbox/manager.ts"
+import { candidateBackends, SandboxManager, unavailableReason } from "../src/sandbox/manager.ts"
 
 let root = ""
 let workspace = ""
@@ -374,6 +376,54 @@ test("candidateBackends：auto 按平台挑，显式指定不跨后端回退", (
         ["seatbelt"],
     )
     assert.deepEqual(candidateBackends("nsjail", "linux"), [])
+})
+
+test("candidateBackends：android 上没有 macOS 式回退，仍然只试 bwrap", () => {
+    assert.deepEqual(
+        candidateBackends("auto", "android").map((item) => item.name),
+        ["bwrap"],
+    )
+})
+
+test("bwrap 缺失说明：Android 指向死路，其他平台给出安装方式", () => {
+    const android = bwrapMissingReason("android")
+    assert.match(android, /Termux/)
+    assert.match(android, /user namespace/)
+    /* 提示别人 apt install bubblewrap 在 Termux 上是错的 */
+    assert.doesNotMatch(android, /apt install/)
+
+    assert.match(bwrapMissingReason("linux"), /apt install bubblewrap/)
+})
+
+test("bwrap 探测失败说明：带上真实 stderr，Android 点明 user namespace", () => {
+    assert.equal(
+        bwrapProbeFailureReason(
+            "bwrap: Creating new namespace failed: Operation not permitted\n",
+            "linux",
+        ),
+        "bwrap: Creating new namespace failed: Operation not permitted",
+    )
+    assert.match(
+        bwrapProbeFailureReason("bwrap: Creating new namespace failed", "android"),
+        /Android 禁止非特权 user namespace/,
+    )
+    assert.equal(bwrapProbeFailureReason("", "linux"), "bwrap 无法创建 namespace")
+})
+
+test("unavailableReason：把最后一个候选的后端与原因带出来", () => {
+    assert.equal(unavailableReason(null), "没有可用的 OS 级 sandbox 后端")
+    assert.equal(
+        unavailableReason({ available: false, backend: "bwrap", reason: null, version: null }),
+        "没有可用的 OS 级 sandbox 后端",
+    )
+    const reason = unavailableReason({
+        available: false,
+        backend: "bwrap",
+        reason: "找不到 bwrap",
+        version: null,
+    })
+    assert.match(reason, /bwrap/)
+    assert.match(reason, /找不到 bwrap/)
 })
 
 test("执行结果透出 enforcement 与缺口说明", async () => {

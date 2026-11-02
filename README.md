@@ -255,7 +255,8 @@ await api.capabilities.webFetch("https://example.com")
 - `--permission <mode>`：单轮覆盖 `sandbox.access`；REPL 里 `/permission [mode]`
 - `sandbox.backend`：`auto` / `bwrap` / `seatbelt` / `nsjail`（`nsjail` 尚未实现）
     - `auto`：Linux 用 `bwrap`，macOS 用 `seatbelt`；显式指定后端时**不跨后端回退**（要 `bwrap` 就只在 `bwrap` 上失败）
-    - `bwrap`：Linux，mount / PID / network namespace，报 `full`
+    - `bwrap`：Linux，mount / PID / network namespace，报 `full`；按 `PATH` 查找（Termux 在 `$PREFIX/bin`、
+      NixOS 在 `/nix/store`，都不在 `/usr/bin`），找不到时说明里给出对应平台的安装方式
     - `seatbelt`：macOS，SBPL profile。launcher 优先随包的 `bin/darwin-<arch>/seatbelt-run`
       （`pnpm seatbelt:build` 构建），退回 `/usr/bin/sandbox-exec`（自 macOS 10.10 起 deprecated），
       两者都没有时 fail-closed。报 `partial`
@@ -263,6 +264,10 @@ await api.capabilities.webFetch("https://example.com")
   但需要绝对边界的调用方只能接受 `full`
 - Windows 没有内核级后端：插件使用 Node permission model 作为受限 sandbox（只限制文件读写，不隔离网络与进程）；
   Agent 的 `execute_code` 在 Windows 上仍无 OS 隔离，请把 `sandbox.mode` 设为 `best-effort`（会降级为 direct）
+- Android / Termux 同样没有内核级后端：Termux 仓库里没有 bwrap 包，Android 也禁止非特权 user namespace，
+  所以 `sandbox.backend=auto` 在 Android 上必然探测失败。插件照常加载（退回 Node permission model）；
+  Agent 的 `execute_code` 在 `strict` 下会被拒绝，要用就把 `sandbox.mode` 设为 `best-effort`，
+  此时命令以宿主身份执行、`enforcement` 报 `none`。`wellspring doctor` 的 `sandbox` 一项会写出根因与这一步
 - `sandbox.defaultTimeoutMs`、`defaultMemoryMB`、`outputLimitBytes`：Agent 代码执行的默认限制。
   `defaultTimeoutMs` 是唯一的超时来源（宿主 timer 杀进程，不再用 RLIMIT_CPU）；`defaultMemoryMB` 是物理内存上限，
   通过 systemd user scope 的 cgroup v2 `memory.max`（并关闭 swap）实施；宿主没有 systemd user manager 时
@@ -670,7 +675,7 @@ const files = await ctx.workspaceFs.list("src")
 - `${workspace}` 默认只读，写 workspace 需放进 `fs.write`
 - 没有可用 OS 后端时插件加载失败；插件不做 direct 降级
 - `sandbox.mode: off` 时插件全部拒绝加载
-- 插件后端：Linux 为 `bwrap`，macOS 为 `seatbelt`，Windows 退回 Node permission model
+- 插件后端：Linux 为 `bwrap`，macOS 为 `seatbelt`，Windows 与 Android/Termux 退回 Node permission model
 - Linux 当前环境若不允许非特权 user namespace，strict 会拒绝加载
 
 ### 插件的 HTTP 服务

@@ -8,6 +8,8 @@ import { existsSync } from "node:fs"
 import { dirname, join, relative, resolve, sep } from "node:path"
 
 import type { SandboxAccess } from "../../config/types.ts"
+import { findExecutable } from "../../platform/executable.ts"
+import { platform as currentPlatform, type PlatformName } from "../../platform/os.ts"
 import type {
     AgentLaunchInput,
     LaunchSpec,
@@ -197,6 +199,26 @@ export function buildBwrapPluginLaunch(input: PluginLaunchInput): LaunchSpec {
     }
 }
 
+/**
+ * 找不到 bwrap 时的说明
+ *
+ * Android 要单独说：Termux 仓库里没有 bwrap 包，这条路根本走不通，
+ * 报「装一下 bwrap」等于把人指向死胡同
+ */
+export function bwrapMissingReason(osPlatform: PlatformName): string {
+    if (osPlatform === "android") {
+        return "Android 上没有可用的 OS 级沙箱：Termux 仓库没有 bwrap，内核也不允许非特权 user namespace"
+    }
+    return "PATH 里找不到 bwrap（Debian/Ubuntu：apt install bubblewrap）"
+}
+
+/** bwrap 探测失败时的说明；Android 额外点明 user namespace 是根因 */
+export function bwrapProbeFailureReason(stderr: string, osPlatform: PlatformName): string {
+    const detail = stderr.trim().split("\n")[0]?.trim() ?? ""
+    const base = detail === "" ? "bwrap 无法创建 namespace" : detail
+    return osPlatform === "android" ? `${base}（Android 禁止非特权 user namespace）` : base
+}
+
 export class BwrapBackend implements SandboxBackend {
     readonly name = "bwrap"
     /* 根文件系统只读挂载后 --bind 工作区，沙箱内路径为重映射结果 */
@@ -217,16 +239,18 @@ export class BwrapBackend implements SandboxBackend {
     }
 
     async probe(): Promise<SandboxBackendStatus> {
-        if (!existsSync("/usr/bin/bwrap")) {
+        /* 按 PATH 找：Termux 在 $PREFIX/bin、NixOS 在 /nix/store，都不在 /usr/bin */
+        const command = findExecutable("bwrap")
+        if (command === null) {
             return {
                 available: false,
                 backend: this.name,
-                reason: "找不到 bwrap",
+                reason: bwrapMissingReason(currentPlatform),
                 version: null,
             }
         }
         const result = spawnSync(
-            "bwrap",
+            command,
             [
                 "--unshare-all",
                 "--die-with-parent",
@@ -246,7 +270,7 @@ export class BwrapBackend implements SandboxBackend {
             return {
                 available: false,
                 backend: this.name,
-                reason: (result.stderr ?? "").trim() || "bwrap 无法创建 namespace",
+                reason: bwrapProbeFailureReason(result.stderr ?? "", currentPlatform),
                 version: null,
             }
         }

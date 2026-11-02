@@ -137,6 +137,19 @@ export function resolveNetwork(requested: boolean | undefined, access: SandboxAc
     return requested ?? access !== "read-only"
 }
 
+/**
+ * strict 模式拒绝执行时的说明
+ *
+ * 光说「没有可用的后端」看不出该做什么：把最后一个候选的后端名与原因带上，
+ * 由调用方决定是否降级
+ */
+export function unavailableReason(last: SandboxBackendStatus | null): string {
+    if (last === null || last.reason === null) {
+        return "没有可用的 OS 级 sandbox 后端"
+    }
+    return `没有可用的 OS 级 sandbox 后端（${last.backend}：${last.reason}）`
+}
+
 export class SandboxManager {
     readonly #options: SandboxManagerOptions
     #backend: SandboxBackend | null
@@ -204,13 +217,14 @@ export class SandboxManager {
             }
             const candidates = candidateBackends(preferred, currentPlatform)
 
+            let last: SandboxBackendStatus | null = null
             for (const candidate of candidates) {
-                const status = await candidate.probe()
-                if (status.available) {
+                last = await candidate.probe()
+                if (last.available) {
                     return candidate
                 }
                 logger?.warn(
-                    { backend: candidate.name, reason: status.reason },
+                    { backend: candidate.name, reason: last.reason },
                     "sandbox backend 不可用",
                 )
             }
@@ -222,7 +236,7 @@ export class SandboxManager {
                 )
                 return new DirectBackend()
             }
-            throw new SandboxUnavailableError("没有可用的 OS 级 sandbox 后端")
+            throw new SandboxUnavailableError(unavailableReason(last))
         })()
         return await this.#resolved
     }
