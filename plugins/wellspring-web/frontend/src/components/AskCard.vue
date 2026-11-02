@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue"
+import { computed, nextTick, ref, watch } from "vue"
 
 import { answerAsk, store } from "../store"
 
 const custom = ref("")
+const input = ref<HTMLTextAreaElement | null>(null)
 const options = computed(() => store.ask?.options ?? [])
 
 /*
@@ -17,11 +18,21 @@ watch(
     () => store.ask,
     () => {
         custom.value = ""
+        void nextTick(grow)
     },
 )
 
 function choose(option: string): void {
     custom.value = option
+    void nextTick(grow)
+}
+
+// 输入框跟随内容高度，上限由 CSS max-height 约束
+function grow(): void {
+    const node = input.value
+    if (node === null) return
+    node.style.height = "auto"
+    node.style.height = `${Math.min(node.scrollHeight, 144)}px`
 }
 
 // 折叠只作用在本组件，问题抬头始终可见
@@ -81,7 +92,15 @@ function submit(answer: string | null): void {
                 </button>
             </div>
             <div class="ask-custom">
-                <textarea v-model="custom" class="ask-input" rows="1" maxlength="8000" placeholder="输入你的答案"></textarea>
+                <textarea
+                    ref="input"
+                    v-model="custom"
+                    class="ask-input"
+                    rows="1"
+                    maxlength="8000"
+                    placeholder="输入你的答案"
+                    @input="grow"
+                ></textarea>
             </div>
         </div>
         <footer v-if="!store.askMinimized" class="ask-foot">

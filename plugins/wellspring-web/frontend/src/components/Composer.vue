@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue"
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRouter } from "vue-router"
 
 import { apiJson } from "../api"
@@ -167,6 +167,11 @@ function autoGrow(): void {
     node.style.height = `${Math.min(node.scrollHeight, 200)}px`
     syncHighlightScroll()
 }
+
+// 草稿由 store 回填，不经过 onInput，回填后重新量高
+watch(draft, () => {
+    void nextTick(autoGrow)
+})
 
 function mentionRoot(): { workspaceId: string } | { workspaceRoot: string } | null {
     if (store.group === "workspace" && store.workspace !== null) {
