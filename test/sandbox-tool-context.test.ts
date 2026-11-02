@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict"
-import { mkdtemp, rm, stat } from "node:fs/promises"
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { after, before, test } from "node:test"
@@ -206,12 +206,13 @@ function agentContext(
     sessionId: string,
     permission: SandboxAccess,
     seen: string[],
+    workspaceDir: string = root,
 ): Parameters<typeof withAgentToolContext>[0] {
     return {
         sessionId,
         turn: 3,
         step: 7,
-        workspaceDir: root,
+        workspaceDir,
         permission,
         allowExec: true,
         approveExec: async () => {
@@ -354,7 +355,7 @@ test("并发写工作区：只读会话拒绝，可写会话通过", { timeout: 
     const workspace = await mkdtemp(join(root, "ws-"))
     const previousCwd = process.cwd()
     try {
-        // workspaceFs 的根是宿主 cwd
+        // workspaceFs 的根是会话工作区，不是宿主 cwd：故意把 cwd 换到别处
         process.chdir(workspace)
         const first = callProbe(client, agentContext("s-readonly", "read-only", seen), {
             mode: "write",
@@ -375,8 +376,10 @@ test("并发写工作区：只读会话拒绝，可写会话通过", { timeout: 
         assert.equal(readonlyResult.success, false, "只读会话写入应被拒绝")
         assert.match(String(readonlyResult.data["error"]), /read-only/)
         assert.equal(writableResult.success, true)
-        assert.equal(await exists(join(workspace, "readonly.txt")), false)
-        assert.equal(await exists(join(workspace, "writable.txt")), true)
+        // 落在会话工作区（agentContext 的 workspaceDir = root），而不是宿主 cwd
+        assert.equal(await exists(join(workspace, "writable.txt")), false, "不该写进宿主 cwd")
+        assert.equal(await exists(join(root, "readonly.txt")), false)
+        assert.equal(await exists(join(root, "writable.txt")), true)
     } finally {
         process.chdir(previousCwd)
         await client.close().catch(() => undefined)
@@ -405,6 +408,70 @@ test("fileRoots 写按会话权限校验", { timeout: 60_000 }, async () => {
         )
         assert.equal(writableResult.success, true)
         assert.equal(await exists(join(workspace, "allowed.txt")), true)
+    } finally {
+        await client.close().catch(() => undefined)
+    }
+})
+
+test("workspaceFs 按会话工作区解析：两个会话不串台", { timeout: 60_000 }, async () => {
+    const state = newState()
+    const seen: string[] = []
+    const client = await startProbe(state)
+    const first = await mkdtemp(join(root, "session-a-"))
+    const second = await mkdtemp(join(root, "session-b-"))
+    try {
+        const a = callProbe(client, agentContext("s-a", "workspace-write", seen, first), {
+            mode: "write",
+            tag: "A",
+            path: "same.txt",
+        })
+        await waitFor(() => state.arrivals.includes("A"), "A 进入插件")
+        const b = callProbe(client, agentContext("s-b", "workspace-write", seen, second), {
+            mode: "write",
+            tag: "B",
+            path: "same.txt",
+        })
+        await waitFor(() => state.arrivals.includes("B"), "B 进入插件")
+        await release(state, "A")
+        await release(state, "B")
+        const [firstResult, secondResult] = await Promise.all([a, b])
+
+        assert.equal(firstResult.success, true)
+        assert.equal(secondResult.success, true)
+        assert.equal(await readFile(join(first, "same.txt"), "utf8"), "A")
+        assert.equal(await readFile(join(second, "same.txt"), "utf8"), "B")
+        assert.equal(await exists(join(root, "same.txt")), false, "不该落到宿主 cwd")
+    } finally {
+        await client.close().catch(() => undefined)
+    }
+})
+
+test("workspaceFs 收工作区内绝对路径，拒绝工作区外绝对路径", { timeout: 60_000 }, async () => {
+    const state = newState()
+    const seen: string[] = []
+    const client = await startProbe(state)
+    const workspace = await mkdtemp(join(root, "abs-"))
+    try {
+        const inside = callProbe(
+            client,
+            agentContext("s-abs", "workspace-write", seen, workspace),
+            { mode: "write", tag: "IN", path: join(workspace, "abs.txt") },
+        )
+        await release(state, "IN")
+        const insideResult = await inside
+        assert.equal(insideResult.success, true)
+        assert.equal(await exists(join(workspace, "abs.txt")), true)
+
+        const outside = callProbe(
+            client,
+            agentContext("s-abs", "workspace-write", seen, workspace),
+            { mode: "write", tag: "OUT", path: join(root, "escape.txt") },
+        )
+        await release(state, "OUT")
+        const outsideResult = await outside
+        assert.equal(outsideResult.success, false)
+        assert.match(String(outsideResult.data["error"]), /不在工作区内/)
+        assert.equal(await exists(join(root, "escape.txt")), false)
     } finally {
         await client.close().catch(() => undefined)
     }

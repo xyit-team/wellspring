@@ -14,9 +14,9 @@ Agent 基础工具：`read`、`delete_file`、`execute_code`、`web_search`、`w
 
 ## delete_file
 
-把 workspace 内文件或目录**移入回收站**，不直接永久删除：`path` 是工作区相对路径，目录要 `recursive: true`。
-工作区根目录、含 `..` 的路径会被拒绝；当前回合权限为 `read-only` 时宿主直接拒绝写工作区。该工具需要插件
-声明 `${workspace}` 的 `fs.write` 权限（已包含在 `package.json`）。
+把 workspace 内文件或目录**移入回收站**，不直接永久删除：`path` 按会话工作区解析（相对路径或工作区内绝对路径），
+目录要 `recursive: true`。工作区根目录、越出工作区的路径会被拒绝；当前回合权限为 `read-only` 时宿主直接拒绝写工作区。
+该工具需要插件声明 `${workspace}` 的 `fs.write` 权限（已包含在 `package.json`）。
 
 回收站放在插件数据目录，保留原相对路径，便于原样移回：
 

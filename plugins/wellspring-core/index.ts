@@ -1,5 +1,7 @@
 // 核心 Agent 工具插件：read / delete_file（移入回收站）/ execute_code / web_search / web_fetch / SKILL 管理
 
+import { isAbsolute, relative, resolve, sep } from "node:path"
+
 import {
     getHost,
     onSessionStart,
@@ -14,40 +16,203 @@ import { moveToTrash, trashRoot } from "./trash.ts"
 
 const READ_LIMIT = 2000
 const MAX_LINE = 2000
+/** 二进制取样的字符数：只看开头，不额外读文件 */
+const BINARY_SAMPLE_CHARS = 8000
 
 function isObject(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-function readText(api: PluginApi, args: Record<string, unknown>): string {
-    const path = typeof args["file_path"] === "string" ? args["file_path"].trim() : ""
-    if (path === "") {
-        throw new Error("file_path 不能为空")
+/** 去掉路径两侧的成对引号 */
+function unquote(value: string): string {
+    const match = /^(["'`])([\s\S]*)\1$/.exec(value)
+    return match === null ? value : (match[2] ?? "").trim()
+}
+
+/** 工作区根目录；宿主还没同步过来时为空串 */
+function workspaceRoot(api: PluginApi): string {
+    const root = api.workspaceFs.root
+    return typeof root === "string" && isAbsolute(root) ? root : ""
+}
+
+/** 错误提示中的绝对路径 */
+function describePath(api: PluginApi, path: string): string {
+    const root = workspaceRoot(api)
+    return root === "" ? path : resolve(root, path)
+}
+
+/**
+ * 工作区内路径归一化
+ *
+ * 相对路径原样交给宿主，`..` 越界由 HostFileApi 拒绝
+ * 绝对路径落在工作区内时换成相对路径，工作区外抛出错误
+ * 工作区根由会话决定，插件只做换写，不做判定
+ */
+function workspacePath(api: PluginApi, args: Record<string, unknown>, key: string): string {
+    const raw = typeof args[key] === "string" ? String(args[key]).trim() : ""
+    const value = unquote(raw)
+    if (value === "") {
+        throw new Error(`${key} 不能为空`)
     }
-    return path
+    if (!isAbsolute(value)) {
+        return value
+    }
+    const root = workspaceRoot(api)
+    if (root === "") {
+        return value
+    }
+    const target = resolve(value)
+    const rel = relative(root, target)
+    if (rel === "") {
+        return "."
+    }
+    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+        throw new Error(`路径不在工作区内：${target}\n工作区根目录：${root}`)
+    }
+    return rel.split(sep).join("/")
+}
+
+function missingFile(path: string, api: PluginApi): string {
+    const root = workspaceRoot(api)
+    if (root === "") {
+        return `文件不存在：${path}`
+    }
+    return `文件不存在：${describePath(api, path)}\n工作区根目录：${root}`
+}
+
+/**
+ * 解析读取目标
+ *
+ * 一次 stat 区分三种情况：不存在、是目录、不是普通文件
+ */
+async function resolveReadTarget(
+    api: PluginApi,
+    args: Record<string, unknown>,
+): Promise<
+    | { ok: true; path: string; display: string }
+    | { ok: false; data: Record<string, unknown> }
+> {
+    const path = workspacePath(api, args, "file_path")
+    const display = describePath(api, path)
+    const info = await api.workspaceFs.stat(path)
+    if (info === null) {
+        return { ok: false, data: { error: missingFile(path, api), code: "FS_NOT_FOUND" } }
+    }
+    if (info.type === "directory") {
+        return {
+            ok: false,
+            data: {
+                error: `无法读取 "${display}"：是目录，不是普通文件`,
+                code: "FS_NOT_DIRECTORY",
+            },
+        }
+    }
+    if (info.type === "other") {
+        return {
+            ok: false,
+            data: {
+                error: `无法读取 "${display}"：不是普通文件`,
+                code: "FS_NOT_REGULAR_FILE",
+            },
+        }
+    }
+    return { ok: true, path, display }
+}
+
+/**
+ * 二进制判定：取样中出现 NUL，或替换字符占比超过一成
+ *
+ * 判定只看解码后文本的开头，不额外读文件
+ */
+function looksBinary(text: string): boolean {
+    const sample = text.slice(0, BINARY_SAMPLE_CHARS)
+    if (sample === "") {
+        return false
+    }
+    if (sample.includes("\u0000")) {
+        return true
+    }
+    let replaced = 0
+    for (const char of sample) {
+        if (char === "\ufffd") {
+            replaced += 1
+        }
+    }
+    return replaced / sample.length > 0.1
+}
+
+/**
+ * offset / limit 校验
+ *
+ * 缺省取默认值，显式给出时要求正整数；offset 超出总行数时报错
+ */
+function readWindow(args: Record<string, unknown>, display: string, total: number):
+    | { ok: true; start: number; limit: number }
+    | { ok: false; data: Record<string, unknown> } {
+    const rawOffset = args["offset"]
+    const rawLimit = args["limit"]
+    const offset = rawOffset === undefined ? 1 : Number(rawOffset)
+    const limit = rawLimit === undefined ? READ_LIMIT : Number(rawLimit)
+    if (!Number.isInteger(offset) || offset < 1) {
+        return {
+            ok: false,
+            data: { error: `offset 需要是正整数，收到：${String(rawOffset)}`, code: "FS_BAD_ARGUMENT" },
+        }
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > READ_LIMIT) {
+        return {
+            ok: false,
+            data: {
+                error: `limit 需要是 1-${READ_LIMIT} 的整数，收到：${String(rawLimit)}`,
+                code: "FS_BAD_ARGUMENT",
+            },
+        }
+    }
+    // offset 超出总行数
+    if (offset > total && !(total === 0 && offset === 1)) {
+        return {
+            ok: false,
+            data: {
+                error: `offset ${offset} 超出范围："${display}" 共 ${total} 行`,
+                code: "FS_OUT_OF_RANGE",
+            },
+        }
+    }
+    return { ok: true, start: offset - 1, limit }
 }
 
 async function readTool(
     api: PluginApi,
     args: Record<string, unknown>,
 ): Promise<{ success: boolean; data: Record<string, unknown> }> {
-    const filePath = readText(api, args)
-    const text = await api.workspaceFs.readText(filePath)
+    const target = await resolveReadTarget(api, args)
+    if (!target.ok) {
+        return { success: false, data: target.data }
+    }
+    const text = await api.workspaceFs.readText(target.path)
     if (text === null) {
-        return { success: false, data: { error: `文件不存在：${filePath}` } }
+        // stat 与读取之间文件被删除
+        return { success: false, data: { error: missingFile(target.path, api), code: "FS_NOT_FOUND" } }
+    }
+    if (looksBinary(text)) {
+        return {
+            success: false,
+            data: {
+                error: `无法读取 "${target.display}"：二进制文件，不是 UTF-8 文本`,
+                code: "FS_NOT_TEXT",
+            },
+        }
     }
     const lines = text.split(/\r?\n/)
     if (lines.length > 0 && lines[lines.length - 1] === "") {
         lines.pop()
     }
-    const offsetValue = Number(args["offset"] ?? 1)
-    const limitValue = Number(args["limit"] ?? READ_LIMIT)
-    const offset = Number.isInteger(offsetValue) ? Math.max(1, offsetValue) : 1
-    const limit = Number.isInteger(limitValue)
-        ? Math.max(1, Math.min(READ_LIMIT, limitValue))
-        : READ_LIMIT
-    const start = offset - 1
-    const end = Math.min(lines.length, start + limit)
+    const window = readWindow(args, target.display, lines.length)
+    if (!window.ok) {
+        return { success: false, data: window.data }
+    }
+    const start = window.start
+    const end = Math.min(lines.length, start + window.limit)
     const width = String(lines.length).length
     const out: string[] = []
     for (let index = start; index < end; index += 1) {
@@ -60,14 +225,11 @@ async function readTool(
     if (end < lines.length) {
         out.push(`[继续读取：offset=${end + 1}]`)
     }
-    return { success: true, data: { content: out.join("\n") } }
+    return { success: true, data: { content: out.join("\n"), path: target.display } }
 }
 
-function deletePathOf(args: Record<string, unknown>): string {
-    const path = typeof args["path"] === "string" ? args["path"].trim() : ""
-    if (path === "") {
-        throw new Error("path 不能为空")
-    }
+function deletePathOf(api: PluginApi, args: Record<string, unknown>): string {
+    const path = workspacePath(api, args, "path")
     const normalized = path.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "")
     if (normalized === "" || normalized === "." || normalized.split("/").includes("..")) {
         throw new Error("不能删除工作区根目录，路径也不能包含 ..")
@@ -79,11 +241,11 @@ async function deleteFileTool(
     api: PluginApi,
     args: Record<string, unknown>,
 ): Promise<{ success: boolean; data: Record<string, unknown> }> {
-    const filePath = deletePathOf(args)
+    const filePath = deletePathOf(api, args)
     const recursive = args["recursive"] === true || args["recursive"] === "true"
     const info = await api.workspaceFs.stat(filePath)
     if (info === null) {
-        return { success: false, data: { error: `路径不存在：${filePath}` } }
+        return { success: false, data: { error: `路径不存在：${describePath(api, filePath)}` } }
     }
     if (info.type === "directory" && !recursive) {
         return {
@@ -229,7 +391,7 @@ export function setup() {
     return {
         id: "wellspring-core",
         name: "Wellspring Core",
-        version: "1.3.1",
+        version: "1.3.2",
         status: "ok" as const,
         init(pluginApi: PluginApi) {
             api = pluginApi
@@ -243,7 +405,7 @@ export function setup() {
                     "read",
                     "读取 workspace 内 UTF-8 文本，返回带行号内容",
                     {
-                        file_path: "路径",
+                        file_path: "路径 相对路径按工作区根解析，工作区内绝对路径同样接受",
                         offset: { type: "integer", description: "起始行", optional: true },
                         limit: { type: "integer", description: "行数", optional: true },
                     },
@@ -255,7 +417,7 @@ export function setup() {
                     "delete_file",
                     "把 workspace 内的文件或目录移到回收站（插件数据目录的 trash/），不会永久删除；目录需要 recursive:true",
                     {
-                        path: "工作区相对路径",
+                        path: "路径 相对路径按工作区根解析，工作区内绝对路径同样接受",
                         recursive: {
                             type: "boolean",
                             description: "true 时连同目录内容一起移入回收站",

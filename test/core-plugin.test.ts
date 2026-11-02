@@ -122,6 +122,99 @@ test("wellspring-core 注册全部 Agent 工具", { timeout: 20_000 }, async () 
     assert.equal(result.success, true)
     assert.match(String(result.data["content"] ?? ""), /1│ alpha/)
 
+    // 工作区内的绝对路径直接可用：模型手里往往是绝对路径
+    const absoluteRead = await read.tool.call({ file_path: join(process.cwd(), relative) })
+    assert.equal(absoluteRead.success, true)
+    assert.match(String(absoluteRead.data["content"] ?? ""), /1│ alpha/)
+
+    // 工作区外：明确拒绝并带上根目录
+    await assert.rejects(
+        async () => await read.tool.call({ file_path: join(tmpdir(), "outside-workspace.txt") }),
+        /不在工作区内/,
+    )
+
+    // 不存在：错误里带绝对路径与工作区根目录，够调用方自己纠偏
+    const missingRead = await read.tool.call({ file_path: ".tmp/core-read-missing.txt" })
+    assert.equal(missingRead.success, false)
+    assert.match(String(missingRead.data["error"]), /文件不存在/)
+    assert.match(String(missingRead.data["error"]), /工作区根目录/)
+    assert.match(String(missingRead.data["error"]), /core-read-missing\.txt/)
+
+    // 路径指向目录：给一句人话，别抛 EISDIR
+    const dirRead = await read.tool.call({ file_path: ".tmp" })
+    assert.equal(dirRead.success, false)
+    assert.match(String(dirRead.data["error"]), /是目录/)
+    assert.equal(dirRead.data["code"], "FS_NOT_DIRECTORY")
+
+    // offset 越界：明确报错，而不是返回一个空窗口配一句 "lines 9999-100 of 100"
+    const pastEof = await read.tool.call({ file_path: relative, offset: 9999 })
+    assert.equal(pastEof.success, false)
+    assert.match(String(pastEof.data["error"]), /offset 9999 超出范围/)
+    assert.equal(pastEof.data["code"], "FS_OUT_OF_RANGE")
+
+    // offset / limit 静默夹取会掩盖调用错误，改成结构化失败
+    const badOffset = await read.tool.call({ file_path: relative, offset: 0 })
+    assert.equal(badOffset.success, false)
+    assert.match(String(badOffset.data["error"]), /offset 需要是正整数/)
+    assert.equal(badOffset.data["code"], "FS_BAD_ARGUMENT")
+
+    const badLimit = await read.tool.call({ file_path: relative, limit: 0 })
+    assert.equal(badLimit.success, false)
+    assert.match(String(badLimit.data["error"]), /limit 需要是 1-2000/)
+
+    // 二进制文件：直说，不要吐解码乱码
+    await writeFile(join(process.cwd(), ".tmp", "core-binary.bin"), Buffer.from([0, 1, 2, 0, 255]))
+    const binaryRead = await read.tool.call({ file_path: ".tmp/core-binary.bin" })
+    assert.equal(binaryRead.success, false)
+    assert.match(String(binaryRead.data["error"]), /二进制文件/)
+    assert.equal(binaryRead.data["code"], "FS_NOT_TEXT")
+
+    /*
+     * 会话工作区优先于宿主 cwd
+     * `wellspring start` 常驻时 cwd 是启动目录，与会话工作区不同；
+     * 同名文件放在两处，按会话上下文读到的必须是会话工作区那份。
+     */
+    const sessionWorkspace = await mkdtemp(join(tmpdir(), "wellspring-core-ws-"))
+    await writeFile(join(sessionWorkspace, "same-name.txt"), "session\n")
+    await writeFile(join(process.cwd(), ".tmp", "same-name.txt"), "cwd\n")
+    const sessionRead = await withAgentToolContext(
+        {
+            sessionId: "s-workspace",
+            turn: 1,
+            step: 1,
+            workspaceDir: sessionWorkspace,
+            permission: "workspace-write",
+            allowExec: true,
+            elog: new Elog({
+                stdout: { write: () => {} },
+                stderr: { write: () => {} },
+                color: false,
+            }),
+        },
+        async () => await read.tool.call({ file_path: ".tmp/same-name.txt" }),
+    )
+    assert.equal(sessionRead.success, false, "会话工作区里没有 .tmp/same-name.txt")
+    assert.match(String(sessionRead.data["error"]), /文件不存在/)
+    const sessionRootRead = await withAgentToolContext(
+        {
+            sessionId: "s-workspace",
+            turn: 1,
+            step: 1,
+            workspaceDir: sessionWorkspace,
+            permission: "workspace-write",
+            allowExec: true,
+            elog: new Elog({
+                stdout: { write: () => {} },
+                stderr: { write: () => {} },
+                color: false,
+            }),
+        },
+        async () => await read.tool.call({ file_path: "same-name.txt" }),
+    )
+    assert.equal(sessionRootRead.success, true)
+    assert.match(String(sessionRootRead.data["content"] ?? ""), /1│ session/)
+    await rm(sessionWorkspace, { recursive: true, force: true })
+
     // delete_file：文件、目录（需 recursive）、不存在路径、工作区根目录
     const deleteTool = agentTools.get("delete_file")
     assert.ok(deleteTool)

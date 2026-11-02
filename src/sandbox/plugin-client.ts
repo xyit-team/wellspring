@@ -9,7 +9,7 @@ import { WebSocketServer, type WebSocket } from "ws"
 import { randomUUID } from "node:crypto"
 import { cp, mkdir, rm, stat } from "node:fs/promises"
 import { createRequire } from "node:module"
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 
 import type { Logger } from "pino"
 
@@ -339,6 +339,8 @@ export interface PluginSandboxClientOptions {
     readonly limits: SandboxLimits
     readonly logger: Logger
     readonly permissions: PluginSandboxPermissions
+    /** 宿主工作区根目录；Agent 工具调用优先用本次会话的 workspaceDir */
+    readonly workspaceRoot?: string
     readonly dataAccess?: PluginDataService
     readonly capabilities?: HostCapabilities
     readonly agent?: HostAgentService
@@ -443,10 +445,13 @@ export class PluginSandboxClient {
     #pluginDataDir: string
     #sandboxDir: string
     #hostSdkDir: string
+    /** 插件自身 fs 调用的 workspace 根，构造时固定 */
+    #workspaceRoot: string
 
     constructor(options: PluginSandboxClientOptions) {
         this.#options = options
         this.#pluginDataDir = ""
+        this.#workspaceRoot = resolve(options.workspaceRoot ?? process.cwd())
         this.#sandboxDir = join(options.paths.dataDir, "sandbox", this.#sandboxId)
         this.#hostSdkDir = join(this.#sandboxDir, "host")
         activeClients.add(this)
@@ -1758,15 +1763,24 @@ export class PluginSandboxClient {
         }
     }
 
+    /*
+     * 本次工具调用所属会话的工作区
+     *
+     * Agent 上下文带 workspaceDir；插件自身发起时用构造时固定的根
+     * 长驻服务的宿主 cwd 是启动目录，与会话工作区不同
+     */
+    #workspaceRootFor(contextId: string | undefined): string {
+        const context = resolveAgentToolContext(contextId)
+        const declared = context?.workspaceDir ?? this.#workspaceRoot
+        return resolve(declared)
+    }
+
     async #handleFs(
         method: string,
         params: Record<string, unknown>,
         workspace: boolean,
         contextId?: string,
     ): Promise<unknown> {
-        const api: HostFileApi = workspace
-            ? createPluginFileApi(process.cwd())
-            : createPluginFileApi(this.#pluginDataDir)
         const action = method.replace(/^host\.(fs|workspaceFs)\./, "")
         if (workspace && FS_WRITE_ACTIONS.includes(action)) {
             if (!this.#options.permissions.workspaceWrite) {
@@ -1774,7 +1788,13 @@ export class PluginSandboxClient {
             }
             this.#assertWriteAllowed(writeScopeOf(contextId), "工作区")
         }
-        return await this.#dispatchFileApi(api, action, method, params)
+        if (!workspace) {
+            const api = createPluginFileApi(this.#pluginDataDir)
+            return await this.#dispatchFileApi(api, action, method, params, null)
+        }
+        const root = this.#workspaceRootFor(contextId)
+        const api = createPluginFileApi(root)
+        return await this.#dispatchFileApi(api, action, method, params, root)
     }
 
     // 只读会话与已结束的调用都拒绝写
@@ -1811,7 +1831,29 @@ export class PluginSandboxClient {
         if (FS_WRITE_ACTIONS.includes(action)) {
             this.#assertWriteAllowed(writeScopeOf(contextId), "工作区")
         }
-        return await this.#dispatchFileApi(api, action, method, params)
+        return await this.#dispatchFileApi(api, action, method, params, null)
+    }
+
+    /*
+     * 工作区内路径归一化
+     *
+     * 相对路径原样交给 HostFileApi，`..` 越界由它拒绝
+     * 绝对路径落在工作区内时换成相对路径，工作区外抛出错误
+     */
+    static #relativeWithin(root: string, raw: string): string {
+        const value = raw.trim()
+        if (!isAbsolute(value)) {
+            return value
+        }
+        const target = resolve(value)
+        const rel = relative(root, target)
+        if (rel === "") {
+            return ""
+        }
+        if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+            throw new PluginSandboxError(`路径不在工作区内：${target}（工作区：${root}）`)
+        }
+        return rel.split(sep).join("/")
     }
 
     async #dispatchFileApi(
@@ -1819,44 +1861,54 @@ export class PluginSandboxClient {
         action: string,
         method: string,
         params: Record<string, unknown>,
+        workspaceRoot: string | null,
     ): Promise<unknown> {
-        const path = String(params["path"] ?? "")
+        const raw = String(params["path"] ?? "")
+        const path =
+            workspaceRoot === null ? raw : PluginSandboxClient.#relativeWithin(workspaceRoot, raw)
         switch (action) {
             case "readText":
-                return { text: await api.readText(path) }
+                return this.#withRoot(workspaceRoot, { text: await api.readText(path) })
             case "readBytes": {
                 const data = await api.readBytes(path)
-                return { data: data === null ? null : Buffer.from(data).toString("base64") }
+                return this.#withRoot(workspaceRoot, {
+                    data: data === null ? null : Buffer.from(data).toString("base64"),
+                })
             }
             case "readJson":
-                return { value: await api.readJson(path) }
+                return this.#withRoot(workspaceRoot, { value: await api.readJson(path) })
             case "writeText":
                 await api.writeText(path, String(params["text"] ?? ""))
-                return {}
+                return this.#withRoot(workspaceRoot, {})
             case "writeBytes":
                 await api.writeBytes(
                     path,
                     new Uint8Array(Buffer.from(String(params["data"] ?? ""), "base64")),
                 )
-                return {}
+                return this.#withRoot(workspaceRoot, {})
             case "writeJson":
                 await api.writeJson(path, params["value"])
-                return {}
+                return this.#withRoot(workspaceRoot, {})
             case "list":
-                return { entries: await api.list(path) }
+                return this.#withRoot(workspaceRoot, { entries: await api.list(path) })
             case "stat":
-                return { stat: await api.stat(path) }
+                return this.#withRoot(workspaceRoot, { stat: await api.stat(path) })
             case "mkdir":
                 await api.mkdir(path)
-                return {}
+                return this.#withRoot(workspaceRoot, {})
             case "remove":
                 await api.remove(path)
-                return {}
+                return this.#withRoot(workspaceRoot, {})
             case "exists":
-                return { exists: await api.exists(path) }
+                return this.#withRoot(workspaceRoot, { exists: await api.exists(path) })
             default:
                 throw new Error(`未知 fs 方法：${method}`)
         }
+    }
+
+    /** workspace 应答附带实际根目录 */
+    #withRoot<T extends Record<string, unknown>>(root: string | null, result: T): T {
+        return root === null ? result : { ...result, root }
     }
 
     #registerRemoteHooks(hooks: readonly string[]): void {

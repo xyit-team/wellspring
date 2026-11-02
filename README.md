@@ -208,7 +208,7 @@ await api.capabilities.webFetch("https://example.com")
 
 `run` 模式提供：
 
-- `read`：读取 workspace 内 UTF-8 文本，带行号，支持 offset/limit
+- `read`：读取 workspace 内 UTF-8 文本，带行号，支持 offset/limit。相对路径按会话工作区解析（`api.workspaceFs.root`），工作区内的绝对路径也接受；offset 越界、二进制文件、非 UTF-8 文本都返回带 `code` 的错误（`FS_NOT_FOUND` / `FS_NOT_DIRECTORY` / `FS_NOT_TEXT` / `FS_OUT_OF_RANGE` / `FS_BAD_ARGUMENT`），不返回空的读取窗口
 - `delete_file`：把 workspace 内文件或目录移入插件数据目录的回收站（`<dataDir>/plugin-data/wellspring-core/trash/<时间戳>/files/<原路径>`），不会永久删除；`path` 为工作区相对路径，目录要 `recursive:true`；工作区根目录与 `..` 路径拒绝，只读权限下不允许调用。回收站保留最近 200 次删除，恢复时把 `files/` 里的条目移回原路径即可
 - `execute_code`：sandbox 内执行命令；默认 `read-only`，普通命令不弹审批；模型请求 `workspace-write` / `danger-full-access` 时才审批。
   沙箱把当前 Node 安装前缀挂到 `/opt/wellspring`（`node` / `npm` / `npx` 都在 PATH 上）；`HOME=/scratch`，
@@ -462,7 +462,7 @@ onShutdown(() => {
 | `pluginDataDir`            | 插件数据目录，已创建                                          |
 | `pluginConfig`             | `<configDir>/plugins/<id>.json` 内容                          |
 | `fs`                       | 插件数据目录内的文件 API                                      |
-| `workspaceFs`              | 当前工作目录的文件 API，需 `fs.read` 声明 `${workspace}`      |
+| `workspaceFs`              | 当前会话工作区的文件 API，需 `fs.read` 声明 `${workspace}`    |
 | `registerCommand(command)` | 运行时注册命令                                                |
 | `registerAgentTool(tool)`  | 运行时注册 Agent 工具                                         |
 | `pluginData(pluginId)`     | 读取依赖插件的数据目录，无权限返回 `null`                     |
@@ -636,8 +636,8 @@ const files = await ctx.workspaceFs.list("src")
 ```
 
 - `fs` 的根是插件数据目录 `<dataDir>/plugin-data/<id>/`
-- `workspaceFs` 的根是当前工作目录
-- 路径必须是相对路径，`..`、绝对路径会被拒绝
+- `workspaceFs` 的根是当前会话工作区（`api.workspaceFs.root` 是它的绝对路径；没有会话上下文时退回宿主启动目录）
+- 路径必须落在根内：`..` 越界会被拒绝；绝对路径只要在根内会换算成相对路径
 - 也可以从 `api.fs` / `api.workspaceFs` 使用（`init(api)` 与钩子之后）
 
 所有插件强制运行在独立 sandbox 子进程内，平台不再提供进程内插件模式。插件只能通过 RPC bridge 使用宿主 API，不能直接访问宿主文件系统。

@@ -26,7 +26,12 @@ export interface HostFileRootsApi {
 }
 
 export interface HostFileApi {
-    /** 该 API 的根目录，仅用于展示/诊断 */
+    /**
+     * 该 API 的根目录（绝对路径）
+     *
+     * `workspaceFs.root` 为当前会话工作区，随工作区变化，宿主在应答中附带最新值
+     * `fs.root` 为插件数据目录
+     */
     readonly root: string
     readText(path: string): Promise<string | null>
     readBytes(path: string): Promise<Uint8Array | null>

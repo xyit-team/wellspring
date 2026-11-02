@@ -625,9 +625,11 @@ const output: HostOutput = {
 
 type FileApiCall = (method: string, params?: Record<string, unknown>) => Promise<unknown>
 
-function fileApi(root: string, call: FileApiCall): HostFileApi {
+function fileApi(root: string | (() => string), call: FileApiCall): HostFileApi {
     return {
-        root,
+        get root(): string {
+            return typeof root === "string" ? root : root()
+        },
         async readText(path) {
             const result = (await call("readText", { path })) as { text: string | null }
             return result.text
@@ -676,8 +678,26 @@ function fileApi(root: string, call: FileApiCall): HostFileApi {
     }
 }
 
-function createFileApi(scope: "fs" | "workspaceFs"): HostFileApi {
-    return fileApi(scope, (method, params = {}) => bridgeRequest(`host.${scope}.${method}`, params))
+/*
+ * workspace 的真实根目录，由宿主应答带回
+ *
+ * 插件进程看到的是挂载后视图（bwrap 下为 /workspace）
+ * workspaceFs 应答带 root，取最近一次
+ */
+let workspaceRoot = ""
+
+function createFileApi(scope: "fs" | "workspaceFs", dataRoot = ""): HostFileApi {
+    const call = async (method: string, params: Record<string, unknown> = {}) => {
+        const result = (await bridgeRequest(`host.${scope}.${method}`, params)) as
+            | { readonly root?: unknown }
+            | null
+            | undefined
+        if (scope === "workspaceFs" && typeof result?.root === "string" && result.root !== "") {
+            workspaceRoot = result.root
+        }
+        return result
+    }
+    return scope === "workspaceFs" ? fileApi(() => workspaceRoot, call) : fileApi(dataRoot, call)
 }
 
 function createRootedFileApi(root: string): HostFileApi {
@@ -809,7 +829,7 @@ async function bootstrap(params: ConfigurePayload): Promise<{
         output,
         pluginDataDir: params.pluginDataDir,
         pluginConfig: params.pluginConfig,
-        fs: createFileApi("fs"),
+        fs: createFileApi("fs", params.pluginDataDir),
         workspaceFs: createFileApi("workspaceFs"),
         fileRoots: {
             async open(root: string): Promise<HostFileApi> {
