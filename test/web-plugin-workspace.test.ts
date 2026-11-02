@@ -1012,11 +1012,7 @@ test("未分组：移除工作区后会话保留并可继续", { timeout: 20_000
         assert.equal(moved?.workspaceRoot, workspaceRoot, "保留原工作区目录以便继续对话")
         assert.equal(moved?.messageCount, 1, "未分组的列表同样只给条数")
         const movedPage = (await (
-            await request(
-                base,
-                cookie,
-                `/api/ungrouped/conversations/${conversation.id}/messages`,
-            )
+            await request(base, cookie, `/api/ungrouped/conversations/${conversation.id}/messages`)
         ).json()) as ConversationPageView
         assert.equal(movedPage.messages[0]?.text, "hello")
 
