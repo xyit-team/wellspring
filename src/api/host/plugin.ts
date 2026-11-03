@@ -99,6 +99,32 @@ import type { HostHttpApi } from "./http.ts"
 import type { HostPluginsApi } from "./plugins.ts"
 import type { HostWorkspacesApi } from "./workspace.ts"
 
+/**
+ * 探针返回的最新版本信息
+ *
+ * 探针返回版本号字符串或本对象
+ */
+export interface PluginLatestVersion {
+    /** 最新版本号，例如 1.4.0 */
+    readonly version: string
+    /**
+     * 最新版的下载地址，可选
+     *
+     * 必须是 http/https 的 .zip 文件（安装入口只接受 zip 包）
+     * tarball、GitHub 仓库页、npm 页面记为探针错误
+     */
+    readonly downloadUrl?: string
+}
+
+/**
+ * 版本探针：返回远端最新版本
+ *
+ * 异步；实现通常查询 npm registry、GitHub Release 或更新服务
+ * 宿主仅在检查更新时调用，注册阶段不发起网络请求
+ * 抛错记为这一项的失败，不影响其它插件
+ */
+export type PluginVersionProbe = () => Promise<string | PluginLatestVersion>
+
 export interface AgentTool {
     readonly name: string
     readonly introduction: AgentToolIntroduction
@@ -147,6 +173,13 @@ export interface PluginApi {
     readonly fileRoots: HostFileRootsApi
     registerCommand(command: PluginCommand): void
     registerAgentTool?(tool: AgentTool): void
+    /**
+     * 注册版本探针（在 init 里调用）
+     *
+     * 宿主收集后由 `plugin list --check` 或 checkUpdates() 触发，与已装版本比较
+     * 每个插件一个探针，重复注册抛错
+     */
+    registerVersionProbe?(probe: PluginVersionProbe): void
     /** 依赖链上的插件 data 目录；无权限返回 null */
     pluginData(pluginId: string): Promise<HostFileApi | null>
     /** 宿主能力：代码执行、网页搜索/抓取 */

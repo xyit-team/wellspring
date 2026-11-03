@@ -35,6 +35,7 @@ import type {
     HostPluginsApi,
     HostPluginListResult,
     HostPluginMutationResult,
+    HostPluginUpdateResult,
 } from "../api/host/plugins.ts"
 import type {
     HostWorkspaceAddInput,
@@ -101,6 +102,7 @@ import type {
     PluginCommandContext,
     PluginConfig,
     PluginStatus,
+    PluginVersionProbe,
     WellspringPlugin,
 } from "../api/host/plugin.ts"
 import { eventBus } from "../event/event.ts"
@@ -252,6 +254,8 @@ interface PluginRuntime {
     readonly agentTools: AgentTool[]
     hooks: readonly HookKind[]
     readonly api: PluginApi
+    /** init 里交出来的版本探针；宿主通过 plugin.getLatestVersion 请求调用 */
+    versionProbe: PluginVersionProbe | null
     initialized: boolean
 }
 
@@ -493,6 +497,13 @@ function remotePlugins(): HostPluginsApi {
         },
         async enable(id: string): Promise<HostPluginMutationResult> {
             return (await bridgeRequest("host.plugins.enable", { id })) as HostPluginMutationResult
+        },
+        async checkUpdates(): Promise<HostPluginUpdateResult> {
+            return (await bridgeRequest(
+                "host.plugins.checkUpdates",
+                {},
+                RPC_TIMEOUT_MS.pluginsCheckUpdates,
+            )) as HostPluginUpdateResult
         },
         async disable(id: string): Promise<HostPluginMutationResult> {
             return (await bridgeRequest("host.plugins.disable", { id })) as HostPluginMutationResult
@@ -819,6 +830,8 @@ async function bootstrap(params: ConfigurePayload): Promise<{
     const pluginId = params.pluginId
     const commands: PluginCommand[] = []
     const agentTools: AgentTool[] = []
+    /** init 里注册的版本探针；宿主通过 plugin.getLatestVersion 请求取最新版本 */
+    let versionProbe: PluginVersionProbe | null = null
 
     const api: PluginApi = {
         apiVersion: 1,
@@ -844,6 +857,21 @@ async function bootstrap(params: ConfigurePayload): Promise<{
         },
         registerAgentTool: (tool: AgentTool): void => {
             agentTools.push(tool)
+        },
+        registerVersionProbe: (probe: PluginVersionProbe): void => {
+            if (typeof probe !== "function") {
+                throw new TypeError("版本探针必须是函数")
+            }
+            // 每个插件一个探针，重复注册报错
+            if (versionProbe !== null || (runtime !== null && runtime.versionProbe !== null)) {
+                throw new Error("版本探针已经注册过，每个插件只能注册一个")
+            }
+            versionProbe = probe
+            // runtime 在 bootstrap 创建，init 后回填探针
+            // 不回填则 plugin.getLatestVersion 始终读到 null
+            if (runtime !== null) {
+                runtime.versionProbe = probe
+            }
         },
         pluginData: async (targetId: string): Promise<HostFileApi | null> => {
             return remotePluginData(targetId)
@@ -924,6 +952,7 @@ async function bootstrap(params: ConfigurePayload): Promise<{
         agentTools,
         hooks: listHookKinds(pluginId),
         api,
+        versionProbe,
         initialized: false,
     }
     runtime = current
@@ -962,6 +991,8 @@ function readyOf(current: PluginRuntime): {
         introduction: { params: Record<string, unknown>; content: string }
     }>
     hooks: string[]
+    /** init 里是否注册了版本探针 */
+    hasVersionProbe: boolean
 } {
     return {
         plugin: {
@@ -985,6 +1016,7 @@ function readyOf(current: PluginRuntime): {
             },
         })),
         hooks: current.hooks.map((kind) => HOOK_API_NAME[kind]),
+        hasVersionProbe: current.versionProbe !== null,
     }
 }
 
@@ -1117,6 +1149,17 @@ async function handleHostRequest(request: RpcRequest): Promise<void> {
                     ? await invoke()
                     : await toolContext.run(contextId, invoke)
             })
+        } else if (request.method === "plugin.getLatestVersion") {
+            if (runtime === null) {
+                throw new Error("插件尚未初始化")
+            }
+            /*
+             * 探针由插件在 init 里注册，可能查网络：这里不加额外超时，
+             * 由宿主的检查更新统一控制（超时就放弃这一项，不影响其它插件）
+             * 原样透传：字符串或 { version, downloadUrl }，校验交给宿主
+             */
+            const probe = runtime.versionProbe
+            result = probe === null ? null : await withHookOwner(runtime.owner, probe)
         } else if (request.method === "plugin.init") {
             if (runtime === null) {
                 throw new Error("插件尚未初始化")

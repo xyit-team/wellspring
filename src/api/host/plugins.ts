@@ -47,6 +47,26 @@ export interface HostPluginMutationResult {
     readonly error?: string
 }
 
+/** 单个插件的检查更新结果 */
+export interface HostPluginUpdateEntry {
+    readonly id: string
+    /** 已装版本（来自 package.json） */
+    readonly installed: string
+    /** 插件自报的最新版本；没有探针、探针失败或超时为 null */
+    readonly latest: string | null
+    readonly updateAvailable: boolean
+    /** 失败原因；成功或没有探针时为 null */
+    readonly error: string | null
+    /** 插件是否注册了版本探针 */
+    readonly hasProbe: boolean
+    /** 最新版 zip 包地址；插件没给或地址不合法时为 null */
+    readonly downloadUrl: string | null
+}
+
+export interface HostPluginUpdateResult {
+    readonly plugins: readonly HostPluginUpdateEntry[]
+}
+
 export interface HostPluginsApi {
     /** 列出插件根目录下的全部插件（含禁用与加载失败的） */
     list(): Promise<HostPluginListResult>
@@ -56,4 +76,12 @@ export interface HostPluginsApi {
     remove(id: string): Promise<HostPluginMutationResult>
     enable(id: string): Promise<HostPluginMutationResult>
     disable(id: string): Promise<HostPluginMutationResult>
+    /**
+     * 检查更新
+     *
+     * 调用插件的版本探针（可能查询网络），与已装版本比较
+     * 探针可只报版本号，也可附带最新版 zip 地址
+     * 单个插件失败不影响其他插件；无探针的插件标 hasProbe: false
+     */
+    checkUpdates(): Promise<HostPluginUpdateResult>
 }

@@ -142,6 +142,8 @@ export interface SandboxPluginReady {
     readonly commands: readonly SandboxPluginCommandMeta[]
     readonly agentTools: readonly SandboxAgentToolMeta[]
     readonly hooks: readonly string[]
+    /** init 里注册了版本探针；旧插件没有这个字段，按未注册处理 */
+    readonly hasVersionProbe?: boolean
 }
 
 /** stat 但不存在时返回 null，用于 cwd 校验 */
@@ -882,6 +884,9 @@ export class PluginSandboxClient {
         }
         if (method === "host.plugins.disable") {
             return await service.disable(String(params["id"] ?? ""))
+        }
+        if (method === "host.plugins.checkUpdates") {
+            return await service.checkUpdates()
         }
         throw new PluginSandboxError(`不支持的 plugins 方法：${method}`)
     }
@@ -1956,6 +1961,17 @@ export class PluginSandboxClient {
 
     async runHook(hook: string, payload: Record<string, unknown>): Promise<unknown> {
         return await this.#request("plugin.hook", { hook, payload }, 30_000)
+    }
+
+    /**
+     * 取插件的最新版本
+     *
+     * 探针在 init 里注册，通常查询网络，超时宽于普通 RPC
+     * 未注册探针时返回 null；探针抛错原样抛给调用方
+     * 返回形态由插件决定（字符串或 { version, downloadUrl }），宿主侧校验
+     */
+    async getLatestVersion(timeoutMs = 10_000): Promise<unknown> {
+        return await this.#request("plugin.getLatestVersion", {}, timeoutMs)
     }
 
     commandStubs(): PluginCommand[] {

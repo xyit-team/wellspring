@@ -17,9 +17,11 @@ import type {
     HostPluginInstallInput,
     HostPluginListResult,
     HostPluginMutationResult,
+    HostPluginUpdateResult,
     HostPluginsApi,
 } from "../api/host/plugins.ts"
 import type { ResolvedPaths } from "../platform/path.ts"
+import { checkPluginUpdates } from "./version-probes.ts"
 import {
     ensureDir,
     readJsonIfExists,
@@ -169,6 +171,28 @@ export function createHostPluginManager(options: HostPluginManagerOptions): Host
                 }
             } catch (error) {
                 logger.warn({ error: errorText(error) }, "读取插件列表失败")
+                return { plugins: [] }
+            }
+        },
+
+        /**
+         * 检查更新：探针由插件注册，此处负责并发调用与失败隔离
+         * 停用的插件一并检查
+         */
+        async checkUpdates(): Promise<HostPluginUpdateResult> {
+            try {
+                const entries = await scan()
+                const checks = await checkPluginUpdates(
+                    entries.map((entry) => ({
+                        id: entry.id,
+                        version: entry.version,
+                        // 探针按归属名注册，可能和对外 id 不同
+                        probeIds: [entry.dir, entry.name],
+                    })),
+                )
+                return { plugins: checks }
+            } catch (error) {
+                logger.warn({ error: errorText(error) }, "检查插件更新失败")
                 return { plugins: [] }
             }
         },

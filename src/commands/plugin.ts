@@ -15,6 +15,7 @@ import { linkPlugin, removePlugin } from "../plugin/loader.ts"
 import { PLUGIN_NAME, pluginsRoot } from "../plugin/paths.ts"
 import { scaffoldPlugin } from "../plugin/scaffold.ts"
 import { readPluginState, setPluginEnabled } from "../plugin/state.ts"
+import { checkPluginUpdates, type PluginUpdateCheck } from "../plugin/version-probes.ts"
 import { failure, success, type CommandContext, type CommandOutcome } from "./shared.ts"
 
 interface ScannedPlugin {
@@ -91,6 +92,44 @@ function dependentsOf(
         .map((plugin) => plugin.dirName)
 }
 
+/**
+ * 加载插件并获取各自的最新版本
+ *
+ * 探针在 init 里注册，需先启动插件进程
+ * 该开销仅属 `list --check`；普通 list 只读目录
+ */
+async function loadAndCheckUpdates(ctx: CommandContext): Promise<Map<string, PluginUpdateCheck>> {
+    await ctx.loadPlugins()
+    const plugins = await scanPluginDirs(ctx.paths)
+    const checks = await checkPluginUpdates(
+        plugins.map((plugin) => ({
+            id: plugin.dirName,
+            version: plugin.version,
+            // 探针以 package.json 的 name 注册，缺失时退回目录名
+            probeIds: [plugin.name],
+        })),
+    )
+    return new Map(checks.map((check) => [check.id, check]))
+}
+
+/** 检查结果行 */
+function describeUpdate(check: PluginUpdateCheck | undefined): string {
+    if (check === undefined) {
+        return "检查更新：没有结果"
+    }
+    if (!check.hasProbe) {
+        return "检查更新：插件没有注册版本探针"
+    }
+    if (check.error !== null) {
+        return `检查更新失败：${check.error}`
+    }
+    if (!check.updateAvailable) {
+        return `已是最新（${check.installed}）`
+    }
+    const download = check.downloadUrl === null ? "" : `  下载：${check.downloadUrl}`
+    return `可更新：${check.installed} → ${check.latest}${download}`
+}
+
 export async function runPluginCommand(
     ctx: CommandContext,
     argv: readonly string[],
@@ -100,6 +139,8 @@ export async function runPluginCommand(
         force: { type: "boolean" },
         ignore: { type: "boolean" },
         dir: { type: "string" },
+        // 只对 list 有意义：问每个插件「最新版本是多少」
+        check: { type: "boolean" },
     })
     if (!parsed.isSuccess()) {
         return { result: Result.error<unknown>(parsed.getCode() ?? USAGE_CODES.invalidValue) }
@@ -110,17 +151,29 @@ export async function runPluginCommand(
     }
     const force = booleanValue(line.values, "force")
     const ignore = booleanValue(line.values, "ignore")
+    const check = booleanValue(line.values, "check")
 
     try {
         switch (subcommand) {
             case "list": {
                 const plugins = await scanPluginDirs(ctx.paths)
+                // --check 需插件进程在场（探针在 init 里注册）
+                // 仅此路径加载插件，默认 list 只读目录
+                const updates = check ? await loadAndCheckUpdates(ctx) : null
                 for (const plugin of plugins) {
                     const deps = plugin.deps.length === 0 ? "-" : plugin.deps.join(",")
                     const status = plugin.enabled ? "enabled" : "disabled"
                     ctx.elog.print(
                         `${plugin.dirName}  ${plugin.name}@${plugin.version}  ${status}  deps=${deps}`,
                     )
+                    if (updates === null) continue
+                    ctx.elog.print(`  ${describeUpdate(updates.get(plugin.dirName))}`)
+                }
+                if (updates !== null) {
+                    const count = [...updates.values()].filter(
+                        (item) => item.updateAvailable,
+                    ).length
+                    ctx.elog.print(count === 0 ? "没有可用更新" : `${count} 个插件有可用更新`)
                 }
                 return success(plugins)
             }

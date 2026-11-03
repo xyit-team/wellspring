@@ -26,6 +26,7 @@ import type {
     AgentTool,
     PluginCommand,
     PluginConfig,
+    PluginLatestVersion,
     PluginStatus,
     WellspringPlugin,
 } from "../api/host/plugin.ts"
@@ -54,6 +55,7 @@ import { createHostModelsService } from "./models-service.ts"
 import { createHostNetworkService } from "./network-service.ts"
 import { loadPluginConfig } from "./runtime.ts"
 import { readPluginState, setPluginEnabled } from "./state.ts"
+import { removeVersionProbe, setVersionProbe } from "./version-probes.ts"
 import {
     createHostPluginManager,
     type HostPluginManager,
@@ -218,6 +220,30 @@ interface PluginEntry {
     error: string | null
     disabled: boolean
     sandboxClient: PluginSandboxClient | null
+}
+
+/**
+ * 收集插件的版本探针
+ *
+ * 探针在 init 里注册，运行于 sandbox 进程，宿主侧存 RPC 包装
+ * init 回报 hasVersionProbe 时才注册
+ */
+function attachVersionProbe(
+    client: PluginSandboxClient,
+    owner: string,
+    ready: { readonly hasVersionProbe?: boolean },
+): void {
+    if (ready.hasVersionProbe !== true) {
+        return
+    }
+    setVersionProbe(owner, async () => {
+        const value = await client.getLatestVersion()
+        if (value === null || value === undefined) {
+            throw new Error("插件没有注册版本探针")
+        }
+        // 形态交给 version-probes 校验：字符串或 { version, downloadUrl }
+        return value as string | PluginLatestVersion
+    })
 }
 
 function ownerOf(dirName: string, pkg: PluginPackageJson | null): string {
@@ -386,6 +412,11 @@ async function cleanupEntry(entry: PluginEntry, options: LoadPluginsOptions): Pr
     }
     options.agentTools?.removePlugin(entry.plugin?.id ?? entry.owner)
     removeHooksByOwner(entry.owner)
+    // 插件已经关掉了，探针再留着只会让检查更新报「sandbox 已关闭」
+    removeVersionProbe(entry.owner)
+    if (entry.plugin !== null) {
+        removeVersionProbe(entry.plugin.id)
+    }
 }
 
 /** 按 deps 做稳定拓扑排序；循环依赖 / 缺失依赖的节点会写入 error */
@@ -590,6 +621,7 @@ async function hotEnableEntry(state: RuntimeState, idOrDir: string): Promise<Plu
     publishHostPlugins(state.entries, state.options.registry)
     try {
         const ready = await entry.sandboxClient.initialize()
+        attachVersionProbe(entry.sandboxClient, entry.owner, ready)
         for (const command of entry.sandboxClient.commandStubs()) {
             state.options.registry.register(ready.plugin.id, command)
         }
@@ -892,6 +924,7 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
         if (entry.sandboxClient !== null) {
             try {
                 const ready = await entry.sandboxClient.initialize()
+                attachVersionProbe(entry.sandboxClient, entry.owner, ready)
                 for (const command of entry.sandboxClient.commandStubs()) {
                     options.registry.register(ready.plugin.id, command)
                 }

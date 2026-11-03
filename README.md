@@ -342,6 +342,7 @@ node src/index.ts plugin install ./plugins/my-plugin    # 目录或 zip；有依
 node src/index.ts plugin update  ./dist/my-plugin.zip    # 覆盖已安装的同名插件；link 进来的开发插件不会被覆盖
 node src/index.ts plugin remove <name>                     # 被依赖时拒绝；加 --ignore 强制删除
 node src/index.ts plugin list
+node src/index.ts plugin list --check                        # 顺带问每个插件「最新版本是多少」
 ```
 
 仓库自带官方插件：[plugins/wellspring-core](plugins/wellspring-core)、[plugins/wellspring-web](plugins/wellspring-web)、[plugins/wellspring-http](plugins/wellspring-http)、[plugins/wellspring-code](plugins/wellspring-code)。
@@ -368,6 +369,44 @@ node src/index.ts plugin list
 - 版本号（如 `npm@11.20.0`）只作声明，实际使用 PATH 中的同名命令，不经过 corepack；
 - 自动安装会执行依赖包的生命周期脚本，只安装可信来源的插件；
 - 网页 `/plugins` 上传 zip 走同一条安装逻辑，单个 zip 上限 10 MB；安装依赖需要网络，耗时取决于依赖大小。
+
+### 让宿主知道有新版本
+
+插件自己知道最新版本在哪儿（npm registry、GitHub Release、自建更新服务），宿主不该写死。
+所以在 `init` 里交出一个异步探针：
+
+```ts
+export function setup() {
+    return {
+        id: "my-plugin",
+        name: "My Plugin",
+        version: "0.1.0",
+        status: "ok",
+        init(api) {
+            api.registerVersionProbe?.(async () => ({
+                version: "0.2.0",
+                downloadUrl: "https://example.com/my-plugin-0.2.0.zip",
+            }))
+        },
+    }
+}
+```
+
+- 只报版本号时返回字符串：`async () => "0.2.0"`
+- `downloadUrl` 可选，**给出时必须是 http/https 的 .zip**（安装入口只接受 zip 包）
+  tarball 与仓库页面在检查阶段报错
+- 探针仅在 `plugin list --check` 或宿主 `plugins.checkUpdates()` 时调用，**加载插件时不发起网络请求**
+- 单个探针抛错 / 超时（10 秒）/ 返回空只影响这一项
+- 每个插件一个探针，重复注册报错
+
+比较按 semver 规则（预发布低于同号正式版）；解析不出版本号的值（`latest` 这类标签）不计为更新。
+
+```text
+$ wellspring plugin list --check
+wellspring-core  @xyit/wellspring-core@1.3.2  enabled  deps=-
+  可更新：1.3.2 → 1.4.0  下载：https://example.com/wellspring-core-1.4.0.zip
+```
+
 
 ### 发版产物
 
@@ -440,9 +479,10 @@ onShutdown(() => {
 ```
 
 - `setup()` 返回对象必须包含 `status: "ok" | "failed"`；`failed` 时端会跳过命令注册
-- `init(api)` 在每次加载插件时都会执行；`onInit` 只由 `wellspring start` 触发，`run` / `chat` / `plugin list` 等命令不会触发
+- `init(api)` 在每次加载插件时都会执行；`onInit` 只由 `wellspring start` 触发，`run` / `chat` 等命令不会触发（`plugin list` 默认也不加载插件，加 `--check` 才加载）
 - 插件配置：`<configDir>/plugins/<id>.json`，通过 `api.pluginConfig` / `ctx.pluginConfig` 读取
 - 插件数据：`<dataDir>/plugin-data/<id>/`，通过 `api.pluginDataDir` / `ctx.pluginDataDir` 使用
+- `api.registerVersionProbe(fn)` 在 `init` 里交出「最新版本」，供 `plugin list --check` 使用（见上文「让宿主知道有新版本」）
 - `deps` 声明插件依赖，加载器会按依赖拓扑排序；缺失依赖或循环依赖会标记失败
 - `plugin disable <name>` / `plugin enable <name>` 会把状态写到 `<dataDir>/plugins-state.json`，下次运行生效
 - 插件里的 `console.*` 会被拦截，输出用 `ctx.logger` / `ctx.output` / `api.logger`
