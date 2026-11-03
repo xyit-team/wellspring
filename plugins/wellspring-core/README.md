@@ -72,6 +72,55 @@ metadata:
 
 安装时校验 frontmatter、限制单文件与总资源大小、阻止资源路径越界；已存在默认拒绝，传 `overwrite: true` 覆盖。
 
+## 结果整形：模型只看渲染后的文本
+
+工具的 `data` 是给界面、日志和测试用的结构化结果，逐字段进上下文只会占满窗口。
+核心工具里 `execute_code` / `query_task` / `stop_task` / `web_search` / `web_fetch`
+都通过 `render.ts` 交给宿主一段 `content`，模型只看这段文本，`data` 留在界面与日志里。
+
+渲染形状照 `dsh-tool-bash` 的约定：
+
+```text
+<stdout>
+[stderr]
+<stderr>
+[退出码：1]
+[超时：进程已被终止]
+[产物] /abs/report.pdf（1.5 kB）
+```
+
+- 正文是 stdout；stderr 单独成段；条件标记（截断 / 超时 / 信号 / 非 0 退出码 / OOM / 产物）每个占一行
+- `sandboxId`、`backend`、`access`、`enforcementNotes`、`memoryLimitReason`、`artifactDir` 等元数据**不进上下文**
+- 空输出写成 `（无输出）`，避免模型误判成工具没跑；非 0 退出码是供模型解读的结果，不是工具错误
+- 失败只留 `工具失败：<error>`，无 JSON 包装
+- `web_search` 只给标题、链接、摘要（丢掉 `content` 与 `authority`）；`web_fetch` 给标题 + 正文
+- 模型侧文本进会话日志的 `tool/result.content`（回放用），结构化结果同事件的 `presentation` 字段（排查用）
+
+`read` / `skill_*` / `delete_file` 返回人读文本（`data.content`），行为不变
+
+## 结果上限：源头有界
+
+`retention.ts` 定义每个工具的上下文预算（`LIMITS`），与 sandbox 的
+`outputLimitBytes`（进程产出上限）互相独立
+
+| 工具 | 上限 | 留哪一段 | 模型怎么拿到更多 |
+| --- | --- | --- | --- |
+| `read` | 2000 行 / 单行 2000 字符 / 单页 51200 字节 | 从 `offset` 起的头部窗口 | `offset` 翻页（footer 直接给下一页） |
+| `execute_code` | stdout 8000 字符、stderr 4000 字符 | 尾部（截断点对齐到整行） | 重定向到文件后再 `read` |
+| `web_fetch` | 首 80000 + 末 20000 字符 | 首尾，中间折成 `[...]` | 换更具体的页面 |
+| `web_search` | 10 条、单条摘要 300 字符 | 头部 | 换更具体的查询 |
+
+三条规则：
+
+- **保留区间由工具决定**：命令输出与日志取尾部，网页正文取首尾，搜索清单取头部
+  机制层（`retainHead` / `retainTail` / `retainHeadTail`）不含语义判断
+- **截断必须说明**：每处上限在文本中留一行说明并给出省略量
+  模型无法区分「文件末尾」与「到达上限」时会重复重试或误判任务完成
+- **恢复动作由工具提供**：`read` 给出下一页 `offset`，`execute_code` 要求重定向到文件
+
+切口永不劈开 UTF-16 代理对；`retainTailLines` 还会把开头那段被裁开的半行丢掉，
+否则 `progress 1428` 会变成难读的 `8`。
+
 ## 网络工具
 
 `web_search` / `web_fetch` 调 `openai.baseUrl`（DeepSeek）的 `/v1/tools/search`、`/v1/tools/fetch`。

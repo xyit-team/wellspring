@@ -10,12 +10,12 @@ import {
     type PluginApi,
 } from "wellspring/api/host/index.ts"
 
+import { renderExec, renderFetch, renderReadWindow, renderSearch, renderStop, renderTask } from "./render.ts"
+import { LIMITS } from "./retention.ts"
 import { buildSessionSystemPrompt } from "./session-prompt.ts"
 import { registerSkillTools } from "./skills.ts"
 import { moveToTrash, trashRoot } from "./trash.ts"
 
-const READ_LIMIT = 2000
-const MAX_LINE = 2000
 /** 二进制取样的字符数：只看开头，不额外读文件 */
 const BINARY_SAMPLE_CHARS = 8000
 
@@ -152,18 +152,18 @@ function readWindow(args: Record<string, unknown>, display: string, total: numbe
     const rawOffset = args["offset"]
     const rawLimit = args["limit"]
     const offset = rawOffset === undefined ? 1 : Number(rawOffset)
-    const limit = rawLimit === undefined ? READ_LIMIT : Number(rawLimit)
+    const limit = rawLimit === undefined ? LIMITS.readLines : Number(rawLimit)
     if (!Number.isInteger(offset) || offset < 1) {
         return {
             ok: false,
             data: { error: `offset 需要是正整数，收到：${String(rawOffset)}`, code: "FS_BAD_ARGUMENT" },
         }
     }
-    if (!Number.isInteger(limit) || limit < 1 || limit > READ_LIMIT) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > LIMITS.readLines) {
         return {
             ok: false,
             data: {
-                error: `limit 需要是 1-${READ_LIMIT} 的整数，收到：${String(rawLimit)}`,
+                error: `limit 需要是 1-${LIMITS.readLines} 的整数，收到：${String(rawLimit)}`,
                 code: "FS_BAD_ARGUMENT",
             },
         }
@@ -211,21 +211,8 @@ async function readTool(
     if (!window.ok) {
         return { success: false, data: window.data }
     }
-    const start = window.start
-    const end = Math.min(lines.length, start + window.limit)
-    const width = String(lines.length).length
-    const out: string[] = []
-    for (let index = start; index < end; index += 1) {
-        const line = lines[index] ?? ""
-        const textLine = line.length > MAX_LINE ? `${line.slice(0, MAX_LINE)}…` : line
-        out.push(`${String(index + 1).padStart(width)}│ ${textLine}`)
-    }
-    out.push("")
-    out.push(`[lines ${start + 1}-${end} of ${lines.length}]`)
-    if (end < lines.length) {
-        out.push(`[继续读取：offset=${end + 1}]`)
-    }
-    return { success: true, data: { content: out.join("\n"), path: target.display } }
+    const page = renderReadWindow(lines, window.start, window.limit)
+    return { success: true, data: { content: page.content, path: target.display } }
 }
 
 function deletePathOf(api: PluginApi, args: Record<string, unknown>): string {
@@ -368,6 +355,12 @@ async function callCapability(
     }
 }
 
+/**
+ * 注册一个工具
+ *
+ * render 把 data 渲染成模型侧文本；给出后 data 仅用于界面与日志
+ * 未给出时沿用宿主旧规则（data.content 或序列化）
+ */
 function tool(
     name: string,
     content: string,
@@ -375,13 +368,18 @@ function tool(
     call: (
         args: Record<string, unknown>,
     ) => Promise<{ success: boolean; data: Record<string, unknown> }>,
+    render?: (data: Record<string, unknown>) => string,
 ): AgentTool {
     return {
         name,
         introduction: { params, content },
         call: async (...values: unknown[]) => {
             const input = isObject(values[0]) ? values[0] : {}
-            return await call(input)
+            const result = await call(input)
+            if (render === undefined) {
+                return result
+            }
+            return { success: result.success, data: result.data, content: render(result.data) }
         },
     }
 }
@@ -391,7 +389,7 @@ export function setup() {
     return {
         id: "wellspring-core",
         name: "Wellspring Core",
-        version: "1.3.2",
+        version: "1.4.0",
         status: "ok" as const,
         init(pluginApi: PluginApi) {
             api = pluginApi
@@ -436,6 +434,7 @@ export function setup() {
                         count: { type: "integer", description: "结果数", optional: true },
                     },
                     async (args) => await callCapability(api as PluginApi, "web_search", args),
+                    renderSearch,
                 ),
             )
             api.registerAgentTool?.(
@@ -444,6 +443,7 @@ export function setup() {
                     "抓取网页 Markdown 正文",
                     { url: "网页地址" },
                     async (args) => await callCapability(api as PluginApi, "web_fetch", args),
+                    renderFetch,
                 ),
             )
             api.registerAgentTool?.(
@@ -454,6 +454,7 @@ export function setup() {
                         task_id: { type: "string", description: "任务 id，可留空", optional: true },
                     },
                     async (args) => await callCapability(api as PluginApi, "query_task", args),
+                    renderTask,
                 ),
             )
             api.registerAgentTool?.(
@@ -469,6 +470,7 @@ export function setup() {
                         task_id: { type: "string", description: "任务 id，可留空", optional: true },
                     },
                     async (args) => await callCapability(api as PluginApi, "stop_task", args),
+                    renderStop,
                 ),
             )
             api.registerAgentTool?.(
@@ -519,6 +521,7 @@ export function setup() {
                         },
                     },
                     async (args) => await callCapability(api as PluginApi, "execute_code", args),
+                    renderExec,
                 ),
             )
         },

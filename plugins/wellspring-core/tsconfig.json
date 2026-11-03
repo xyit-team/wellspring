@@ -7,6 +7,6 @@
             "wellspring/*": ["../../src/*"]
         }
     },
-    "include": ["index.ts", "skills.ts"],
+    "include": ["index.ts", "skills.ts", "render.ts", "retention.ts"],
     "exclude": ["node_modules"]
 }

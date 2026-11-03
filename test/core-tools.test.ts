@@ -1,12 +1,15 @@
 import assert from "node:assert/strict"
-import { cp, mkdtemp, readFile, rm } from "node:fs/promises"
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { after, before, test } from "node:test"
 
 import pino from "pino"
 
+import { withAgentToolContext } from "../src/agent/tool-context.ts"
+import { LIMITS } from "../plugins/wellspring-core/retention.ts"
 import { DEFAULT_SETTINGS } from "../src/config/defaults.ts"
+import { getElog, initElog, type ElogStream } from "../src/logger/elog4js.ts"
 import type { ResolvedPaths } from "../src/platform/path.ts"
 import { DirectBackend } from "../src/sandbox/backends/direct.ts"
 import { AgentToolRegistry } from "../src/plugin/agent-tools.ts"
@@ -20,6 +23,9 @@ let dataDir = ""
 before(async () => {
     root = await mkdtemp(join(tmpdir(), "wellspring-skill-quoting-"))
     dataDir = join(root, "data")
+    // execute_code 需要 Agent 工具上下文，先初始化日志流
+    const output: ElogStream = { write: () => undefined }
+    initElog({ stdout: output, stderr: output, color: false, json: false })
 })
 
 after(async () => {
@@ -71,6 +77,85 @@ async function loadCoreTools(): Promise<AgentToolRegistry> {
     assert.equal(plugins.find((plugin) => plugin.id === "wellspring-core")?.status, "ok")
     return agentTools
 }
+
+test("read 受单页字节预算约束：超额就收尾并给出下一页", { timeout: 30_000 }, async () => {
+    const agentTools = await coreTools()
+    const read = agentTools.get("read")
+    assert.ok(read)
+    // 3000 行 × 约 40 字节，超过 51200 字节单页预算
+    const line = "一二三四五六七八九十".repeat(2)
+    const body = Array.from({ length: 3000 }, (_, index) => `${index} ${line}`).join("\n")
+    await writeFile(join(root, "big.txt"), `${body}\n`, "utf8")
+
+    // 工作区取自 Agent 工具上下文，缺省为进程 cwd
+    const inWorkspace = async <T>(run: () => Promise<T>): Promise<T> =>
+        await withAgentToolContext(
+            {
+                sessionId: "core-tools-test",
+                turn: 1,
+                step: 1,
+                workspaceDir: root,
+                permission: "read-only",
+                allowExec: false,
+                elog: getElog(),
+            },
+            run,
+        )
+
+    const result = await inWorkspace(async () => await read.tool.call({ file_path: "big.txt" }))
+    assert.equal(result.success, true, JSON.stringify(result.data))
+    const content = String(result.data["content"])
+    assert.match(content, /\[lines 1-\d+ of 3000\]/)
+    assert.match(content, /本页在 \d+ 字节处收尾/, "要说明为什么提前结束")
+    assert.match(content, /继续读取：offset=\d+/)
+    // 模型侧文本不超过单页预算
+    assert.ok(
+        Buffer.byteLength(content, "utf8") < LIMITS.readBytes + 8192,
+        `单页 ${Buffer.byteLength(content, "utf8")} 字节`,
+    )
+    // 未截断时无截断提示
+    const small = await inWorkspace(
+        async () => await read.tool.call({ file_path: "big.txt", limit: 5 }),
+    )
+    const smallText = String(small.data["content"])
+    assert.match(smallText, /\[lines 1-5 of 3000\]/)
+    assert.ok(!smallText.includes("字节处收尾"), smallText)
+})
+
+test(
+    "execute_code 给出模型侧文本：data 的结构化字段不再进上下文",
+    { timeout: 60_000 },
+    async () => {
+        const agentTools = await coreTools()
+        const exec = agentTools.get("execute_code")
+        assert.ok(exec)
+        const result = await withAgentToolContext(
+            {
+                sessionId: "core-tools-test",
+                turn: 1,
+                step: 1,
+                workspaceDir: root,
+                permission: "read-only",
+                allowExec: true,
+                elog: getElog(),
+            },
+            async () =>
+                // 插件运行于 sandbox，命令须在宿主与沙箱内均可用
+                await exec.tool.call(
+                    process.platform === "win32"
+                        ? { command: "cmd", argv: ["/c", "echo hi"] }
+                        : { command: "echo", argv: ["hi"] },
+                ),
+        )
+        assert.equal(result.success, true, JSON.stringify(result.data))
+        // 模型侧文本为一行输出，无 JSON 包装
+        assert.equal(result.content, "hi")
+        assert.ok(!String(result.content).includes("sandboxId"), "元数据不该出现在模型侧文本里")
+        // 结构化结果保留给界面与日志
+        assert.equal(typeof result.data["sandboxId"], "string")
+        assert.equal(result.data["exitCode"], 0)
+    },
+)
 
 test("skill_modify 容忍 description / whenToUse 多包一层引号", { timeout: 20_000 }, async () => {
     const agentTools = await coreTools()

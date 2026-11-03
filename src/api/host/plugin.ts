@@ -80,7 +80,17 @@ export interface AgentToolIntroduction {
 
 export interface AgentCallToolResult {
     readonly success: boolean
+    /** 给界面、日志与测试的结构化结果：不进模型上下文 */
     readonly data: Record<string, unknown>
+    /**
+     * 模型侧文本
+     *
+     * 给出时模型只看到这段文字，data 仅用于界面与日志
+     * 缺省时宿主取 data.content（字符串）或序列化 data，老插件无需改动
+     *
+     * 由工具渲染：字段取舍与截断后的恢复指引均属工具语义
+     */
+    readonly content?: string
 }
 
 import type { HostAgentApi } from "./agent.ts"

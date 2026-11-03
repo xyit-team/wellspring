@@ -660,6 +660,8 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
             ctx.elog.toolCall(toolLabel(call.name), toolSummary(call.name, args))
             let toolContent = ""
             let toolOk = false
+            /** 界面与日志侧文本；工具未渲染模型侧文本时为 null */
+            let toolPresentation: string | null = null
             if (askToolBuiltin && call.name === ASK_TOOL_NAME) {
                 const outcome = await runAskTool(call.arguments, step)
                 toolContent = outcome.content
@@ -692,12 +694,20 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
                             },
                             async () => await record.tool.call(args),
                         )
-                        toolContent =
-                            typeof result.data["content"] === "string"
+                        // 模型侧文本优先取工具渲染的 content；缺省沿用旧规则（data.content 或序列化）
+                        const rendered =
+                            result.content ??
+                            (typeof result.data["content"] === "string"
                                 ? result.data["content"]
-                                : result.success
-                                  ? JSON.stringify(result.data)
-                                  : `工具失败：${JSON.stringify(result.data)}`
+                                : null)
+                        toolContent =
+                            rendered ??
+                            (result.success
+                                ? JSON.stringify(result.data)
+                                : `工具失败：${JSON.stringify(result.data)}`)
+                        // 工具给出模型侧文本时，data 仅供界面与日志
+                        toolPresentation =
+                            result.content === undefined ? null : JSON.stringify(result.data)
                         toolOk = result.success
                     } catch (error) {
                         const message = error instanceof Error ? error.message : String(error)
@@ -712,7 +722,7 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
                 const firstLine = toolContent.split("\n")[0] ?? ""
                 ctx.elog.toolResult(`失败：${firstLine.slice(0, 160)}`)
             }
-            const toolEvent = toolEventResult(toolContent)
+            const toolEvent = toolEventResult(toolPresentation ?? toolContent)
             params.onTool?.({
                 id: call.id,
                 name: call.name,
@@ -731,6 +741,8 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
                     callId: call.id,
                     name: call.name,
                     content: toolContent,
+                    // 结构化结果，供界面回放与排查
+                    ...(toolPresentation === null ? {} : { presentation: toolEvent.result }),
                 },
             })
             messages.push({
