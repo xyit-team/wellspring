@@ -407,7 +407,6 @@ wellspring-core  @xyit/wellspring-core@1.3.2  enabled  deps=-
   可更新：1.3.2 → 1.4.0  下载：https://example.com/wellspring-core-1.4.0.zip
 ```
 
-
 ### 发版产物
 
 推 `v*` 标签会触发两个工作流：
