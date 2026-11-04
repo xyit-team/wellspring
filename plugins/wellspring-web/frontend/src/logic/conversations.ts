@@ -38,6 +38,17 @@ export function normalizeProcessItem(value) {
             at: typeof value.at === "number" && value.at >= 0 ? Math.floor(value.at) : 0
         }
     }
+    if (value.kind === "prepare") {
+        return {
+            kind: "prepare",
+            text: typeof value.text === "string" ? value.text.slice(0, 4000) : "",
+            at: typeof value.at === "number" && value.at >= 0 ? Math.floor(value.at) : 0,
+            status:
+                value.status === "ok" || value.status === "error" || value.status === "stopped"
+                    ? value.status
+                    : "running"
+        }
+    }
     if (value.kind !== "tool") return null
     if (typeof value.name !== "string" || value.name === "") return null
     var tool = {

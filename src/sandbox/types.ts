@@ -95,6 +95,13 @@ export interface LaunchSpec {
     readonly env: Readonly<Record<string, string>>
 }
 
+/** 后端在启动命令前需要做的异步准备工作（例如 Windows ACL 授予） */
+export interface SandboxPrepareInput {
+    readonly workspaceDir: string
+    readonly scratchDir: string
+    readonly access?: SandboxAccess
+}
+
 export interface PluginLaunchInput {
     readonly pluginDir: string
     /** 插件内入口的相对路径，例如 index.ts */
@@ -146,6 +153,10 @@ export interface SandboxBackend {
     enforcement(access: SandboxAccess): SandboxEnforcement
     /** partial / none 的具体缺口，full 返回空数组 */
     enforcementNotes(access: SandboxAccess): readonly string[]
+    /** 可选：启动前的异步准备（Windows ACL 等）；必须 fail-closed */
+    prepare?(input: SandboxPrepareInput): Promise<void>
+    /** 可选：删除 prepare 加到 workspace/scratch 上的 ACL（工作区删除前调用） */
+    cleanup?(input: SandboxPrepareInput): Promise<void>
     probe(): Promise<SandboxBackendStatus>
     buildAgentLaunch(input: AgentLaunchInput): LaunchSpec
     buildPluginLaunch(input: PluginLaunchInput): LaunchSpec

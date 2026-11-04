@@ -188,6 +188,7 @@ export function createHostCapabilities(options: HostCapabilitiesOptions): HostCa
                 cwd,
                 workspaceDir: context.workspaceDir,
                 access,
+                sessionId: context.sessionId,
             })
             if (result.exitCode !== 0) {
                 context.elog.toolResult(`exit=${String(result.exitCode)}`)
@@ -205,6 +206,7 @@ export function createHostCapabilities(options: HostCapabilitiesOptions): HostCa
                 cwd,
                 workspaceDir: context.workspaceDir,
                 access,
+                sessionId: context.sessionId,
             })
             const info = registerBackgroundTask(handle)
             context.elog.toolResult(`后台任务 ${info.taskId}`)

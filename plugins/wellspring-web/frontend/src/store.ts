@@ -1265,6 +1265,53 @@ function applyStreamEvent(
             endRunningReasoning(assistant)
             applyTool(assistant, event)
             return
+        case "sandbox-prepare": {
+            /*
+             * 工作区准备期间显示一行「准备工作区」；完成后移除。
+             * 事件来自宿主 SandboxManager -> eventBus -> web 插件 SSE。
+             */
+            const phase = event.phase
+            if (!Array.isArray(assistant.process)) assistant.process = []
+            let item = assistant.process.find(
+                (entry) => entry.kind === "prepare",
+            ) as any
+            if (phase === "started") {
+                if (item === undefined) {
+                    item = {
+                        kind: "prepare",
+                        text: "正在准备工作区…",
+                        at: assistant.text.length,
+                        status: "running",
+                    }
+                    assistant.process.push(item)
+                } else {
+                    item.status = "running"
+                    item.text = "正在准备工作区…"
+                }
+                return
+            }
+            if (phase === "failed") {
+                if (item === undefined) {
+                    item = {
+                        kind: "prepare",
+                        text: "准备工作区失败",
+                        at: assistant.text.length,
+                        status: "error",
+                    }
+                    assistant.process.push(item)
+                } else {
+                    item.status = "error"
+                    item.text = `准备工作区失败：${typeof event.error === "string" ? event.error : "未知错误"}`
+                }
+                return
+            }
+            /* completed：短暂状态，不留在时间线里 */
+            if (item !== undefined) {
+                const index = assistant.process.indexOf(item)
+                if (index >= 0) assistant.process.splice(index, 1)
+            }
+            return
+        }
         case "steer":
             // 插话作为一条过程行插进回复，和其它过程行共用同一条时间线
             if (typeof event.text === "string" && event.text !== "") {

@@ -89,6 +89,8 @@ const MESSAGES: Readonly<Record<string, string>> = {
     "service.stop-failed": "停止服务失败",
     "service.record-failed": "服务状态记录失败",
     "runtime.unknown-status": "未知运行状态",
+    "sandbox.cleanup-unsupported": "当前平台没有需要清理的 sandbox ACL（仅 Windows 支持）",
+    "sandbox.cleanup-failed": "清理 sandbox ACL 失败",
 }
 
 /** 错误码 → 人类可读文案，字段级细节保留在冒号后 */

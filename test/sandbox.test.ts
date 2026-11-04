@@ -14,12 +14,16 @@ import {
     bwrapProbeFailureReason,
     buildBwrapLaunch,
     buildBwrapPluginLaunch,
+    hostReadRoots,
+    resolveHostNodeRuntime,
     resolveNodeRuntime,
 } from "../src/sandbox/backends/bwrap.ts"
 import { NodePermissionBackend } from "../src/sandbox/backends/node-permission.ts"
 import { SeatbeltBackend } from "../src/sandbox/backends/seatbelt.ts"
 import { flushSandboxAudit } from "../src/sandbox/audit.ts"
 import { candidateBackends, SandboxManager, unavailableReason } from "../src/sandbox/manager.ts"
+import { SANDBOX_PREPARE_EVENT, type SandboxPrepareEvent } from "../src/sandbox/prepare-event.ts"
+import { eventBus } from "../src/event/event.ts"
 
 let root = ""
 let workspace = ""
@@ -98,16 +102,37 @@ test("bwrap launch spec：namespace、只读 workspace、可写 scratch、无网
     assert.ok(!spec.args.some((arg) => arg.startsWith("--as=")))
     assert.ok(spec.args.includes("NODE_OPTIONS"))
     assert.ok(spec.args.includes("--max-old-space-size=128"))
-    const runtime = resolveNodeRuntime()
+    const runtime = resolveHostNodeRuntime()
     const pathIndex = spec.args.indexOf("PATH")
     assert.ok(pathIndex > 0)
     assert.ok(
         (spec.args[pathIndex + 1] ?? "").startsWith(`${runtime.pathEntry}:`),
-        "PATH 指向挂载进来的 node/bin",
+        "PATH 指向宿主 node 目录",
     )
-    if (runtime.prefix !== null) {
-        assert.ok(spec.args.includes(runtime.prefix), "完整 node 前缀整体挂载")
-    }
+    assert.ok(
+        spec.args.some(
+            (arg, index) => arg === "--ro-bind-try" && spec.args[index + 1] === "/home",
+        ),
+        "宿主顶层目录只读绑定（读全局放开）",
+    )
+    assert.ok(
+        spec.args.some(
+            (arg, index) =>
+                arg === "--ro-bind-try" &&
+                spec.args[index + 1] === "/home" &&
+                spec.args[index + 2] === "/home",
+        ),
+        "顶层目录绑定到相同路径",
+    )
+})
+
+test("hostReadRoots：读全局放开，但跳过由 bwrap 重新挂载的伪路径", () => {
+    const roots = hostReadRoots()
+    assert.ok(roots.includes("/etc"), "宿主 /etc 应可读")
+    assert.ok(roots.includes("/home"), "宿主 /home 应可读")
+    assert.ok(!roots.includes("/tmp"), "/tmp 由沙箱挂 tmpfs")
+    assert.ok(!roots.includes("/proc"), "/proc 由沙箱挂 procfs")
+    assert.ok(!roots.includes("/dev"), "/dev 由沙箱挂 devtmpfs")
 })
 
 test("bwrap launch spec：非 node 命令也不再使用 --as", () => {
@@ -188,16 +213,22 @@ test("bwrap plugin launch：插件只读、host SDK 只读、Node permission 开
 })
 
 test("resolveNodeRuntime：完整发行版挂前缀，裸二进制退回单文件", () => {
-    const full = resolveNodeRuntime(
-        "/opt/node-v24/bin/node",
-        (path) => path === "/opt/node-v24/lib/node_modules/npm",
-    )
+    const posix = process.platform !== "win32"
+    const execPath = posix ? "/opt/node-v24/bin/node" : "C:\\opt\\node-v24\\bin\\node.exe"
+    const prefix = posix ? "/opt/node-v24" : "C:\\opt\\node-v24"
+    const npmPath = posix
+        ? "/opt/node-v24/lib/node_modules/npm"
+        : "C:\\opt\\node-v24\\lib\\node_modules\\npm"
+    const full = resolveNodeRuntime(execPath, (path) => path === npmPath)
     assert.deepEqual(full, {
-        prefix: "/opt/node-v24",
+        prefix,
         nodePath: "/opt/wellspring/bin/node",
         pathEntry: "/opt/wellspring/bin",
     })
-    const bare = resolveNodeRuntime("/usr/local/bin/node", () => false)
+    const bare = resolveNodeRuntime(
+        posix ? "/usr/local/bin/node" : "C:\\usr\\local\\bin\\node.exe",
+        () => false,
+    )
     assert.deepEqual(bare, {
         prefix: null,
         nodePath: "/opt/wellspring/node",
@@ -368,6 +399,14 @@ test("candidateBackends：auto 按平台挑，显式指定不跨后端回退", (
         ["bwrap"],
     )
     assert.deepEqual(
+        candidateBackends("auto", "windows").map((item) => item.name),
+        ["win-restricted"],
+    )
+    assert.deepEqual(
+        candidateBackends("win-restricted", "windows").map((item) => item.name),
+        ["win-restricted"],
+    )
+    assert.deepEqual(
         candidateBackends("bwrap", "macos").map((item) => item.name),
         ["bwrap"],
     )
@@ -424,6 +463,102 @@ test("unavailableReason：把最后一个候选的后端与原因带出来", () 
     })
     assert.match(reason, /bwrap/)
     assert.match(reason, /找不到 bwrap/)
+})
+
+test("prepare 失败时 fail-closed，不启动命令", async () => {
+    let built = false
+    const fake = {
+        name: "fake-prepare",
+        pathStyle: "host" as const,
+        memoryLimit: false,
+        enforcement: () => "partial" as const,
+        enforcementNotes: () => [],
+        async prepare() {
+            throw new Error("prepare boom")
+        },
+        async probe() {
+            return { available: true, backend: "fake-prepare", reason: null, version: null }
+        },
+        buildAgentLaunch() {
+            built = true
+            throw new Error("不应执行")
+        },
+        buildPluginLaunch() {
+            throw new Error("不应执行")
+        },
+    }
+    const sandbox = new SandboxManager({
+        settings: { ...DEFAULT_SETTINGS.sandbox, mode: "strict" },
+        paths: paths(),
+        backend: fake,
+    })
+    await assert.rejects(
+        sandbox.runAgentCode({
+            command: process.execPath,
+            argv: ["-e", "0"],
+            workspaceDir: workspace,
+            cwd: workspace,
+            access: "read-only",
+        }),
+        /prepare boom/,
+    )
+    assert.equal(built, false)
+})
+
+test("工作区准备事件：started/completed 带 sessionId", async () => {
+    const events: SandboxPrepareEvent[] = []
+    const unsubscribe = eventBus.subscribe<SandboxPrepareEvent>(SANDBOX_PREPARE_EVENT, (event) => {
+        events.push(event.getData())
+    })
+    try {
+        const fake = {
+            name: "fake-event",
+            pathStyle: "host" as const,
+            memoryLimit: false,
+            enforcement: () => "partial" as const,
+            enforcementNotes: () => [],
+            async prepare() {
+                /* 模拟异步 ACL 授予 */
+                await new Promise((resolve) => setTimeout(resolve, 5))
+            },
+            async probe() {
+                return { available: true, backend: "fake-event", reason: null, version: null }
+            },
+            buildAgentLaunch() {
+                return {
+                    command: process.execPath,
+                    args: ["-e", "0"],
+                    cwd: workspace,
+                    env: { PATH: process.env["PATH"] ?? "" },
+                }
+            },
+            buildPluginLaunch() {
+                throw new Error("不应执行")
+            },
+        }
+        const sandbox = new SandboxManager({
+            settings: { ...DEFAULT_SETTINGS.sandbox, mode: "strict" },
+            paths: paths(),
+            backend: fake,
+        })
+        const result = await sandbox.runAgentCode({
+            command: process.execPath,
+            argv: ["-e", "0"],
+            workspaceDir: workspace,
+            cwd: workspace,
+            access: "read-only",
+            sessionId: "session-event-test",
+        })
+        assert.equal(result.exitCode, 0)
+        assert.deepEqual(
+            events.map((event) => event.phase),
+            ["started", "completed"],
+        )
+        assert.ok(events.every((event) => event.sessionId === "session-event-test"))
+        assert.ok(events.every((event) => event.workspaceDir === workspace))
+    } finally {
+        unsubscribe()
+    }
 })
 
 test("执行结果透出 enforcement 与缺口说明", async () => {

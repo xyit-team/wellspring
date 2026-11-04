@@ -37,7 +37,7 @@ import type { AppSetting, SandboxSetting } from "../config/types.ts"
 import { getElog } from "../logger/elog4js.ts"
 import { ensureDir, readJsonIfExists } from "../platform/file.ts"
 import { getPaths, type ResolvedPaths } from "../platform/path.ts"
-import { isLinux, isMacOS } from "../platform/os.ts"
+import { isLinux, isMacOS, isWindows } from "../platform/os.ts"
 import { BwrapBackend } from "../sandbox/backends/bwrap.ts"
 import { NodePermissionBackend } from "../sandbox/backends/node-permission.ts"
 import { SeatbeltBackend } from "../sandbox/backends/seatbelt.ts"
@@ -784,6 +784,13 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
                 (sandboxSetting.backend === "auto" && isMacOS)
             ) {
                 candidates.push(new SeatbeltBackend())
+            }
+            /*
+             * win-restricted 只用于 Agent 代码执行；插件仍使用 Node permission model。
+             * 显式配置该后端时，插件沙箱降级为 node-permission，避免插件全部拒绝加载。
+             */
+            if (sandboxSetting.backend === "win-restricted" && isWindows) {
+                candidates.push(new NodePermissionBackend())
             }
             for (const candidate of candidates) {
                 const status = await candidate.probe()

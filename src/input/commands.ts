@@ -49,6 +49,11 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandSpec[] = [
         usage: "wellspring plugin <list|new|install|link|enable|disable|remove> [args]",
     },
     {
+        name: "sandbox",
+        summary: "沙盒维护：清理工作区上留下的 ACL",
+        usage: "wellspring sandbox cleanup [--workspace <path>]",
+    },
+    {
         name: "doctor",
         summary: "环境与配置诊断",
         usage: "wellspring doctor [--json]",

@@ -63,7 +63,7 @@ export interface NetworkSetting {
 }
 
 export type SandboxMode = "off" | "strict" | "best-effort"
-export type SandboxBackend = "auto" | "bwrap" | "nsjail" | "seatbelt"
+export type SandboxBackend = "auto" | "bwrap" | "nsjail" | "seatbelt" | "win-restricted"
 export type SandboxAccess = "read-only" | "workspace-write" | "danger-full-access"
 
 /** OS 级 sandbox 配置 */

@@ -72,7 +72,7 @@ test("期望值：两种后端共享不变项（读系统、写 scratch、写沙
     }
 })
 
-test("期望值：出网跟随默认策略，只有 read-only 断网", () => {
+test("期望值：出网跟随默认策略，只有 read-only 断网（win-restricted 本期无围栏）", () => {
     for (const backend of ["bwrap", "seatbelt"]) {
         for (const access of ACCESS_MODES) {
             assert.equal(
@@ -81,12 +81,16 @@ test("期望值：出网跟随默认策略，只有 read-only 断网", () => {
             )
         }
     }
+    for (const access of ACCESS_MODES) {
+        assert.equal(expectOf("net:egress", "win-restricted", access), "allow")
+    }
 })
 
-test("期望值：读边界按后端区分，Seatbelt 不承诺读收敛", () => {
-    for (const access of ACCESS_MODES) {
-        assert.equal(expectOf("read:outside", "bwrap", access), "deny")
-        assert.equal(expectOf("read:outside", "seatbelt", access), "allow")
+test("期望值：读全局放开（与 DSH 对齐），两种后端都允许读 workspace 外", () => {
+    for (const backend of ["bwrap", "seatbelt"]) {
+        for (const access of ACCESS_MODES) {
+            assert.equal(expectOf("read:outside", backend, access), "allow")
+        }
     }
 })
 
@@ -231,10 +235,12 @@ test("无隔离后端上，越界探针会被测出来（矩阵不是永远报�
     const secret = await runOne("read:outside")
     assert.equal(secret.actual, "allow", "direct 后端必然能读私有文件")
 
-    /* 这两项期望都是 deny，所以跑在 direct 上必然 MISMATCH —— 正是矩阵的价值 */
-    for (const id of ["write:outside", "read:outside"]) {
+    /* 写越界期望 deny，所以跑在 direct 上必然 MISMATCH —— 正是矩阵的价值 */
+    for (const id of ["write:outside"]) {
         assert.equal(expectOf(id, "direct", "read-only"), "deny")
     }
+    /* 读全局放开后，读越界在 direct 上反而符合预期 */
+    assert.equal(expectOf("read:outside", "direct", "read-only"), "allow")
 })
 
 test("受控探针在无隔离后端上仍按预期通过", async () => {

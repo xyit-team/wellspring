@@ -15,6 +15,7 @@ import { runDoctorCommand } from "./commands/doctor.ts"
 import { runHelpCommand } from "./commands/help.ts"
 import { runKeyCommand } from "./commands/key.ts"
 import { runPluginCommand } from "./commands/plugin.ts"
+import { runSandboxCommand } from "./commands/sandbox.ts"
 import {
     errorMessage,
     exitCodeFor,
@@ -250,7 +251,12 @@ async function main(argv: readonly string[]): Promise<void> {
     try {
         // 钩子与插件命令都可能在任意命令里用到；version / key / plugin 不启动插件
         // plugin 子命令只改文件，插件是否加载由下次运行决定
-        if (commandName !== "version" && commandName !== "key" && commandName !== "plugin") {
+        if (
+            commandName !== "version" &&
+            commandName !== "key" &&
+            commandName !== "plugin" &&
+            commandName !== "sandbox"
+        ) {
             await ensurePlugins()
         }
         setHostStatus("running")
@@ -280,6 +286,9 @@ async function main(argv: readonly string[]): Promise<void> {
                 break
             case "doctor":
                 outcome = await runDoctorCommand(ctx)
+                break
+            case "sandbox":
+                outcome = await runSandboxCommand(ctx, commandArgv)
                 break
             case "key":
                 outcome = await runKeyCommand(ctx, commandArgv)

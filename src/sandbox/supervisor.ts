@@ -49,7 +49,11 @@ export function startSandboxProcess(
         cwd: spec.cwd,
         env: { ...spec.env },
         stdio: ["pipe", "pipe", "pipe"],
-        detached: true,
+        /*
+         * POSIX 用独立进程组转发信号；Windows 上 detached 会让受限 token 子进程
+         * 在 CreateProcessAsUser 后 DLL 初始化失败（0xC0000142），且没有进程组可取。
+         */
+        detached: process.platform !== "win32",
     })
 
     const outChunks: Buffer[] = []

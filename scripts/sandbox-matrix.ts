@@ -8,6 +8,8 @@
 import type { SandboxAccess } from "../src/config/types.ts"
 import { resolveNetwork } from "../src/sandbox/manager.ts"
 
+import { join } from "node:path"
+
 /** 探针的期望结果 */
 export type Outcome = "allow" | "deny"
 
@@ -95,7 +97,7 @@ export function probeTag(access: SandboxAccess, index: number): string {
 export const PROBES: readonly Probe[] = [
     {
         id: "read:system",
-        label: "读系统文件 /etc/passwd",
+        label: "读系统文件",
         script: readProbeScript(),
         expect: () => "allow",
     },
@@ -110,14 +112,11 @@ export const PROBES: readonly Probe[] = [
         label: "读 workspace 外的私有文件",
         script: readProbeScript(),
         /*
-         * bwrap 用只读挂载，未挂载路径不可见
-         * Seatbelt 读全局放开，此探针确认读侧确实未收敛
+         * 读全局放开（与 DSH 对齐）：Linux/macOS 的默认沙箱都不限制读，
+         * 只强制写边界、网络与进程限制；读隔离不是产品承诺。
          */
-        expect: ({ backend }) => (backend === "seatbelt" ? "allow" : "deny"),
-        why: ({ backend }) =>
-            backend === "seatbelt"
-                ? "Seatbelt 报 partial 的一项：读未收敛，路径枚举下 node 无法启动"
-                : null,
+        expect: () => "allow",
+        why: () => "读全局放开（与 DSH 对齐）：read-only / workspace-write 都只约束写与网络",
     },
     {
         id: "write:workspace",
@@ -140,7 +139,7 @@ export const PROBES: readonly Probe[] = [
     },
     {
         id: "write:devnull",
-        label: "写 /dev/null（shell 重定向落点）",
+        label: "写 /dev/null（Windows 为 NUL）",
         script: writeProbeScript(),
         expect: () => "allow",
         why: () => "漏了它任何 2>/dev/null 的脚本都会莫名其妙失败",
@@ -159,12 +158,16 @@ export const PROBES: readonly Probe[] = [
             "socket.once('connect', () => { socket.destroy(); report(true) })",
             "socket.once('error', (error) => report(false, error.code ?? error.name))",
         ].join("\n"),
-        /* 与产品默认一致：read-only 断网，workspace-write / danger-full-access 通网 */
-        expect: ({ access }) => (resolveNetwork(undefined, access) ? "allow" : "deny"),
-        why: ({ access }) =>
-            access === "read-only"
-                ? null
-                : "默认通网：只有 read-only 与显式 network=false 才断网；判据是宿主回环监听能否连上",
+        /* 与产品默认一致：read-only 断网，workspace-write / danger-full-access 通网；
+         * Windows 受限 token 后端本期没有网络围栏，read-only 也放行（enforcementNotes 已说明）。 */
+        expect: ({ backend, access }) =>
+            backend === "win-restricted" || resolveNetwork(undefined, access) ? "allow" : "deny",
+        why: ({ backend, access }) =>
+            backend === "win-restricted"
+                ? "Windows 受限 token 本期不隔离网络，read-only 也不阻断出网"
+                : access === "read-only"
+                  ? null
+                  : "默认通网：只有 read-only 与显式 network=false 才断网；判据是宿主回环监听能否连上",
     },
     {
         id: "link:hardlink",
@@ -220,11 +223,13 @@ export function probeArgs(
     const mount = isMountBackend(backend)
     switch (probeId) {
         case "read:system":
-            return ["/etc/passwd"]
+            return process.platform === "win32"
+                ? [join(process.env["SystemRoot"] ?? "C:\\Windows", "win.ini")]
+                : ["/etc/passwd"]
         case "read:workspace":
             return [mount ? "/workspace/demo.txt" : `${fixture.workspace}/demo.txt`]
         case "read:outside":
-            /* bwrap 没把该目录挂进 namespace，读会 ENOENT，同样是 deny */
+            /* 读全局放开后 bwrap 顶层只读绑定让宿主路径可见；host 后端本来可见 */
             return [fixture.secret]
         case "write:workspace":
             return [mount ? `/workspace/probe-${tag}.txt` : `${fixture.workspace}/probe-${tag}.txt`]
@@ -234,7 +239,8 @@ export function probeArgs(
         case "write:outside":
             return [`${fixture.outsideDir}/probe-${tag}.txt`]
         case "write:devnull":
-            return ["/dev/null"]
+            /* bwrap 是 Linux 沙箱，路径固定 /dev/null；Windows 宿主后端用 NUL */
+            return [mount || process.platform !== "win32" ? "/dev/null" : "NUL"]
         case "net:egress":
             return [egressTarget(egressPort)]
         case "link:hardlink":

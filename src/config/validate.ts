@@ -297,6 +297,7 @@ const SANDBOX_BACKENDS: ReadonlySet<string> = new Set<SandboxBackend>([
     "bwrap",
     "nsjail",
     "seatbelt",
+    "win-restricted",
 ])
 const SANDBOX_ACCESS: ReadonlySet<string> = new Set<SandboxAccess>([
     "read-only",

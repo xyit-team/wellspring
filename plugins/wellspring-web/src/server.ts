@@ -12,6 +12,8 @@ import type {
     PluginApi,
 } from "wellspring/api/host/index.ts"
 import { eventBus, getHost, onInit, onShutdown, shutdown } from "wellspring/api/host/index.ts"
+import type { SandboxPrepareEvent } from "wellspring/api/host/index.ts"
+import { SANDBOX_PREPARE_EVENT } from "wellspring/api/host/index.ts"
 import type { HttpServerBusHandle } from "wellspring/api/plugin/http-client.ts"
 import { registerHttpServer } from "wellspring/api/plugin/http-client.ts"
 
@@ -64,6 +66,8 @@ const CONTENT_SECURITY_POLICY = [
 ].join("; ")
 
 let api: PluginApi | null = null
+/** sandbox 准备事件订阅；插件重载时先退订 */
+let prepareSubscription: (() => void) | null = null
 /** 由 wellspring-http 插件托管的服务器句柄（本插件不再直接持有 hostApi.http） */
 let server: HttpServerBusHandle | null = null
 let auth: AuthStore | null = null
@@ -282,6 +286,22 @@ function finishChatTurn(turn: ChatTurn): void {
     turn.listeners.clear()
 }
 
+/**
+ * 把宿主的“工作区准备”事件转发进正在跑的对话流。
+ * 前端用 `sandbox-prepare` 事件显示「正在准备工作区」。
+ */
+function forwardSandboxPrepare(event: SandboxPrepareEvent): void {
+    const chunk = `data: ${JSON.stringify({ type: "sandbox-prepare", ...event })}\n\n`
+    const sessionId = typeof event.sessionId === "string" ? event.sessionId : null
+    for (const turn of chatTurns.values()) {
+        if (turn.done) continue
+        if (sessionId !== null && turn.sessionId !== null && turn.sessionId !== sessionId) {
+            continue
+        }
+        recordChatTurnEvent(turn, chunk)
+    }
+}
+
 function findChatTurn(conversationId: string): ChatTurn | null {
     pruneChatTurns()
     return chatTurns.get(conversationId) ?? null
@@ -344,6 +364,15 @@ const loginThrottle = new LoginThrottle()
 
 export function configureServer(value: PluginApi): Promise<void> {
     api = value
+    prepareSubscription?.()
+    prepareSubscription = eventBus.subscribe<SandboxPrepareEvent>(
+        SANDBOX_PREPARE_EVENT,
+        (event) => forwardSandboxPrepare(event.getData()),
+    )
+    onShutdown(() => {
+        prepareSubscription?.()
+        prepareSubscription = null
+    })
     const authStore = new AuthStore(value.fs)
     const store = new ConversationStore(
         value.fs,

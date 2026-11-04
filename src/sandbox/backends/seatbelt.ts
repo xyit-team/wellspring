@@ -439,7 +439,7 @@ export class SeatbeltBackend implements SandboxBackend {
             return ["绕开 Seatbelt，直接以宿主身份执行"]
         }
         return [
-            "fs: 读未收敛，路径枚举下 node 无法启动，仅写边界为严格模式",
+            "fs: 读全局放开（与 DSH 对齐），写边界由 SBPL 强制",
             "memory: 没有 cgroup v2，物理内存只由 --max-old-space-size 约束 V8 堆",
             "network: network=false 时 SBPL 拒绝出网；置 true 即整体放开，没有域名粒度",
             "fs: Seatbelt 按路径匹配，预先存在的同 inode 硬链接可以读穿",

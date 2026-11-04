@@ -7,13 +7,16 @@ import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, join, relative, resolve, sep } from "node:path"
 
 import type { SandboxAccess, SandboxBackend as SandboxBackendName } from "../config/types.ts"
+import { EventEntity, eventBus } from "../event/event.ts"
 import { platform as currentPlatform, type PlatformName } from "../platform/os.ts"
 
 import { auditSandbox } from "./audit.ts"
 import { BwrapBackend } from "./backends/bwrap.ts"
 import { DirectBackend } from "./backends/direct.ts"
 import { SeatbeltBackend } from "./backends/seatbelt.ts"
+import { WinRestrictedBackend } from "./backends/win-restricted.ts"
 import { createSandboxMemoryLimit, type MemoryLimitState } from "./memory-limit.ts"
+import { SANDBOX_PREPARE_EVENT, type SandboxPrepareEvent } from "./prepare-event.ts"
 import { startSandboxProcess, type SandboxProcessHandle } from "./supervisor.ts"
 import {
     SandboxExecutionError,
@@ -102,25 +105,39 @@ async function collectArtifacts(
     return { artifacts: collected, artifactDir: destination }
 }
 
+export interface CandidateBackendOptions {
+    /** Windows 受限 token 后端的状态目录 */
+    readonly dataDir?: string
+}
+
 /**
  * 按配置与平台展开候选后端
  *
- * auto 只取当前平台的首选后端，显式指定（bwrap / seatbelt）不跨后端回退
+ * auto 只取当前平台的首选后端，显式指定（bwrap / seatbelt / win-restricted）不跨后端回退
  */
 export function candidateBackends(
     preferred: SandboxBackendName,
     osPlatform: PlatformName,
+    options: CandidateBackendOptions = {},
 ): readonly SandboxBackend[] {
     switch (preferred) {
         case "bwrap":
             return [new BwrapBackend()]
         case "seatbelt":
             return [new SeatbeltBackend()]
+        case "win-restricted":
+            return [new WinRestrictedBackend({ dataDir: options.dataDir })]
         case "nsjail":
             /* 尚未实现：交给调用方显式报不可用 */
             return []
         case "auto":
-            return osPlatform === "macos" ? [new SeatbeltBackend()] : [new BwrapBackend()]
+            if (osPlatform === "macos") {
+                return [new SeatbeltBackend()]
+            }
+            if (osPlatform === "windows") {
+                return [new WinRestrictedBackend({ dataDir: options.dataDir })]
+            }
+            return [new BwrapBackend()]
         default:
             return []
     }
@@ -177,7 +194,9 @@ export class SandboxManager {
             }
         }
         let last: SandboxBackendStatus | null = null
-        for (const candidate of candidateBackends(preferred, currentPlatform)) {
+        for (const candidate of candidateBackends(preferred, currentPlatform, {
+            dataDir: this.#options.paths.dataDir,
+        })) {
             const status = await candidate.probe()
             if (status.available) {
                 return status
@@ -192,6 +211,36 @@ export class SandboxManager {
                 version: null,
             }
         )
+    }
+
+    /**
+     * 清理 workspace 上由 sandbox 加的身份 ACE。
+     * 只对支持 cleanup 的后端生效（目前是 win-restricted）；工作区删除前调用。
+     */
+    async cleanupWorkspace(workspaceDir: string): Promise<void> {
+        let backend: SandboxBackend
+        if (this.#backend !== null) {
+            backend = this.#backend
+        } else if (this.#options.settings.mode === "off") {
+            /* mode=off 时执行仍要能清理历史 ACL，按配置直接取候选后端 */
+            const candidate = candidateBackends(this.#options.settings.backend, currentPlatform, {
+                dataDir: this.#options.paths.dataDir,
+            })[0]
+            if (candidate === undefined) {
+                return
+            }
+            backend = candidate
+        } else {
+            backend = await this.#resolveBackend("read-only")
+        }
+        if (backend.cleanup === undefined) {
+            return
+        }
+        await backend.cleanup({
+            workspaceDir: resolve(workspaceDir),
+            scratchDir: join(this.#options.paths.dataDir, "sandbox", "cleanup", "scratch"),
+            access: "read-only",
+        })
     }
 
     async #resolveBackend(access: SandboxAccess): Promise<SandboxBackend> {
@@ -215,7 +264,9 @@ export class SandboxManager {
                 // nsjail 后端尚未实现，显式报告不可用
                 throw new SandboxUnavailableError("nsjail 后端尚未实现")
             }
-            const candidates = candidateBackends(preferred, currentPlatform)
+            const candidates = candidateBackends(preferred, currentPlatform, {
+                dataDir: this.#options.paths.dataDir,
+            })
 
             let last: SandboxBackendStatus | null = null
             for (const candidate of candidates) {
@@ -257,6 +308,15 @@ export class SandboxManager {
         this.#active -= 1
         const next = this.#waiters.shift()
         next?.()
+    }
+
+    /** 通知 Web/其他插件：工作区准备状态变化；监听器异常不影响沙盒执行 */
+    #notifyPrepare(event: SandboxPrepareEvent): void {
+        try {
+            eventBus.publish(SANDBOX_PREPARE_EVENT, EventEntity.create(event))
+        } catch {
+            /* 事件总线异常不能阻断命令执行 */
+        }
     }
 
     #limits(request: AgentCodeRequest): ResolvedLimits {
@@ -331,6 +391,32 @@ export class SandboxManager {
         const scratchDir = join(sandboxDir, "scratch")
         await ensureDirectory(join(scratchDir, "tmp"))
         await ensureDirectory(join(scratchDir, "artifacts"))
+        /* Windows 受限 token 后端需要在启动前异步授予 workspace/scratch 的 ACL */
+        if (backend.prepare !== undefined) {
+            const prepareStarted = Date.now()
+            const prepareBase = {
+                sessionId: request.sessionId,
+                workspaceDir,
+                access,
+            }
+            this.#notifyPrepare({ ...prepareBase, phase: "started" })
+            try {
+                await backend.prepare({ workspaceDir, scratchDir, access })
+                this.#notifyPrepare({
+                    ...prepareBase,
+                    phase: "completed",
+                    elapsedMs: Date.now() - prepareStarted,
+                })
+            } catch (error) {
+                this.#notifyPrepare({
+                    ...prepareBase,
+                    phase: "failed",
+                    elapsedMs: Date.now() - prepareStarted,
+                    error: error instanceof Error ? error.message : String(error),
+                })
+                throw error
+            }
+        }
 
         const env = baseEnv()
         if (backend.pathStyle === "mount") {

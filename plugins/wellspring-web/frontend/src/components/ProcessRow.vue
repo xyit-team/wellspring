@@ -24,6 +24,7 @@ const open = ref(props.item.open === true)
 const state = computed(() => {
     if (props.item.kind === "reasoning") return props.item.running === true ? "running" : "ok"
     if (props.item.kind === "steer") return "ok"
+    if (props.item.kind === "prepare") return props.item.status ?? "running"
     return props.item.status ?? "running"
 })
 
@@ -36,6 +37,7 @@ const icon = computed(() => {
 const title = computed(() => {
     if (props.item.kind === "reasoning") return "思考"
     if (props.item.kind === "steer") return "插话"
+    if (props.item.kind === "prepare") return "准备工作区"
     return TOOL_LABELS[props.item.name ?? ""] ?? props.item.name ?? "工具"
 })
 
@@ -63,6 +65,11 @@ const statusText = computed(() => {
         return elapsed === "" ? "已思考" : `思考了 ${elapsed}`
     }
     if (props.item.kind === "steer") return ""
+    if (props.item.kind === "prepare") {
+        if (state.value === "running") return "准备中"
+        if (state.value === "error") return "失败"
+        return "完成"
+    }
     if (state.value === "running") return "运行中"
     if (state.value === "error") return "失败"
     if (state.value === "stopped") return "已中断"
@@ -79,6 +86,10 @@ const summary = computed(() => {
         // 摘要只留一行，展开才看完整插话内容
         const text = (props.item.text ?? "").trim()
         return text.length > 80 ? `${text.slice(0, 80)}…` : text
+    }
+    if (props.item.kind === "prepare") {
+        const text = (props.item.text ?? "").trim()
+        return text.length > 100 ? `${text.slice(0, 100)}…` : text
     }
     const parts: string[] = []
     const args = (props.item.arguments ?? "").trim()

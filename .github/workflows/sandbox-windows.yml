@@ -1,0 +1,81 @@
+# Windows 受限 token 沙盒验证。
+#
+# 构建 native/win-sandbox，跑单元/端到端测试。覆盖：
+#   - 读全局放开（与 DSH 对齐）
+#   - 写 workspace / scratch 成功
+#   - read-only 写 workspace 被拒
+#   - 写 workspace 外被拒
+#   - 超时 kill Job Object
+#   - manager auto 选择 win-restricted
+#
+# 触发：手动、PR 改到 sandbox 相关路径、推 v* 标签
+
+name: sandbox-windows
+
+on:
+    push:
+        tags: ["v*"]
+    pull_request:
+        paths:
+            - "src/sandbox/**"
+            - "native/win-sandbox/**"
+            - "scripts/build-win-sandbox.mjs"
+            - "scripts/sandbox-matrix.ts"
+            - "test/win-restricted*"
+            - "test/sandbox*.ts"
+            - "package.json"
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: sandbox-windows-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    win-restricted:
+        runs-on: windows-latest
+        timeout-minutes: 20
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: pnpm/action-setup@v4
+              with:
+                  version: 12.14.0
+
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: 26
+                  cache: pnpm
+
+            - name: 安装依赖
+              run: pnpm install --frozen-lockfile
+
+            - name: 环境信息
+              shell: pwsh
+              run: |
+                  node -v
+                  pnpm -v
+                  Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber | Format-List
+
+            - name: 构建 win-sandbox
+              run: pnpm win-sandbox:build
+
+            - name: 类型检查
+              run: pnpm typecheck
+
+            - name: 单元测试
+              run: node test/win-restricted-backend.test.ts
+
+            - name: 探针矩阵单测
+              run: node test/sandbox-matrix.test.ts
+
+            - name: 沙箱后端/管理器测试
+              run: node test/sandbox.test.ts
+
+            - name: 端到端测试
+              run: node test/win-restricted.e2e.test.ts
+
+            - name: 探针矩阵（真机）
+              run: node scripts/verify-sandbox.ts --backend win-restricted

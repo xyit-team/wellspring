@@ -22,6 +22,8 @@ const build = spawnSync(npm, ["run", "build"], {
     cwd: frontendDir,
     stdio: "inherit",
     env: process.env,
+    /* Windows 下直接 spawn .cmd 会 ENOENT，需要经 cmd.exe */
+    shell: process.platform === "win32",
 })
 if (build.status !== 0) {
     process.exit(build.status ?? 1)

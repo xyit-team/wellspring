@@ -4,7 +4,7 @@
  */
 
 import { spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, readdirSync } from "node:fs"
 import { dirname, join, relative, resolve, sep } from "node:path"
 
 import type { SandboxAccess } from "../../config/types.ts"
@@ -19,6 +19,52 @@ import type {
 } from "../types.ts"
 
 const SYSTEM_DIRS = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32"]
+
+/**
+ * 读全局放开（与 DSH 对齐）。
+ *
+ * 把宿主顶层目录只读绑定进沙箱，而不是再把根文件系统整体 `--ro-bind / /`
+ * 挂进来：bwrap 会在 tmpfs 的新根里按操作顺序创建挂载点，根一旦先变成只读，
+ * 后面的 /workspace、/scratch 就创建不出来。逐顶层绑定既让宿主文件可见，
+ * 又保住 tmpfs 根可创建挂载点的能力。
+ *
+ * /proc、/dev、/tmp 由 bwrap 用新的 procfs/devtmpfs/tmpfs 覆盖，不做只读绑定。
+ * 非 Linux 环境（单测）用静态列表，保证参数稳定可断言。
+ */
+const SPECIAL_TOP_LEVEL = new Set(["/proc", "/dev", "/tmp"])
+const STATIC_TOP_LEVEL = [
+    "/bin",
+    "/boot",
+    "/etc",
+    "/home",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/media",
+    "/mnt",
+    "/opt",
+    "/root",
+    "/run",
+    "/sbin",
+    "/srv",
+    "/sys",
+    "/usr",
+    "/var",
+] as const
+
+export function hostReadRoots(): readonly string[] {
+    const roots = new Set<string>(STATIC_TOP_LEVEL)
+    if (process.platform === "linux") {
+        try {
+            for (const entry of readdirSync("/", { withFileTypes: true })) {
+                roots.add(`/${entry.name}`)
+            }
+        } catch {
+            /* 根目录不可读时退回静态列表 */
+        }
+    }
+    return [...roots].filter((path) => !SPECIAL_TOP_LEVEL.has(path)).sort()
+}
 
 /** 沙箱内挂载 Node 运行时的目录 */
 export const NODE_ROOT = "/opt/wellspring"
@@ -72,6 +118,31 @@ function nodeRuntimeMount(runtime: NodeRuntimeLayout, execPath: string): string[
     return ["--dir", NODE_ROOT, "--ro-bind", execPath, `${NODE_ROOT}/node`]
 }
 
+/**
+ * agent 命令用宿主真实 Node 路径。
+ *
+ * 读全局放开后宿主前缀本来就以只读方式可见，不需要再挂到 /opt/wellspring；
+ * 而且 /opt 已经只读绑定，`--dir /opt/wellspring` 会 EROFS。
+ */
+export interface HostNodeRuntime {
+    readonly nodePath: string
+    readonly pathEntry: string
+}
+
+export function resolveHostNodeRuntime(
+    execPath: string = process.execPath,
+    exists: (path: string) => boolean = existsSync,
+): HostNodeRuntime {
+    const runtime = resolveNodeRuntime(execPath, exists)
+    if (runtime.prefix !== null) {
+        const nodePath = join(runtime.prefix, "bin", "node")
+        if (exists(nodePath)) {
+            return { nodePath, pathEntry: join(runtime.prefix, "bin") }
+        }
+    }
+    return { nodePath: execPath, pathEntry: dirname(execPath) }
+}
+
 function insideWorkspace(workspaceDir: string, cwd: string): string {
     const root = resolve(workspaceDir)
     const target = resolve(cwd)
@@ -102,23 +173,20 @@ export function buildBwrapLaunch(input: AgentLaunchInput): LaunchSpec {
     if (input.network === true) {
         args.push("--share-net")
     }
-    for (const dir of existingSystemDirs()) {
-        args.push("--ro-bind-try", dir, dir)
+    /*
+     * 读全局放开（与 DSH 对齐）：宿主顶层目录只读绑定进沙箱。
+     * /proc、/dev、/tmp 已由上面的新挂载覆盖，不再重复绑定。
+     * 写边界仍由 /workspace 的 bind/ro-bind 与 /scratch 决定。
+     */
+    for (const root of hostReadRoots()) {
+        args.push("--ro-bind-try", root, root)
     }
-    // DNS、CA 证书与用户解析
-    args.push("--ro-bind-try", "/etc", "/etc")
-    // systemd-resolved 的 resolv.conf 指向 /run；先建目标目录再尝试绑定
-    if (existsSync("/run/systemd/resolve")) {
-        args.push("--dir", "/run", "--dir", "/run/systemd", "--dir", "/run/systemd/resolve")
-        args.push("--ro-bind-try", "/run/systemd/resolve", "/run/systemd/resolve")
-    }
-    const nodeRuntime = resolveNodeRuntime()
-    args.push(...nodeRuntimeMount(nodeRuntime, process.execPath))
     const workspaceBind = input.access === "workspace-write" ? "--bind" : "--ro-bind"
     args.push(workspaceBind, resolve(input.workspaceDir), "/workspace")
     args.push("--bind", resolve(input.scratchDir), "/scratch")
     args.push("--chdir", insideWorkspace(input.workspaceDir, input.cwd))
 
+    const nodeRuntime = resolveHostNodeRuntime()
     const env: Record<string, string> = { ...input.env }
     env["PATH"] = `${nodeRuntime.pathEntry}:${env["PATH"] ?? "/usr/bin:/bin"}`
     /*

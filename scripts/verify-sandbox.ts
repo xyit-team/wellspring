@@ -18,14 +18,14 @@ import { spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { createServer, type Server } from "node:net"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { DEFAULT_SETTINGS } from "../src/config/defaults.ts"
 import type { SandboxAccess, SandboxBackend as SandboxBackendName } from "../src/config/types.ts"
 import { platform as currentPlatform } from "../src/platform/os.ts"
 import { getPaths, initPaths } from "../src/platform/path.ts"
-import { resolveNodeRuntime } from "../src/sandbox/backends/bwrap.ts"
+import { resolveHostNodeRuntime } from "../src/sandbox/backends/bwrap.ts"
 import { candidateBackends, SandboxManager } from "../src/sandbox/manager.ts"
 import type { AgentCodeRequest, SandboxEnforcement } from "../src/sandbox/types.ts"
 
@@ -54,21 +54,34 @@ interface Observed {
 interface Fixture extends FixturePaths {}
 
 async function createFixture(): Promise<Fixture> {
-    const root = await mkdtemp(join(tmpdir(), "wellspring-verify-"))
+    /*
+     * Linux 上 fixture 放到 home（bwrap 的 /tmp 是新的 tmpfs）；
+     * Windows 上放到工作区 .tmp，避免 TEMP 目录 owner/ACL 与受限 token 不匹配。
+     */
+    const base =
+        currentPlatform === "linux"
+            ? homedir()
+            : currentPlatform === "windows"
+              ? join(process.cwd(), ".tmp")
+              : tmpdir()
+    await mkdir(base, { recursive: true })
+    const root = await mkdtemp(join(base, ".wellspring-verify-")).catch(() =>
+        mkdtemp(join(tmpdir(), "wellspring-verify-")),
+    )
     const workspace = join(root, "workspace")
     const outsideDir = join(root, "outside")
     await mkdir(workspace, { recursive: true })
     await mkdir(outsideDir, { recursive: true })
     await writeFile(join(workspace, "demo.txt"), "hello")
-    /* 沙箱外的私有文件：read:outside 探针应当读不到它 */
+    /* 沙箱外的私有文件：read:outside 探针默认应可读（与 DSH 对齐，读全局放开） */
     const secret = join(root, "id_ed25519")
     await writeFile(secret, "-----BEGIN PRIVATE KEY-----\n")
     return { root, workspace, secret, outsideDir }
 }
 
-/** bwrap 下 node 在挂载点，Seatbelt 下用宿主真实路径 */
+/** bwrap 读全局放开后用宿主真实 node 路径；Seatbelt 同样用宿主路径 */
 function nodeCommand(backend: string): string {
-    return isMountBackend(backend) ? resolveNodeRuntime().nodePath : process.execPath
+    return isMountBackend(backend) ? resolveHostNodeRuntime().nodePath : process.execPath
 }
 
 async function runProbe(
@@ -81,20 +94,36 @@ async function runProbe(
     egressPort: number,
 ): Promise<Observed> {
     const expected = probe.expect({ backend, access })
+    /*
+     * write:devnull 测的是 shell 的 2>NUL 重定向。Windows 上 Node 的 fs 打开 "NUL"
+     * 会走 \\?\ 路径而变成普通文件，不能代表设备语义；用 cmd.exe 跑真实重定向。
+     */
+    const useShellDevNull =
+        backend === "win-restricted" && probe.id === "write:devnull" && process.platform === "win32"
+    const command = useShellDevNull
+        ? (process.env["ComSpec"] ?? "cmd.exe")
+        : nodeCommand(backend)
+    const argv = useShellDevNull
+        ? ["/c", "echo probe> NUL"]
+        : [
+              "-e",
+              probe.script,
+              ...probeArgs(probe.id, backend, fixture, probeTag(access, index), egressPort),
+          ]
     const request: AgentCodeRequest = {
-        command: nodeCommand(backend),
-        argv: [
-            "-e",
-            probe.script,
-            ...probeArgs(probe.id, backend, fixture, probeTag(access, index), egressPort),
-        ],
+        command,
+        argv,
         workspaceDir: fixture.workspace,
         access,
         timeoutMs: 15_000,
     }
     try {
         const result = await manager.runAgentCode(request)
-        const classified = classifyResult(result)
+        const classified = useShellDevNull
+            ? result.exitCode === 0
+                ? { actual: "allow" as const, detail: "" }
+                : { actual: "deny" as const, detail: `exit=${String(result.exitCode)}` }
+            : classifyResult(result)
         return { probe, access, expected, ...classified }
     } catch (error) {
         return {
@@ -268,7 +297,7 @@ function parseBackendArg(): SandboxBackendName | null {
         return null
     }
     const value = process.argv[index + 1]
-    const allowed: readonly string[] = ["auto", "bwrap", "seatbelt"]
+    const allowed: readonly string[] = ["auto", "bwrap", "seatbelt", "win-restricted"]
     if (value === undefined || !allowed.includes(value)) {
         console.error(`--backend 只接受 ${allowed.join(" / ")}`)
         process.exit(2)
@@ -312,13 +341,19 @@ async function main(): Promise<number> {
         return 2
     }
 
-    const backend = candidateBackends(status.backend as SandboxBackendName, currentPlatform)[0]
+    const backend = candidateBackends(status.backend as SandboxBackendName, currentPlatform, {
+        dataDir: getPaths().dataDir,
+    })[0]
     if (backend === undefined) {
         console.error(`\n无法构造后端实例：${status.backend}`)
         return 2
     }
 
     if (process.argv.includes("--dump-profile")) {
+        if (status.backend === "win-restricted") {
+            console.error("--dump-profile 只适用于 seatbelt（win-restricted 没有 profile 可 dump）")
+            return 2
+        }
         return await dumpProfile(manager, status.backend)
     }
 

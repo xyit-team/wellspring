@@ -55,11 +55,22 @@ pnpm seatbelt:build --all    # arm64 与 x64
 产物在 `bin/darwin-<arch>/seatbelt-run`：直调 `libsandbox` 的 `sandbox_init` 再 `execve`，
 目标命令必须是绝对路径，不经过 PATH 解析。
 
+Windows 的受限 token 沙盒同样需要构建原生 launcher（需要 MSVC + Windows SDK）：
+
+```bash
+pnpm win-sandbox:build                              # 构建当前架构并自检
+node scripts/build-win-sandbox.mjs --no-self-test   # 跳过自检
+```
+
+产物在 `bin/win32-<arch>/win-sandbox.exe`：负责创建 write-restricted token、授予/校验
+workspace/scratch 的 ACL、用 Job Object 限制进程数与提交内存，再启动目标命令。
+
 ### 验证沙箱边界
 
 ```bash
 node scripts/verify-sandbox.ts              # 自动挑后端
 node scripts/verify-sandbox.ts --backend seatbelt
+node scripts/verify-sandbox.ts --backend win-restricted
 node scripts/verify-sandbox.ts --json       # 附带机器可读结果
 ```
 
@@ -252,18 +263,27 @@ await api.capabilities.webFetch("https://example.com")
   或网页「网络代理」页修改；模型调用每轮重新读取配置，保存后下一轮生效，不需要重启服务
 - `sandbox.mode`：`off` / `strict` / `best-effort`；`strict` 找不到 OS 后端时拒绝 Agent 代码执行，`best-effort` 才降级
 - `sandbox.access`：`read-only` / `workspace-write` / `danger-full-access`；默认 `read-only`
+- 读策略：`read-only` / `workspace-write` 下**读全局放开**（与 DSH 对齐），只约束写边界、网络与进程；
+  Linux 用宿主顶层目录只读绑定实现，macOS 用 `(allow file-read*)`；`/proc`、`/dev`、`/tmp` 由沙箱重新挂载
 - `--permission <mode>`：单轮覆盖 `sandbox.access`；REPL 里 `/permission [mode]`
-- `sandbox.backend`：`auto` / `bwrap` / `seatbelt` / `nsjail`（`nsjail` 尚未实现）
-    - `auto`：Linux 用 `bwrap`，macOS 用 `seatbelt`；显式指定后端时**不跨后端回退**（要 `bwrap` 就只在 `bwrap` 上失败）
-    - `bwrap`：Linux，mount / PID / network namespace，报 `full`；按 `PATH` 查找（Termux 在 `$PREFIX/bin`、
-      NixOS 在 `/nix/store`，都不在 `/usr/bin`），找不到时说明里给出对应平台的安装方式
+- `sandbox.backend`：`auto` / `bwrap` / `seatbelt` / `win-restricted` / `nsjail`（`nsjail` 尚未实现）
+    - `auto`：Linux 用 `bwrap`，macOS 用 `seatbelt`，Windows 用 `win-restricted`；显式指定后端时**不跨后端回退**
+    - `bwrap`：Linux，mount / PID / network namespace，顶层目录只读绑定（读全局放开），报 `full`；
+      按 `PATH` 查找（Termux 在 `$PREFIX/bin`、NixOS 在 `/nix/store`，都不在 `/usr/bin`），
+      找不到时说明里给出对应平台的安装方式
     - `seatbelt`：macOS，SBPL profile。launcher 优先随包的 `bin/darwin-<arch>/seatbelt-run`
       （`pnpm seatbelt:build` 构建），退回 `/usr/bin/sandbox-exec`（自 macOS 10.10 起 deprecated），
       两者都没有时 fail-closed。报 `partial`
+    - `win-restricted`：Windows，受限 token + NTFS ACL + Job Object。需要先 `pnpm win-sandbox:build`；
+      读全局放开，写边界为 workspace/scratch；网络不隔离。报 `partial`
 - 执行结果的 `enforcement` / `enforcementNotes` 是后端自报的实际强度与缺口；`partial` 不等于失败，
   但需要绝对边界的调用方只能接受 `full`
-- Windows 没有内核级后端：插件使用 Node permission model 作为受限 sandbox（只限制文件读写，不隔离网络与进程）；
-  Agent 的 `execute_code` 在 Windows 上仍无 OS 隔离，请把 `sandbox.mode` 设为 `best-effort`（会降级为 direct）
+- Windows 插件仍使用 Node permission model（只限制文件读写，不隔离网络与进程）；
+  Agent 的 `execute_code` 在 `auto` 下使用 `win-restricted`，工作区准备是异步的（首次执行前授予 ACL），
+  Web 端会显示“正在准备工作区”
+- 删除 Windows 工作区前可运行
+  `wellspring sandbox cleanup --workspace <dir>` 清理沙盒留下的 SID ACE（只清理自己的 ACE）
+- Windows 受限 token 方案详见 `docs/windows-sandbox/2026-11-04-restricted-token-plan.md`
 - Android / Termux 同样没有内核级后端：Termux 仓库里没有 bwrap 包，Android 也禁止非特权 user namespace，
   所以 `sandbox.backend=auto` 在 Android 上必然探测失败。插件照常加载（退回 Node permission model）；
   Agent 的 `execute_code` 在 `strict` 下会被拒绝，要用就把 `sandbox.mode` 设为 `best-effort`，

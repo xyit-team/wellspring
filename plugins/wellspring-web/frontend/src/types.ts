@@ -13,7 +13,7 @@ export interface TokenUsage {
 }
 
 export interface ProcessItem {
-    kind: "reasoning" | "tool" | "steer"
+    kind: "reasoning" | "tool" | "steer" | "prepare"
     text?: string
     id?: string
     name?: string
