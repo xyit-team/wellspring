@@ -1,6 +1,6 @@
 /*
- * 本地插件安装与更新：目录或 zip 包。
- * zip 在插件根目录下的临时目录解压，校验后再搬到 plugins/<name>。
+ * 本地插件安装与更新：目录、zip 或 tar.gz 包。
+ * 归档在插件根目录下的临时目录解压，校验后再搬到 plugins/<name>。
  *
  * 插件 package.json 可以用 packageManager 声明包管理器；声明了 dependencies 时
  * 安装阶段会调用它自动安装依赖（没有声明则按 lockfile 推断，仍没有则报错）。
@@ -19,6 +19,7 @@ import {
     type PluginPackageJsonLike,
 } from "./package-manager.ts"
 import { PLUGIN_NAME, pluginsRoot } from "./paths.ts"
+import { extractTgz } from "./tgz.ts"
 import { extractZip } from "./zip.ts"
 
 const ENTRIES = ["index.ts", "index.js", "index.mjs", "index.mts"]
@@ -102,7 +103,8 @@ async function resolveSourceName(
     if (typeof pkg?.name === "string" && pkg.name.trim() !== "") {
         return pkg.name.trim()
     }
-    const candidate = basename(source, extname(source))
+    // .tar.gz / .tgz 去掉双层扩展名
+    const candidate = basename(source, extname(source)).replace(/\.tar$/i, "")
     return temp ? candidate : basename(sourceDir)
 }
 
@@ -113,6 +115,11 @@ async function copyToStage(source: string, stage: string): Promise<void> {
         force: true,
         filter: (path) => basename(path) !== "node_modules",
     })
+}
+
+/** gzip 魔数：1f 8b */
+function isGzip(buffer: Buffer): boolean {
+    return buffer.length > 2 && buffer[0] === 0x1f && buffer[1] === 0x8b
 }
 
 /** 安装本地插件目录或 zip 包 */
@@ -136,7 +143,12 @@ export async function installPlugin(
         const buffer = await readFile(source)
         await removePath(temp)
         await ensureDir(temp)
-        await extractZip(buffer, temp)
+        // 按文件头判断格式：npm tarball 常被存成无扩展名的临时文件
+        if (isGzip(buffer)) {
+            await extractTgz(buffer, temp)
+        } else {
+            await extractZip(buffer, temp)
+        }
         sourceDir = await normalizeExtracted(temp)
         fromArchive = true
     }

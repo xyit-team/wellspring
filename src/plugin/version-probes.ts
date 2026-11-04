@@ -145,11 +145,14 @@ function errorText(error: unknown): string {
     return error instanceof Error ? error.message : String(error)
 }
 
+/** 插件归档扩展名；安装侧按文件头再判一次格式 */
+const ARCHIVE_EXTENSIONS = /\.(zip|tgz|tar\.gz)$/i
+
 /**
  * 校验下载地址
  *
- * 只接受 http/https 的 .zip
- * 安装入口只接受 zip 包，tarball 与仓库页在安装阶段失败
+ * 接受 http/https 的 .zip 与 .tar.gz/.tgz
+ * 安装入口按文件头解压，两种归档都能装
  */
 export function validateDownloadUrl(value: string): { url: string | null; error: string | null } {
     const text = value.trim()
@@ -165,9 +168,9 @@ export function validateDownloadUrl(value: string): { url: string | null; error:
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
         return { url: null, error: `下载地址必须用 http/https：${parsed.protocol}` }
     }
-    // 只校验路径部分，查询串带 .zip 不算
-    if (!/\.zip$/i.test(parsed.pathname)) {
-        return { url: null, error: `下载地址必须是 .zip 文件：${text}` }
+    // 只校验路径部分，查询串里的扩展名不算
+    if (!ARCHIVE_EXTENSIONS.test(parsed.pathname)) {
+        return { url: null, error: `下载地址必须是 .zip 或 .tar.gz：${text}` }
     }
     return { url: text, error: null }
 }

@@ -140,19 +140,19 @@ test("探针只报版本号也能用，下载地址为 null", { timeout: 60_000 
     assert.equal(checks[0]?.downloadUrl, null)
 })
 
-test("非 .zip 下载地址让这一项失败，但不影响版本号", { timeout: 60_000 }, async () => {
+test("非归档下载地址让这一项失败，但不影响版本号", { timeout: 60_000 }, async () => {
     const dataDir = join(root, "bad-url")
     await writePlugin(
         dataDir,
         pluginSource(
-            '            api.registerVersionProbe(async () => ({ version: "2.0.0", downloadUrl: "https://example.com/probe-2.0.0.tar.gz" }))',
+            '            api.registerVersionProbe(async () => ({ version: "2.0.0", downloadUrl: "https://github.com/xyit-team/wellspring-core" }))',
         ),
     )
     await load(dataDir)
     const checks = await checkPluginUpdates([{ id: "probe-plugin", version: "1.0.0" }])
     assert.equal(checks[0]?.latest, "2.0.0")
     assert.equal(checks[0]?.downloadUrl, null)
-    assert.match(String(checks[0]?.error), /必须是 \.zip/)
+    assert.match(String(checks[0]?.error), /必须是 \.zip 或 \.tar\.gz/)
 })
 
 test("探针抛错被隔离成这一项的错误", { timeout: 60_000 }, async () => {

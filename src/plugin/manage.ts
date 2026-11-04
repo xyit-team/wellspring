@@ -1,5 +1,5 @@
 /*
- * 宿主插件管理服务：列出插件、安装 zip、卸载、启用/禁用。
+ * 宿主插件管理服务：列出插件、安装 zip 与 tar.gz、卸载、启用/禁用。
  * 状态文件只记录禁用项；启用/禁用与安装/卸载都要求下次启动生效。
  */
 
@@ -202,9 +202,9 @@ export function createHostPluginManager(options: HostPluginManagerOptions): Host
             if (
                 filename === "" ||
                 filename.length > MAX_FILENAME_CHARS ||
-                !/\.zip$/i.test(filename)
+                !/\.(zip|tgz|tar\.gz)$/i.test(filename)
             ) {
-                return failure("", "只支持 .zip 插件包")
+                return failure("", "只支持 .zip 与 .tar.gz 插件包")
             }
             const raw =
                 typeof input.dataBase64 === "string" ? input.dataBase64.replace(/\s+/g, "") : ""
@@ -218,7 +218,8 @@ export function createHostPluginManager(options: HostPluginManagerOptions): Host
             const root = pluginsRoot(options.paths)
             try {
                 await ensureDir(root)
-                const tempFile = join(root, `.install-${randomUUID()}.zip`)
+                // 解压按文件头判断格式，临时文件不依赖扩展名
+                const tempFile = join(root, `.install-${randomUUID()}.archive`)
                 await writeBytesAtomic(tempFile, bytes)
                 try {
                     const installed = await installPlugin(tempFile, options.paths, {

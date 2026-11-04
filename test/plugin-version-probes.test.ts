@@ -46,7 +46,7 @@ test("compareVersions：解析不了的值按相等处理，不抛错", () => {
     assert.equal(compareVersions("latest", "1.0.0"), 0)
 })
 
-test("validateDownloadUrl：只收 http/https 的 .zip", () => {
+test("validateDownloadUrl：接受 http/https 的 .zip 与 .tar.gz", () => {
     assert.deepEqual(validateDownloadUrl("https://example.com/p/1.4.0.zip"), {
         url: "https://example.com/p/1.4.0.zip",
         error: null,
@@ -58,11 +58,25 @@ test("validateDownloadUrl：只收 http/https 的 .zip", () => {
         validateDownloadUrl("https://example.com/a.zip?sig=xyz").url,
         "https://example.com/a.zip?sig=xyz",
     )
+    // npm tarball 与 GitHub 归档两种写法都收
+    assert.equal(
+        validateDownloadUrl("https://registry.npmjs.org/w/-/w-1.4.0.tgz").url,
+        "https://registry.npmjs.org/w/-/w-1.4.0.tgz",
+    )
+    assert.equal(
+        validateDownloadUrl("https://example.com/w-1.4.0.tar.gz").url,
+        "https://example.com/w-1.4.0.tar.gz",
+    )
 })
 
-test("validateDownloadUrl：拒绝非 zip 与非 http 协议", () => {
-    assert.match(String(validateDownloadUrl("https://example.com/a.tar.gz").error), /必须是 \.zip/)
-    assert.match(String(validateDownloadUrl("https://example.com/a").error), /必须是 \.zip/)
+test("validateDownloadUrl：拒绝非归档与非 http 协议", () => {
+    assert.match(
+        String(validateDownloadUrl("https://example.com/a").error),
+        /必须是 \.zip 或 \.tar\.gz/,
+    )
+    assert.match(String(validateDownloadUrl("https://example.com/a.rar").error), /必须是/)
+    // 查询串里的扩展名不算
+    assert.match(String(validateDownloadUrl("https://example.com/a?f=1.zip").error), /必须是/)
     assert.match(String(validateDownloadUrl("ftp://example.com/a.zip").error), /http\/https/)
     assert.match(String(validateDownloadUrl("file:///tmp/a.zip").error), /http\/https/)
     assert.match(String(validateDownloadUrl("不是地址").error), /合法 URL/)
@@ -86,7 +100,7 @@ test("readProbeValue：接受版本 + zip 地址", () => {
 })
 
 test("readProbeValue：非法下载地址保留版本但标记失败", () => {
-    const outcome = readProbeValue({ version: "1.4.0", downloadUrl: "https://x/a.tar.gz" })
+    const outcome = readProbeValue({ version: "1.4.0", downloadUrl: "https://github.com/x/y" })
     assert.equal(outcome.version, "1.4.0")
     assert.equal(outcome.downloadUrl, null)
     assert.match(String(outcome.error), /必须是 \.zip/)
@@ -95,7 +109,7 @@ test("readProbeValue：非法下载地址保留版本但标记失败", () => {
 test("checkPluginUpdates：检查失败的项不算有更新，但保留 latest 供展示", async () => {
     setVersionProbe("broken-url", async () => ({
         version: "2.0.0",
-        downloadUrl: "https://x/a.tar.gz",
+        downloadUrl: "https://github.com/x/y",
     }))
     const checks = await checkPluginUpdates([{ id: "broken-url", version: "1.0.0" }])
     assert.equal(checks[0]?.latest, "2.0.0", "让用户看到新版确实发了")
