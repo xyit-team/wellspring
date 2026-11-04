@@ -8,7 +8,7 @@ import { saveSettings } from "../config/loader.ts"
 import { modelsSetting } from "../config/providers.ts"
 import type { AppSetting } from "../config/types.ts"
 import { readJsonIfExists, writeJsonAtomic } from "../platform/file.ts"
-import { PLUGIN_NAME } from "../plugin/paths.ts"
+import { PLUGIN_ID } from "../plugin/paths.ts"
 import { pluginConfigFile } from "../plugin/runtime.ts"
 import { USAGE_CODES } from "../input/codes.ts"
 import { parseCommandArgs } from "../input/parse-options.ts"
@@ -60,11 +60,11 @@ function parsePluginKey(key: string): PluginConfigRef | null {
     if (dot > 0) {
         const pluginId = rest.slice(0, dot)
         const field = rest.slice(dot + 1)
-        if (PLUGIN_NAME.test(pluginId) && PLUGIN_CONFIG_FIELD.test(field)) {
+        if (PLUGIN_ID.test(pluginId) && PLUGIN_CONFIG_FIELD.test(field)) {
             return { pluginId, field }
         }
     }
-    if (PLUGIN_NAME.test(rest)) {
+    if (PLUGIN_ID.test(rest)) {
         return { pluginId: rest, field: null }
     }
     return null

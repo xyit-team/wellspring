@@ -336,6 +336,31 @@ await api.capabilities.webFetch("https://example.com")
   `<configDir>/credentials.json`（0600）。解析顺序：显式参数 > 环境变量 `OPENAI_API_KEY` > 本地凭据；
   CLI 输出与网页界面只展示掩码，明文不会进入日志
 
+## 插件命名
+
+插件 id 支持可选的 `@scope/` 前缀，规则同 npm：
+
+```text
+wellspring-core            # 无 scope
+@xyit/wellspring-core      # 带 scope
+```
+
+允许字符：`A-Z a-z 0-9 . _ -`，每段最长 64，`@scope` 与名字之间用 `/` 分隔。
+`..`、绝对路径、盘符与多级路径一律拒绝。
+
+目录按 npm 惯例嵌套，无 scope 时与旧版完全一致：
+
+```text
+<dataDir>/plugins/@xyit/wellspring-core/
+<dataDir>/plugin-data/@xyit/wellspring-core/
+<configDir>/plugins/@xyit/wellspring-core.json
+```
+
+- `plugin install` 读 zip 或 tarball 内 `package.json` 的 `name` 决定落点，带 scope 时自动建 scope 目录
+- `plugin enable/disable/remove/list --check` 接受完整 id；也接受 package.json 的 `name` 匹配
+- `plugins-state.json` 的禁用项以完整 id 为 key，旧的扁平名继续有效
+- 宿主与 sandbox 内的插件进程共用 `api/host/plugin.ts` 里的 `PLUGIN_ID`，两侧规则不会漂移
+
 ## 插件数据互访
 
 依赖链上的插件可以互访 data 目录，无依赖关系的插件不能：

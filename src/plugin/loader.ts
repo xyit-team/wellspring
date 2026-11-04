@@ -5,7 +5,7 @@
  */
 
 import { cp, lstat, readdir, readlink, rm, stat, symlink } from "node:fs/promises"
-import { basename, join, resolve } from "node:path"
+import { basename, dirname, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 
 import type { Logger } from "pino"
@@ -48,7 +48,7 @@ import { createHostCapabilities } from "./capabilities.ts"
 import { PluginDataService } from "./data-access.ts"
 import { ensureAccessGuard } from "./access-guard.ts"
 import { ensureHostAlias } from "./host-alias.ts"
-import { PLUGIN_NAME, pluginsRoot } from "./paths.ts"
+import { PLUGIN_ID, listPluginDirs, pluginDirOf, pluginsRoot } from "./paths.ts"
 import { PluginRegistry } from "./registry.ts"
 import { createHostAgentService, type HostAgentService } from "./agent-service.ts"
 import { createHostModelsService } from "./models-service.ts"
@@ -166,7 +166,7 @@ function validatePlugin(value: unknown): WellspringPlugin {
     const id = value["id"]
     const name = value["name"]
     const version = value["version"]
-    if (typeof id !== "string" || !PLUGIN_NAME.test(id)) {
+    if (typeof id !== "string" || !PLUGIN_ID.test(id)) {
         throw new Error(`插件 id 不合法：${String(id)}`)
     }
     if (typeof name !== "string" || name.trim() === "") {
@@ -211,7 +211,8 @@ function validatePlugin(value: unknown): WellspringPlugin {
 }
 
 interface PluginEntry {
-    readonly dirName: string
+    /** 完整 id，可带 @scope 前缀；同时是启用状态与数据的 key */
+    readonly id: string
     readonly dir: string
     readonly owner: string
     readonly pkg: PluginPackageJson | null
@@ -246,11 +247,11 @@ function attachVersionProbe(
     })
 }
 
-function ownerOf(dirName: string, pkg: PluginPackageJson | null): string {
-    if (typeof pkg?.name === "string" && PLUGIN_NAME.test(pkg.name)) {
+function ownerOf(id: string, pkg: PluginPackageJson | null): string {
+    if (typeof pkg?.name === "string" && PLUGIN_ID.test(pkg.name)) {
         return pkg.name
     }
-    return dirName
+    return id
 }
 
 function sandboxPermissions(pkg: PluginPackageJson | null): PluginSandboxPermissions {
@@ -282,7 +283,7 @@ function sandboxPermissions(pkg: PluginPackageJson | null): PluginSandboxPermiss
 }
 
 async function loadEntry(
-    dirName: string,
+    id: string,
     dir: string,
     index: number,
     options: LoadPluginsOptions,
@@ -300,9 +301,9 @@ async function loadEntry(
         pkg = await readJsonIfExists<PluginPackageJson>(join(dir, "package.json"))
     } catch (error) {
         return {
-            dirName,
+            id,
             dir,
-            owner: dirName,
+            owner: id,
             pkg: null,
             index,
             plugin: null,
@@ -312,16 +313,16 @@ async function loadEntry(
         }
     }
 
-    const owner = ownerOf(dirName, pkg)
+    const owner = ownerOf(id, pkg)
     const entry: PluginEntry = {
-        dirName,
+        id,
         dir,
         owner,
         pkg,
         index,
         plugin: null,
         error: null,
-        disabled: disabled.has(dirName),
+        disabled: disabled.has(id),
         sandboxClient: null,
     }
     if (entry.disabled) {
@@ -548,8 +549,7 @@ function runExclusive<T>(state: RuntimeState, task: () => Promise<T>): Promise<T
 
 async function hotEnableEntry(state: RuntimeState, idOrDir: string): Promise<PluginHotOutcome> {
     const existing = state.entries.find(
-        (entry) =>
-            entry.dirName === idOrDir || pluginIdOf(entry) === idOrDir || entry.owner === idOrDir,
+        (entry) => entry.id === idOrDir || pluginIdOf(entry) === idOrDir || entry.owner === idOrDir,
     )
     if (
         existing !== undefined &&
@@ -559,22 +559,22 @@ async function hotEnableEntry(state: RuntimeState, idOrDir: string): Promise<Plu
     ) {
         return { ok: true, id: existing.plugin.id, changed: false }
     }
-    const dirName = existing?.dirName ?? idOrDir
-    if (!PLUGIN_NAME.test(dirName)) {
-        return { ok: false, id: dirName, error: "插件名不合法" }
+    const id = existing?.id ?? idOrDir
+    const dir = pluginDirOf(state.root, id)
+    if (dir === null) {
+        return { ok: false, id, error: "插件名不合法" }
     }
-    const dir = join(state.root, dirName)
     const info = await stat(dir).catch(() => null)
     if (info === null || !info.isDirectory()) {
-        return { ok: false, id: dirName, error: "plugin.not-found" }
+        return { ok: false, id, error: "plugin.not-found" }
     }
     if (existing !== undefined) {
         state.entries = state.entries.filter((entry) => entry !== existing)
     }
     const disabled = new Set(await readPluginState(state.paths))
-    disabled.delete(dirName)
+    disabled.delete(id)
     const entry = await loadEntry(
-        dirName,
+        id,
         dir,
         state.entries.length,
         state.options,
@@ -628,7 +628,7 @@ async function hotEnableEntry(state: RuntimeState, idOrDir: string): Promise<Plu
         for (const tool of entry.sandboxClient.agentToolStubs()) {
             state.options.agentTools?.register(ready.plugin.id, tool)
         }
-        await setPluginEnabled(dirName, true, state.paths)
+        await setPluginEnabled(id, true, state.paths)
         await emitInitHooksForOwner(ready.plugin.id)
         refreshDataAccess(state)
         publishHostPlugins(state.entries, state.options.registry)
@@ -645,7 +645,7 @@ async function hotEnableEntry(state: RuntimeState, idOrDir: string): Promise<Plu
 async function hotDisableEntry(state: RuntimeState, idOrDir: string): Promise<PluginHotOutcome> {
     const entry = state.entries.find(
         (candidate) =>
-            candidate.dirName === idOrDir ||
+            candidate.id === idOrDir ||
             pluginIdOf(candidate) === idOrDir ||
             candidate.owner === idOrDir,
     )
@@ -653,7 +653,8 @@ async function hotDisableEntry(state: RuntimeState, idOrDir: string): Promise<Pl
         return { ok: false, id: idOrDir, error: "plugin.not-found" }
     }
     const id = pluginIdOf(entry)
-    if (id === "wellspring-web" || entry.dirName === "wellspring-web") {
+    // 内置网页插件依赖热加载自身，只能走重启
+    if (id === "wellspring-web" || entry.id === "wellspring-web") {
         return {
             ok: false,
             id,
@@ -686,7 +687,7 @@ async function hotDisableEntry(state: RuntimeState, idOrDir: string): Promise<Pl
     entry.plugin = null
     entry.error = null
     entry.sandboxClient = null
-    await setPluginEnabled(entry.dirName, false, state.paths)
+    await setPluginEnabled(entry.id, false, state.paths)
     refreshDataAccess(state)
     publishHostPlugins(state.entries, state.options.registry)
     return { ok: true, id, changed: true }
@@ -695,7 +696,7 @@ async function hotDisableEntry(state: RuntimeState, idOrDir: string): Promise<Pl
 async function hotForgetEntry(state: RuntimeState, idOrDir: string): Promise<void> {
     const entry = state.entries.find(
         (candidate) =>
-            candidate.dirName === idOrDir ||
+            candidate.id === idOrDir ||
             pluginIdOf(candidate) === idOrDir ||
             candidate.owner === idOrDir,
     )
@@ -755,12 +756,7 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
     const root = pluginsRoot(options.paths)
     await ensureDir(root)
 
-    let names: string[]
-    try {
-        names = (await readdir(root)).sort()
-    } catch {
-        return []
-    }
+    const dirs = await listPluginDirs(root)
 
     const sandboxSetting: SandboxSetting = options.sandbox ?? {
         ...DEFAULT_SETTINGS.sandbox,
@@ -866,23 +862,11 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
     const disabled = await readPluginState(options.paths ?? getPaths())
     const entries: PluginEntry[] = []
     let index = 0
-    for (const dirName of names) {
-        if (!PLUGIN_NAME.test(dirName) || dirName.startsWith(".")) {
-            continue
-        }
-        const dir = join(root, dirName)
-        try {
-            const info = await stat(dir)
-            if (!info.isDirectory()) {
-                continue
-            }
-        } catch {
-            continue
-        }
+    for (const found of dirs) {
         entries.push(
             await loadEntry(
-                dirName,
-                dir,
+                found.id,
+                found.dir,
                 index,
                 options,
                 disabled,
@@ -1010,8 +994,13 @@ export async function linkPlugin(
     paths: ResolvedPaths = getPaths(),
 ): Promise<string> {
     const source = resolve(sourcePath)
-    const name = basename(source)
-    if (!PLUGIN_NAME.test(name)) {
+    const pkg = await readJsonIfExists<PluginPackageJson>(join(source, "package.json")).catch(
+        () => null,
+    )
+    // id 取 package.json 的 name，缺失时用目录名
+    const declared = typeof pkg?.name === "string" && PLUGIN_ID.test(pkg.name) ? pkg.name : null
+    const name = declared ?? basename(source)
+    if (!PLUGIN_ID.test(name)) {
         throw new Error(`插件目录名不合法：${name}`)
     }
 
@@ -1021,8 +1010,12 @@ export async function linkPlugin(
     }
 
     const root = pluginsRoot(paths)
-    await ensureDir(root)
-    const target = join(root, name)
+    const target = pluginDirOf(root, name)
+    if (target === null) {
+        throw new Error(`插件名不合法：${name}`)
+    }
+    // scope 目录要先建出来
+    await ensureDir(dirname(target))
 
     const existing = await lstat(target).catch(() => null)
     if (existing !== null) {
@@ -1052,8 +1045,9 @@ export async function linkPlugin(
 
 /** 删除插件目录 */
 export async function removePlugin(name: string, paths: ResolvedPaths = getPaths()): Promise<void> {
-    if (!PLUGIN_NAME.test(name)) {
+    const target = pluginDirOf(pluginsRoot(paths), name)
+    if (target === null) {
         throw new Error(`插件名不合法：${name}`)
     }
-    await rm(join(pluginsRoot(paths), name), { recursive: true, force: true })
+    await rm(target, { recursive: true, force: true })
 }

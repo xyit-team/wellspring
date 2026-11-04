@@ -2,7 +2,7 @@
  * plugin 命令：list / new / install / update / link / enable / disable / remove。
  */
 
-import { readFile, readdir } from "node:fs/promises"
+import { readFile } from "node:fs/promises"
 import { basename, join } from "node:path"
 
 import { Result } from "../api/result/result.ts"
@@ -12,14 +12,15 @@ import type { ResolvedPaths } from "../platform/path.ts"
 import { statIfExists } from "../platform/file.ts"
 import { installPlugin } from "../plugin/install.ts"
 import { linkPlugin, removePlugin } from "../plugin/loader.ts"
-import { PLUGIN_NAME, pluginsRoot } from "../plugin/paths.ts"
+import { PLUGIN_ID, listPluginDirs, pluginDirOf, pluginsRoot } from "../plugin/paths.ts"
 import { scaffoldPlugin } from "../plugin/scaffold.ts"
 import { readPluginState, setPluginEnabled } from "../plugin/state.ts"
 import { checkPluginUpdates, type PluginUpdateCheck } from "../plugin/version-probes.ts"
 import { failure, success, type CommandContext, type CommandOutcome } from "./shared.ts"
 
 interface ScannedPlugin {
-    readonly dirName: string
+    /** 完整 id，可带 @scope 前缀 */
+    readonly id: string
     readonly name: string
     readonly version: string
     readonly enabled: boolean
@@ -30,19 +31,10 @@ interface ScannedPlugin {
 async function scanPluginDirs(paths: ResolvedPaths): Promise<ScannedPlugin[]> {
     const root = pluginsRoot(paths)
     const disabled = await readPluginState(paths)
-    let names: string[]
-    try {
-        names = (await readdir(root)).sort()
-    } catch {
-        return []
-    }
     const plugins: ScannedPlugin[] = []
-    for (const dirName of names) {
-        if (!PLUGIN_NAME.test(dirName) || dirName.startsWith(".")) continue
-        const dir = join(root, dirName)
-        const info = await statIfExists(dir)
-        if (info === null || !info.isDirectory()) continue
-        let name = dirName
+    for (const found of await listPluginDirs(root)) {
+        const dir = found.dir
+        let name = found.id
         let version = "0.0.0"
         try {
             const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8")) as {
@@ -67,29 +59,24 @@ async function scanPluginDirs(paths: ResolvedPaths): Promise<ScannedPlugin[]> {
             /* 读不到入口时按没有依赖处理 */
         }
         plugins.push({
-            dirName,
+            id: found.id,
             name,
             version,
-            enabled: !disabled.has(dirName),
+            enabled: !disabled.has(found.id),
             deps: deps.filter((dep) => dep !== ""),
         })
     }
     return plugins
 }
 
-/** 依赖目标插件的其它插件目录名 */
-function dependentsOf(
-    plugins: readonly ScannedPlugin[],
-    dirName: string,
-    pluginName: string,
-): string[] {
+/** 依赖目标插件的其它插件 */
+function dependentsOf(plugins: readonly ScannedPlugin[], id: string, pluginName: string): string[] {
     return plugins
         .filter(
             (plugin) =>
-                plugin.dirName !== dirName &&
-                (plugin.deps.includes(dirName) || plugin.deps.includes(pluginName)),
+                plugin.id !== id && (plugin.deps.includes(id) || plugin.deps.includes(pluginName)),
         )
-        .map((plugin) => plugin.dirName)
+        .map((plugin) => plugin.id)
 }
 
 /**
@@ -103,7 +90,7 @@ async function loadAndCheckUpdates(ctx: CommandContext): Promise<Map<string, Plu
     const plugins = await scanPluginDirs(ctx.paths)
     const checks = await checkPluginUpdates(
         plugins.map((plugin) => ({
-            id: plugin.dirName,
+            id: plugin.id,
             version: plugin.version,
             // 探针以 package.json 的 name 注册，缺失时退回目录名
             probeIds: [plugin.name],
@@ -164,10 +151,10 @@ export async function runPluginCommand(
                     const deps = plugin.deps.length === 0 ? "-" : plugin.deps.join(",")
                     const status = plugin.enabled ? "enabled" : "disabled"
                     ctx.elog.print(
-                        `${plugin.dirName}  ${plugin.name}@${plugin.version}  ${status}  deps=${deps}`,
+                        `${plugin.id}  ${plugin.name}@${plugin.version}  ${status}  deps=${deps}`,
                     )
                     if (updates === null) continue
-                    ctx.elog.print(`  ${describeUpdate(updates.get(plugin.dirName))}`)
+                    ctx.elog.print(`  ${describeUpdate(updates.get(plugin.id))}`)
                 }
                 if (updates !== null) {
                     const count = [...updates.values()].filter(
@@ -202,22 +189,22 @@ export async function runPluginCommand(
                 if (name === undefined) {
                     return failure(`${USAGE_CODES.missingValue}:name`)
                 }
-                if (!PLUGIN_NAME.test(name)) {
+                if (!PLUGIN_ID.test(name)) {
                     return failure(`${USAGE_CODES.invalidValue}:name`)
                 }
                 const plugins = await scanPluginDirs(ctx.paths)
                 const match =
-                    plugins.find((plugin) => plugin.dirName === name) ??
+                    plugins.find((plugin) => plugin.id === name) ??
                     plugins.find((plugin) => plugin.name === name)
-                const dirName = match === undefined ? name : match.dirName
-                const dir = join(pluginsRoot(ctx.paths), dirName)
-                if ((await statIfExists(dir)) === null) {
+                const id = match === undefined ? name : match.id
+                const dir = pluginDirOf(pluginsRoot(ctx.paths), id)
+                if (dir === null || (await statIfExists(dir)) === null) {
                     return failure(`plugin.not-found:${name}`)
                 }
                 const enabled = subcommand === "enable"
-                await setPluginEnabled(dirName, enabled, ctx.paths)
-                ctx.elog.info(`${enabled ? "已启用" : "已禁用"}插件 ${dirName}（下次运行生效）`)
-                return success({ id: dirName, enabled })
+                await setPluginEnabled(id, enabled, ctx.paths)
+                ctx.elog.info(`${enabled ? "已启用" : "已禁用"}插件 ${id}（下次运行生效）`)
+                return success({ id, enabled })
             }
             case "install": {
                 const source = line.positionals[0]
@@ -261,22 +248,22 @@ export async function runPluginCommand(
                 }
                 const plugins = await scanPluginDirs(ctx.paths)
                 const target =
-                    plugins.find((plugin) => plugin.dirName === name) ??
+                    plugins.find((plugin) => plugin.id === name) ??
                     plugins.find((plugin) => plugin.name === name)
-                const dirName = target === undefined ? name : target.dirName
-                const dependents = dependentsOf(plugins, dirName, target?.name ?? dirName)
+                const id = target === undefined ? name : target.id
+                const dependents = dependentsOf(plugins, id, target?.name ?? id)
                 if (dependents.length > 0 && !ignore) {
                     ctx.elog.error(
-                        `插件 ${dirName} 被这些插件依赖：${dependents.join(", ")}；` +
+                        `插件 ${id} 被这些插件依赖：${dependents.join(", ")}；` +
                             "确认要强制卸载请加 --ignore",
                     )
                     return failure(`plugin.has-dependents:${dependents.join(",")}`)
                 }
-                await removePlugin(dirName, ctx.paths)
+                await removePlugin(id, ctx.paths)
                 ctx.elog.info(
-                    `已删除插件 ${dirName}${ignore && dependents.length > 0 ? "（忽略依赖）" : ""}`,
+                    `已删除插件 ${id}${ignore && dependents.length > 0 ? "（忽略依赖）" : ""}`,
                 )
-                return success({ id: dirName })
+                return success({ id })
             }
             default:
                 return failure(`${USAGE_CODES.unknownSubcommand}:plugin ${subcommand ?? ""}`)

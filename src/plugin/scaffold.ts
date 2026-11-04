@@ -11,7 +11,7 @@ import {
     writeJsonAtomic,
     writeTextAtomic,
 } from "../platform/file.ts"
-import { PLUGIN_NAME } from "./paths.ts"
+import { PLUGIN_ID } from "./paths.ts"
 
 export interface ScaffoldPluginOptions {
     readonly name: string
@@ -116,11 +116,12 @@ export async function scaffoldPlugin(
     options: ScaffoldPluginOptions,
 ): Promise<ScaffoldPluginResult> {
     const name = options.name.trim()
-    if (!PLUGIN_NAME.test(name)) {
+    if (!PLUGIN_ID.test(name)) {
         throw new Error(`插件名不合法：${name}`)
     }
     const parentDir = resolve(options.parentDir ?? process.cwd())
-    const dir = join(parentDir, name)
+    // scope 名按 npm 惯例落成嵌套目录
+    const dir = join(parentDir, ...name.split("/"))
     const existing = await statIfExists(dir)
     if (existing !== null) {
         if (options.force !== true) {

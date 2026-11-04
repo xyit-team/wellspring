@@ -93,6 +93,7 @@ import {
     withHookOwner,
     type HookKind,
 } from "../api/host/hooks.ts"
+import { PLUGIN_ID } from "../api/host/plugin.ts"
 import type {
     AgentCallToolResult,
     AgentTool,
@@ -586,7 +587,7 @@ function validatePlugin(value: unknown): WellspringPlugin {
     const name = value["name"]
     const version = value["version"]
     const status = value["status"]
-    if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(id)) {
+    if (typeof id !== "string" || !PLUGIN_ID.test(id)) {
         throw new Error(`插件 id 不合法：${String(id)}`)
     }
     if (typeof name !== "string" || name.trim() === "") {

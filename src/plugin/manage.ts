@@ -30,7 +30,7 @@ import {
     writeBytesAtomic,
 } from "../platform/file.ts"
 import { installPlugin } from "./install.ts"
-import { PLUGIN_NAME, pluginsRoot } from "./paths.ts"
+import { PLUGIN_ID, listPluginDirs, pluginDirOf, pluginsRoot } from "./paths.ts"
 import { readPluginState, setPluginEnabled } from "./state.ts"
 
 const WEB_PLUGIN_ID = "wellspring-web"
@@ -93,29 +93,20 @@ export function createHostPluginManager(options: HostPluginManagerOptions): Host
 
     const scan = async (): Promise<ScannedPlugin[]> => {
         const root = pluginsRoot(options.paths)
-        let names: string[]
-        try {
-            names = (await readdir(root)).sort()
-        } catch {
-            return []
-        }
         const disabled = await readPluginState(options.paths)
         const loaded = hostPlugins()
         const entries: ScannedPlugin[] = []
-        for (const dirName of names) {
-            if (!PLUGIN_NAME.test(dirName) || dirName.startsWith(".")) continue
-            const dirPath = join(root, dirName)
-            const info = await statIfExists(dirPath)
-            if (info === null || !info.isDirectory()) continue
+        for (const found of await listPluginDirs(root)) {
+            const dirPath = found.dir
             const pkg = await readJsonIfExists<{ name?: unknown; version?: unknown }>(
                 join(dirPath, "package.json"),
             )
             const pkgName =
-                typeof pkg?.name === "string" && PLUGIN_NAME.test(pkg.name) ? pkg.name : null
+                typeof pkg?.name === "string" && PLUGIN_ID.test(pkg.name) ? pkg.name : null
             const matched =
-                loaded.find((plugin) => plugin.id === dirName) ??
+                loaded.find((plugin) => plugin.id === found.id) ??
                 (pkgName === null ? undefined : loaded.find((plugin) => plugin.id === pkgName))
-            const enabled = !disabled.has(dirName)
+            const enabled = !disabled.has(found.id)
             let status: HostPluginEntryStatus
             if (!enabled) status = "disabled"
             else if (matched === undefined) status = "unknown"
@@ -124,15 +115,15 @@ export function createHostPluginManager(options: HostPluginManagerOptions): Host
                 status = hostStatus === "disabled" ? "disabled" : hostStatus
             }
             entries.push({
-                id: matched?.id ?? pkgName ?? dirName,
-                name: matched?.name ?? pkgName ?? dirName,
+                id: matched?.id ?? pkgName ?? found.id,
+                name: matched?.name ?? pkgName ?? found.id,
                 version:
                     matched?.version ?? (typeof pkg?.version === "string" ? pkg.version : "0.0.0"),
                 status,
                 enabled,
                 deps: matched?.deps ?? [],
                 commands: matched?.commands ?? [],
-                dir: dirName,
+                dir: found.id,
                 dirPath,
             })
         }

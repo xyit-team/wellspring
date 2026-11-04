@@ -7,7 +7,7 @@
  */
 
 import { cp, lstat, readFile, readdir, rename, stat } from "node:fs/promises"
-import { basename, extname, join, resolve } from "node:path"
+import { basename, dirname, extname, join, resolve } from "node:path"
 
 import { ensureDir, readJsonIfExists, removePath, statIfExists } from "../platform/file.ts"
 import { getPaths, type ResolvedPaths } from "../platform/path.ts"
@@ -18,7 +18,7 @@ import {
     type PluginDependencyInstallResult,
     type PluginPackageJsonLike,
 } from "./package-manager.ts"
-import { PLUGIN_NAME, pluginsRoot } from "./paths.ts"
+import { PLUGIN_ID, pluginDirOf, pluginsRoot } from "./paths.ts"
 import { extractTgz } from "./tgz.ts"
 import { extractZip } from "./zip.ts"
 
@@ -160,7 +160,7 @@ export async function installPlugin(
             throw new Error("插件缺少入口（index.ts/js/mjs/mts 或 package.json main）")
         }
         const name = await resolveSourceName(source, sourceDir, fromArchive)
-        if (!PLUGIN_NAME.test(name)) {
+        if (!PLUGIN_ID.test(name)) {
             throw new Error(`插件名不合法：${name}`)
         }
         const rejected = options.validateId?.(name) ?? null
@@ -168,7 +168,12 @@ export async function installPlugin(
             throw new Error(rejected)
         }
 
-        const target = join(root, name)
+        const target = pluginDirOf(root, name)
+        if (target === null) {
+            throw new Error(`插件名不合法：${name}`)
+        }
+        // scope 目录在 rename 之前就要存在
+        await ensureDir(dirname(target))
         /* 存在性用 lstat：悬空符号链接的 stat 是 ENOENT，update 会误判成没装 */
         const existing = await lstat(target).catch(() => null)
         if (options.mode === "update") {
