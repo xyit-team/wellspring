@@ -100,9 +100,7 @@ async function runProbe(
      */
     const useShellDevNull =
         backend === "win-restricted" && probe.id === "write:devnull" && process.platform === "win32"
-    const command = useShellDevNull
-        ? (process.env["ComSpec"] ?? "cmd.exe")
-        : nodeCommand(backend)
+    const command = useShellDevNull ? (process.env["ComSpec"] ?? "cmd.exe") : nodeCommand(backend)
     const argv = useShellDevNull
         ? ["/c", "echo probe> NUL"]
         : [

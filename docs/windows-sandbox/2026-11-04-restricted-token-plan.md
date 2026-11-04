@@ -4,6 +4,7 @@
 > **状态**：核心已实现（native launcher + TS 后端 + manager 异步准备 + Web 准备状态事件/UI +
 > ACL 清理 + 网络盘/reparse point 拒绝）；WFP/网络围栏与大 workspace 压测仍待做
 > **关联**：
+>
 > - [2026-11-02 讨论全记录](./2026-11-02-discussion-record.md)
 > - [2026-11-03 决策摘要](./2026-11-03-decision-summary.md)（VM 主路径已降级为远期可选）
 
@@ -45,11 +46,11 @@ Linux / macOS 同步对齐：默认读全局放开（只读不再等于“只能
 
 ## 3. 跨平台读策略（与 DSH 对齐）
 
-| 平台 | 实现 | 说明 |
-|---|---|---|
-| Linux | 宿主顶层目录 `--ro-bind-try` 只读绑定 | `/proc`、`/dev`、`/tmp` 由 bwrap 重新挂载；不再只挂工作区 |
-| macOS | SBPL `(allow file-read*)` | 本来就全局放行，补文档与测试期望 |
-| Windows | 受限 token 不限制读 | 写边界由 ACL 决定；读全开 |
+| 平台    | 实现                                  | 说明                                                      |
+| ------- | ------------------------------------- | --------------------------------------------------------- |
+| Linux   | 宿主顶层目录 `--ro-bind-try` 只读绑定 | `/proc`、`/dev`、`/tmp` 由 bwrap 重新挂载；不再只挂工作区 |
+| macOS   | SBPL `(allow file-read*)`             | 本来就全局放行，补文档与测试期望                          |
+| Windows | 受限 token 不限制读                   | 写边界由 ACL 决定；读全开                                 |
 
 **语义变化**：`read-only` / `workspace-write` 只描述**写/网络/进程**约束，不再隐含“读收敛”。需要读隔离的场景不提供，并在 `enforcementNotes` 与 README 中写明。
 
@@ -85,26 +86,26 @@ TS 侧负责策略与状态；native 侧只做 Win32 原语，便于测试与替
 
 不建本地账户。每个 workspace 生成一组稳定 SID（持久化，随 workspace 复用）：
 
-| SID | 用途 |
-|---|---|
-| `SID_R` | 读 + 执行 workspace/scratch；用于 read-only token |
+| SID     | 用途                                                   |
+| ------- | ------------------------------------------------------ |
+| `SID_R` | 读 + 执行 workspace/scratch；用于 read-only token      |
 | `SID_W` | workspace/scratch 的写权限；用于 workspace-write token |
 
 **ACL（一次授予，避免每命令改 ACL）**：
 
 - `workspace` 根：两条可继承 ACE
-  - `SID_R`：`READ | EXECUTE`
-  - `SID_W`：`MODIFY`（含 `DELETE`；是否给 `FILE_DELETE_CHILD` 待定，先不给）
+    - `SID_R`：`READ | EXECUTE`
+    - `SID_W`：`MODIFY`（含 `DELETE`；是否给 `FILE_DELETE_CHILD` 待定，先不给）
 - `scratch`：`SID_R`、`SID_W` 均 `MODIFY`（scratch 在两种 access 下都可写）
 - 只追加显式 ACE，不重写/替换已有安全描述符；记录账本以便回收
 - 不授予 `WRITE_DAC` / `WRITE_OWNER`，防止沙箱改 ACL
 
 **两个 token（创建后缓存）**：
 
-| token | 标志 | restricting SIDs | 效果 |
-|---|---|---|---|
-| read-only | `DISABLE_MAX_PRIVILEGE` + `WRITE_RESTRICTED` | `SID_R` + `RESTRICTED` + `Everyone` | 写检查只能匹配这些 SID 的 ACE；workspace 只有 `SID_R` 读 ACE → 写拒绝；scratch 可写 |
-| workspace-write | `DISABLE_MAX_PRIVILEGE` + `WRITE_RESTRICTED` | `SID_W` + `RESTRICTED` + `Everyone` | 写检查只能匹配这些 SID 的 ACE；workspace/scratch 可写；其他位置通常拒绝 |
+| token           | 标志                                         | restricting SIDs                    | 效果                                                                                |
+| --------------- | -------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------- |
+| read-only       | `DISABLE_MAX_PRIVILEGE` + `WRITE_RESTRICTED` | `SID_R` + `RESTRICTED` + `Everyone` | 写检查只能匹配这些 SID 的 ACE；workspace 只有 `SID_R` 读 ACE → 写拒绝；scratch 可写 |
+| workspace-write | `DISABLE_MAX_PRIVILEGE` + `WRITE_RESTRICTED` | `SID_W` + `RESTRICTED` + `Everyone` | 写检查只能匹配这些 SID 的 ACE；workspace/scratch 可写；其他位置通常拒绝             |
 
 实现说明：
 
@@ -140,13 +141,13 @@ READY → RUNNING → IDLE
 
 ### 阶段与进度
 
-| 阶段 | 动作 | 进度 |
-|---|---|---|
-| `validate` | workspace 绝对路径、本地 NTFS、可写、非 UNC/网络盘（v1 拒绝网络盘与 OneDrive 占位） | 0–10% |
-| `identity` | 读取/生成 SID_R、SID_W | 10–20% |
-| `acl` | 授予 workspace/scratch 继承 ACE；对“继承被关闭”的子目录逐个补 ACE | 20–80% |
-| `verify` | 以 read-only/write token 各做一次读写探针（scratch 建删临时文件、workspace 写探针） | 80–95% |
-| `ready` | 持久化状态、发事件 | 100% |
+| 阶段       | 动作                                                                                | 进度   |
+| ---------- | ----------------------------------------------------------------------------------- | ------ |
+| `validate` | workspace 绝对路径、本地 NTFS、可写、非 UNC/网络盘（v1 拒绝网络盘与 OneDrive 占位） | 0–10%  |
+| `identity` | 读取/生成 SID_R、SID_W                                                              | 10–20% |
+| `acl`      | 授予 workspace/scratch 继承 ACE；对“继承被关闭”的子目录逐个补 ACE                   | 20–80% |
+| `verify`   | 以 read-only/write token 各做一次读写探针（scratch 建删临时文件、workspace 写探针） | 80–95% |
+| `ready`    | 持久化状态、发事件                                                                  | 100%   |
 
 ### 关键规则
 
@@ -160,13 +161,13 @@ READY → RUNNING → IDLE
 
 ### 事件协议（经现有事件总线）
 
-| 事件 | 字段 |
-|---|---|
-| `sandbox.workspace.prepare.started` | workspaceId, workspacePath, startedAt |
-| `sandbox.workspace.prepare.progress` | phase, processed, total, message, elapsedMs |
-| `sandbox.workspace.prepare.completed` | workspaceId, elapsedMs |
-| `sandbox.workspace.prepare.failed` | workspaceId, phase, code, message |
-| `sandbox.workspace.prepare.cancelled` | workspaceId |
+| 事件                                  | 字段                                        |
+| ------------------------------------- | ------------------------------------------- |
+| `sandbox.workspace.prepare.started`   | workspaceId, workspacePath, startedAt       |
+| `sandbox.workspace.prepare.progress`  | phase, processed, total, message, elapsedMs |
+| `sandbox.workspace.prepare.completed` | workspaceId, elapsedMs                      |
+| `sandbox.workspace.prepare.failed`    | workspaceId, phase, code, message           |
+| `sandbox.workspace.prepare.cancelled` | workspaceId                                 |
 
 ### 前端 UX
 
@@ -184,9 +185,9 @@ READY → RUNNING → IDLE
 2. `WorkspacePreparer.ensure(workspaceDir)` → READY（或排队/报错）；
 3. 按 `access` 选择 token（read-only / workspace-write）；
 4. native 启动器：
-   - 创建 Job Object（内存提交上限、活跃进程数、kill-on-close、禁止 breakaway）；
-   - 创建进程（token、cwd 在 workspace 内、argv-only、stdio 管道、env 白名单）；
-   - `TEMP`/`TMP`/`HOME` 指向 scratch；
+    - 创建 Job Object（内存提交上限、活跃进程数、kill-on-close、禁止 breakaway）；
+    - 创建进程（token、cwd 在 workspace 内、argv-only、stdio 管道、env 白名单）；
+    - `TEMP`/`TMP`/`HOME` 指向 scratch；
 5. supervisor 收集 stdout/stderr、超时 kill Job；
 6. 返回 `AgentCodeResult`：`backend=win-restricted`、`enforcement=partial`、notes 说明读全开/网络未隔离；
 7. 不回收 ACL（token 切换即可）；scratch 按会话清理。
@@ -267,12 +268,12 @@ READY → RUNNING → IDLE
 
 ## 11. 里程碑
 
-| 阶段 | 内容 |
-|---|---|
+| 阶段         | 内容                                                                    |
+| ------------ | ----------------------------------------------------------------------- |
 | M0（1–2 周） | native skeleton：token + Job Object + exec + self-test；TS backend 直连 |
-| M1（2–3 周） | ACL 授予/校验/回收 + 双 token；单元/集成测试；探针矩阵 |
-| M2（2 周） | 异步准备状态机 + 事件 + 前端“正在准备工作区” + 取消/重试/恢复 |
-| M3（1–2 周） | 性能、崩溃恢复、路径对抗测试、README/运维文档 |
+| M1（2–3 周） | ACL 授予/校验/回收 + 双 token；单元/集成测试；探针矩阵                  |
+| M2（2 周）   | 异步准备状态机 + 事件 + 前端“正在准备工作区” + 取消/重试/恢复           |
+| M3（1–2 周） | 性能、崩溃恢复、路径对抗测试、README/运维文档                           |
 
 总计约 6–9 周（1–2 人），不含网络围栏与 VM 强化档。
 
@@ -280,16 +281,16 @@ READY → RUNNING → IDLE
 
 ## 12. 风险与待决
 
-| 风险/待决 | 处理 |
-|---|---|
-| 提权调用者 | 受限 token 已去掉危险特权与管理员组写权限；后续评估 linked filtered token |
-| ACL 持久化污染用户 workspace | 提供 `wellspring sandbox cleanup` 递归清理；删除工作区前运行 |
-| 继承被关闭的子目录 | 根 ACE 会传播到已有子项（已实测）；继承被显式关闭的子项仍需后续扫描处理 |
-| 网络盘/OneDrive | `--prepare` 拒绝网络映射盘与 reparse point（junction / OneDrive 占位目录） |
-| 句柄/路径绕过 | 句柄列表 + cwd/路径校验 + 对抗性测试 |
-| 无网络隔离 | `enforcementNotes` 如实说明；网络围栏作为后续可选 |
-| 长期 ACL 漂移 | 启动/每次准备校验；修复或报错 |
-| 与 DSH 行为差异 | 读全开、写 workspace/scratch；探针矩阵对齐 |
+| 风险/待决                    | 处理                                                                       |
+| ---------------------------- | -------------------------------------------------------------------------- |
+| 提权调用者                   | 受限 token 已去掉危险特权与管理员组写权限；后续评估 linked filtered token  |
+| ACL 持久化污染用户 workspace | 提供 `wellspring sandbox cleanup` 递归清理；删除工作区前运行               |
+| 继承被关闭的子目录           | 根 ACE 会传播到已有子项（已实测）；继承被显式关闭的子项仍需后续扫描处理    |
+| 网络盘/OneDrive              | `--prepare` 拒绝网络映射盘与 reparse point（junction / OneDrive 占位目录） |
+| 句柄/路径绕过                | 句柄列表 + cwd/路径校验 + 对抗性测试                                       |
+| 无网络隔离                   | `enforcementNotes` 如实说明；网络围栏作为后续可选                          |
+| 长期 ACL 漂移                | 启动/每次准备校验；修复或报错                                              |
+| 与 DSH 行为差异              | 读全开、写 workspace/scratch；探针矩阵对齐                                 |
 
 ---
 
@@ -298,13 +299,13 @@ READY → RUNNING → IDLE
 **已完成**
 
 - `native/win-sandbox/src/main.cpp`
-  - `--prepare`：先拒绝网络映射盘 / reparse point（junction、OneDrive 占位目录），
-    再给 workspace/scratch 写入可继承 ACE（已有子项会继承，已实测）；
-  - `--cleanup`：递归删除 workspace/scratch 里本沙盒的 SID ACE；
-  - `--exec`：`CreateRestrictedToken(DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED)` + Job Object
-    （kill-on-close / ActiveProcess / JobMemory）+ 句柄白名单 + stdio 继承；
-  - `--self-test`：真实创建 token、Job、启动 `cmd /c exit 0`；
-  - restricting SIDs：业务 SID + `RESTRICTED` + `Everyone`（兼容 node/PowerShell，避免 0xC0000142）。
+    - `--prepare`：先拒绝网络映射盘 / reparse point（junction、OneDrive 占位目录），
+      再给 workspace/scratch 写入可继承 ACE（已有子项会继承，已实测）；
+    - `--cleanup`：递归删除 workspace/scratch 里本沙盒的 SID ACE；
+    - `--exec`：`CreateRestrictedToken(DISABLE_MAX_PRIVILEGE | WRITE_RESTRICTED)` + Job Object
+      （kill-on-close / ActiveProcess / JobMemory）+ 句柄白名单 + stdio 继承；
+    - `--self-test`：真实创建 token、Job、启动 `cmd /c exit 0`；
+    - restricting SIDs：业务 SID + `RESTRICTED` + `Everyone`（兼容 node/PowerShell，避免 0xC0000142）。
 - `src/sandbox/backends/win-restricted.ts`：SID 生成/持久化、异步 `prepare`/`cleanup`、token 选择、
   环境构造、probe、`enforcement/notes`。
 - `src/sandbox/manager.ts`：Windows auto 选 `win-restricted`；启动前 `await backend.prepare()`；fail-closed；
@@ -317,11 +318,11 @@ READY → RUNNING → IDLE
 - `src/sandbox/supervisor.ts`：Windows 不再使用 `detached:true`（否则受限 token 子进程 0xC0000142）。
 - 配置/插件：`sandbox.backend` 增加 `win-restricted`；插件仍走 node-permission。
 - 测试：
-  - `test/win-restricted-backend.test.ts`（launch spec / probe / candidate / SID）；
-  - `test/win-restricted.e2e.test.ts`（读全局、写 workspace/scratch、写外部拒绝、超时 kill、
-    cleanup 后写 token 被拒、auto probe）；
-  - `test/sandbox.test.ts` 增加准备事件 started/completed 与 prepare 失败 fail-closed；
-  - 矩阵测试的 Windows 系统文件/NUL 探针修正。
+    - `test/win-restricted-backend.test.ts`（launch spec / probe / candidate / SID）；
+    - `test/win-restricted.e2e.test.ts`（读全局、写 workspace/scratch、写外部拒绝、超时 kill、
+      cleanup 后写 token 被拒、auto probe）；
+    - `test/sandbox.test.ts` 增加准备事件 started/completed 与 prepare 失败 fail-closed；
+    - 矩阵测试的 Windows 系统文件/NUL 探针修正。
 - 构建：`scripts/build-win-sandbox.mjs` + `pnpm win-sandbox:build`，产出 `bin/win32-<arch>/win-sandbox.exe`；
 - CI：`.github/workflows/sandbox-windows.yml`（构建、单测、e2e、探针矩阵）；
 - 真机验证：`node scripts/verify-sandbox.ts --backend win-restricted` 18/18 探针符合预期

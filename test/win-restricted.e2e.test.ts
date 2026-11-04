@@ -74,7 +74,8 @@ function manager(): SandboxManager {
     })
 }
 
-test("win-restricted 端到端：读全局放开、写 workspace/scratch、写外部拒绝", { skip }, async () => {    const sandbox = manager()
+test("win-restricted 端到端：读全局放开、写 workspace/scratch、写外部拒绝", { skip }, async () => {
+    const sandbox = manager()
     const read = await sandbox.runAgentCode({
         command: shell,
         argv: ["/c", "type", join("..", "outside", "secret.txt")],
@@ -122,10 +123,7 @@ test("win-restricted 端到端：读全局放开、写 workspace/scratch、写�
 
     const scratchWrite = await sandbox.runAgentCode({
         command: shell,
-        argv: [
-            "/c",
-            "echo scratch> %TEMP%\\scratch.txt && type %TEMP%\\scratch.txt",
-        ],
+        argv: ["/c", "echo scratch> %TEMP%\\scratch.txt && type %TEMP%\\scratch.txt"],
         workspaceDir: workspace,
         cwd: workspace,
         access: "read-only",
@@ -213,7 +211,17 @@ test("win-restricted：prepare 拒绝网络盘 / reparse point / 盘根", { skip
     const prepare = (workspace: string): number =>
         spawnSync(
             launcher,
-            ["--prepare", "--workspace", workspace, "--scratch", real, "--sid-r", sidR, "--sid-w", sidW],
+            [
+                "--prepare",
+                "--workspace",
+                workspace,
+                "--scratch",
+                real,
+                "--sid-r",
+                sidR,
+                "--sid-w",
+                sidW,
+            ],
             { encoding: "utf8", windowsHide: true },
         ).status ?? -1
     assert.equal(prepare("\\\\localhost\\C$\\Windows"), 2)

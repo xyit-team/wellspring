@@ -30,10 +30,7 @@ export async function runSandboxCommand(
     return await cleanup(ctx, argv.slice(1))
 }
 
-async function cleanup(
-    ctx: CommandContext,
-    args: readonly string[],
-): Promise<CommandOutcome> {
+async function cleanup(ctx: CommandContext, args: readonly string[]): Promise<CommandOutcome> {
     if (platform !== "windows") {
         return failure("sandbox.cleanup-unsupported")
     }

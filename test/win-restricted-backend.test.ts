@@ -56,11 +56,7 @@ test("buildWinSandboxLaunch：固定参数顺序、受限 token 的 SID、Job Ob
 
 test("read-only / workspace-write 只改 access 参数，不重建 ACL", () => {
     const readOnly = buildWinSandboxLaunch(input({ access: "read-only" }), "launcher.exe", sids)
-    const write = buildWinSandboxLaunch(
-        input({ access: "workspace-write" }),
-        "launcher.exe",
-        sids,
-    )
+    const write = buildWinSandboxLaunch(input({ access: "workspace-write" }), "launcher.exe", sids)
     assert.equal(readOnly.args[2], "read-only")
     assert.equal(write.args[2], "workspace-write")
     assert.deepEqual(
@@ -124,7 +120,10 @@ test("candidateBackends：Windows auto 选 win-restricted，显式指定不回�
         candidateBackends("win-restricted", "linux").map((item) => item.name),
         ["win-restricted"],
     )
-    assert.deepEqual(candidateBackends("auto", "macos").map((item) => item.name), ["seatbelt"])
+    assert.deepEqual(
+        candidateBackends("auto", "macos").map((item) => item.name),
+        ["seatbelt"],
+    )
 })
 
 test("packagedLauncherPath：按架构解析随包产物", () => {
@@ -132,7 +131,10 @@ test("packagedLauncherPath：按架构解析随包产物", () => {
     const path = packagedLauncherPath("x64", (candidate) => candidate.endsWith(expected))
     assert.ok(path !== null)
     assert.ok(path.endsWith(expected))
-    assert.equal(packagedLauncherPath("x64", () => false), null)
+    assert.equal(
+        packagedLauncherPath("x64", () => false),
+        null,
+    )
 })
 
 test("createSidState：生成合法 SID，且可注入随机源", () => {

@@ -300,15 +300,14 @@ export class WinRestrictedBackend implements SandboxBackend {
     async cleanup(input: SandboxPrepareInput): Promise<void> {
         const workspace = resolve(input.workspaceDir)
         const scratch = resolve(input.scratchDir)
-        const sids = this.#records.get(workspace.toLowerCase())?.sids ?? (await this.#readSids(workspace))
+        const sids =
+            this.#records.get(workspace.toLowerCase())?.sids ?? (await this.#readSids(workspace))
         if (sids === undefined || sids === null) {
             return
         }
         const launcher = this.#resolveLauncher()
         if (launcher === null || !this.#exists(launcher)) {
-            throw new SandboxExecutionError(
-                "win-sandbox.exe 不可用：先运行 pnpm win-sandbox:build",
-            )
+            throw new SandboxExecutionError("win-sandbox.exe 不可用：先运行 pnpm win-sandbox:build")
         }
         await runLauncher(
             launcher,

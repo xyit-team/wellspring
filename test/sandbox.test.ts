@@ -110,9 +110,7 @@ test("bwrap launch spec：namespace、只读 workspace、可写 scratch、无网
         "PATH 指向宿主 node 目录",
     )
     assert.ok(
-        spec.args.some(
-            (arg, index) => arg === "--ro-bind-try" && spec.args[index + 1] === "/home",
-        ),
+        spec.args.some((arg, index) => arg === "--ro-bind-try" && spec.args[index + 1] === "/home"),
         "宿主顶层目录只读绑定（读全局放开）",
     )
     assert.ok(
