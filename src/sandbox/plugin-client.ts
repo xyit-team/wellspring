@@ -2047,6 +2047,10 @@ export class PluginSandboxClient {
                 join(this.#hostSdkDir, "src", "event", "event.ts"),
             ],
             [
+                join(PROJECT_ROOT, "src", "sandbox", "prepare-event.ts"),
+                join(this.#hostSdkDir, "src", "sandbox", "prepare-event.ts"),
+            ],
+            [
                 join(PROJECT_ROOT, "src", "session", "session.ts"),
                 join(this.#hostSdkDir, "src", "session", "session.ts"),
             ],
