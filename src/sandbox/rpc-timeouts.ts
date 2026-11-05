@@ -43,6 +43,8 @@ export interface RpcTimeouts {
      * 用默认 30s 等于一点余量都没有。
      */
     readonly pluginsToggle: number
+    /** 迁移插件数据：搬目录 + 配置，文件多时要一会儿 */
+    readonly pluginsMigrate: number
     /**
      * 卸载插件：删目录
      *
@@ -82,6 +84,7 @@ export const RPC_TIMEOUT_MS: RpcTimeouts = {
     modelsFetch: null,
     pluginsInstall: 660_000,
     pluginsToggle: 120_000,
+    pluginsMigrate: 180_000,
     pluginsRemove: 180_000,
     /* 逐个探针跑，探针 10s 一个；插件多时 120s 根本不够（20 个就 200s） */
     pluginsCheckUpdates: null,

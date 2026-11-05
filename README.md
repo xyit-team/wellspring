@@ -193,6 +193,15 @@ Agent 工具（`read` / `delete_file` / `execute_code` / `web_search` / `web_fet
 它自带版本探针：`wellspring plugin list --check` 会查 npm registry 的 latest，并给出对应 Release 的 zip。
 安装、升级、SKILL 与回收站等细节见该仓库的 README。
 
+从旧版（插件 id 为无 scope 的 `wellspring-core`）换过来时，用插件自带的迁移命令把数据搬过去，
+避免回收站与技能留在旧 id 的目录里：
+
+```bash
+wellspring plugin install ./wellspring-core-1.4.2.zip
+wellspring core-migrate              # 迁移 plugin-data / 配置，清掉旧 id 的禁用标记
+wellspring core-migrate --remove-old # 顺带删掉旧插件目录
+```
+
 平台本体不包含任何 Agent 工具实现；core 插件未加载时 Agent 只保留会话循环，没有工具。
 
 插件通过 `api.capabilities` 调用宿主能力：
@@ -759,7 +768,8 @@ const files = await ctx.workspaceFs.list("src")
   `capabilities.executeCode` 660 秒
 - `hostApi` 默认包含 `logger` / `fs` / `event` / `getHost` / `shutdown`；`workspaceFs` 仍需在 `fs.read` 里声明 `${workspace}`
 - `models` / `plugins` / `workspaces` / `fileRoots` / `http` / `exec` / `pty` / `capabilities` 需要在 `hostApi` 中显式声明；
-  `http` 只保留给 `wellspring-http`，普通插件请走上面的 `wellspring/api/plugin/http-client.ts`
+  `http` 只保留给 `wellspring-http`，普通插件请走上面的 `wellspring/api/plugin/http-client.ts`；
+  `migrate` 是插件本地数据迁移（换插件 id 时搬 plugin-data / 配置 / 禁用状态），只给官方 core 插件用
 - `hostApi: "plugins"` 提供 `api.plugins.list/install/remove/enable/disable`：安装只接受 zip（≤10MB）；
   启用/禁用与禁用后的卸载即时生效，安装与禁用 `wellspring-web` 重启后生效；卸载 `wellspring-web` 被拒绝
 - `${workspace}` 默认只读，写 workspace 需放进 `fs.write`

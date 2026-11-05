@@ -6,6 +6,7 @@
 import type { Logger } from "pino"
 
 import type { HostFileApi, HostFileRootsApi } from "./fs.ts"
+import type { HostMigrateApi } from "./migrate.ts"
 import type { HostModelsApi } from "./models.ts"
 import type { HostNetworkApi } from "./network.ts"
 import type { HostExecApi } from "./exec.ts"
@@ -207,4 +208,6 @@ export interface PluginApi {
     plugins: HostPluginsApi
     /** 宿主级工作区注册表（需 hostApi: workspaces 权限） */
     workspaces: HostWorkspacesApi
+    /** 插件本地数据迁移（需 hostApi: migrate 权限） */
+    migrate: HostMigrateApi
 }

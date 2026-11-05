@@ -42,6 +42,7 @@ import { BwrapBackend } from "../sandbox/backends/bwrap.ts"
 import { NodePermissionBackend } from "../sandbox/backends/node-permission.ts"
 import { SeatbeltBackend } from "../sandbox/backends/seatbelt.ts"
 import { PluginSandboxClient, type PluginSandboxPermissions } from "../sandbox/plugin-client.ts"
+import type { HostMigrateApi } from "../api/host/migrate.ts"
 import type { SandboxBackend } from "../sandbox/types.ts"
 import { AgentToolRegistry } from "./agent-tools.ts"
 import { createHostCapabilities } from "./capabilities.ts"
@@ -56,6 +57,7 @@ import { createHostNetworkService } from "./network-service.ts"
 import { loadPluginConfig } from "./runtime.ts"
 import { readPluginState, setPluginEnabled } from "./state.ts"
 import { removeVersionProbe, setVersionProbe } from "./version-probes.ts"
+import { createHostMigrator } from "./migrate.ts"
 import {
     createHostPluginManager,
     type HostPluginManager,
@@ -115,6 +117,7 @@ interface RuntimeState {
     readonly modelsService: ReturnType<typeof createHostModelsService>
     readonly networkService: ReturnType<typeof createHostNetworkService>
     pluginManager: HostPluginManager
+    migrator: HostMigrateApi
     readonly queueHost: { current: Promise<void> }
     entries: PluginEntry[]
 }
@@ -297,6 +300,7 @@ async function loadEntry(
     modelsService: ReturnType<typeof createHostModelsService>,
     networkService: ReturnType<typeof createHostNetworkService>,
     pluginManager: HostPluginManager,
+    migrator: HostMigrateApi,
 ): Promise<PluginEntry> {
     let pkg: PluginPackageJson | null = null
     try {
@@ -385,6 +389,7 @@ async function loadEntry(
                 models: modelsService,
                 network: networkService,
                 plugins: pluginManager,
+                migrate: migrator,
             })
             const ready = await client.start({ deferInit: true })
             entry.sandboxClient = client
@@ -588,6 +593,7 @@ async function hotEnableEntry(state: RuntimeState, idOrDir: string): Promise<Plu
         state.modelsService,
         state.networkService,
         state.pluginManager,
+        state.migrator,
     )
     if (entry.plugin === null || entry.error !== null) {
         state.entries.push(entry)
@@ -851,6 +857,8 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
         modelsService,
         networkService,
         pluginManager: null as unknown as HostPluginManager,
+        // 与 pluginManager 一样先占位，创建后回填（控制器创建时就要拿到 state）
+        migrator: null as unknown as HostMigrateApi,
         queueHost: { current: Promise.resolve() },
         entries: [],
     }
@@ -860,6 +868,8 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
         runtime: controllerOf(state),
     })
     state.pluginManager = pluginManager
+    const migrator = createHostMigrator({ paths: resolvedPaths, logger: options.logger })
+    state.migrator = migrator
     runtimes.set(resolvedPaths.dataDir, state)
     const disabled = await readPluginState(options.paths ?? getPaths())
     const entries: PluginEntry[] = []
@@ -879,6 +889,7 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
                 modelsService,
                 networkService,
                 pluginManager,
+                migrator,
             ),
         )
         index += 1

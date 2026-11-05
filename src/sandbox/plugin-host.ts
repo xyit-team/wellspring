@@ -119,6 +119,7 @@ import {
     type RpcMessage,
     type RpcRequest,
 } from "./protocol.ts"
+import type { HostMigrateApi, HostMigrateInput, HostMigrateResult } from "../api/host/migrate.ts"
 import { RPC_TIMEOUT_MS } from "./rpc-timeouts.ts"
 
 interface HostSnapshotData {
@@ -482,6 +483,19 @@ function remoteNetwork(): HostNetworkApi {
                 "host.network.saveProxy",
                 input as unknown as Record<string, unknown>,
             )) as HostNetworkResult
+        },
+    }
+}
+
+function remoteMigrate(): HostMigrateApi {
+    return {
+        async movePluginData(input: HostMigrateInput): Promise<HostMigrateResult> {
+            /* 搬目录可能比默认 30s 慢，尤其是带回收站与技能的 data 目录 */
+            return (await bridgeRequest(
+                "host.migrate.movePluginData",
+                input as unknown as Record<string, unknown>,
+                RPC_TIMEOUT_MS.pluginsMigrate,
+            )) as HostMigrateResult
         },
     }
 }
@@ -937,6 +951,7 @@ async function bootstrap(params: ConfigurePayload): Promise<{
         models: remoteModels(),
         network: remoteNetwork(),
         plugins: remotePlugins(),
+        migrate: remoteMigrate(),
         workspaces: remoteWorkspaces(),
         exec: remoteExec(),
         pty: remotePty(),

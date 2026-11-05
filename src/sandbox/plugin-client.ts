@@ -69,6 +69,7 @@ import {
 } from "../api/host/pty.ts"
 import type { HttpRequest, HttpResponse } from "../api/host/http.ts"
 import type { HostAgentChatInput } from "../api/host/agent.ts"
+import type { HostMigrateApi } from "../api/host/migrate.ts"
 import type { HostModelsApi, HostModelProviderInput } from "../api/host/models.ts"
 import type { HostNetworkApi, HostNetworkProxyInput } from "../api/host/network.ts"
 import type { HostPluginInstallInput, HostPluginsApi } from "../api/host/plugins.ts"
@@ -351,6 +352,7 @@ export interface PluginSandboxClientOptions {
     readonly models?: HostModelsApi
     readonly network?: HostNetworkApi
     readonly plugins?: HostPluginsApi
+    readonly migrate?: HostMigrateApi
 }
 
 export class PluginSandboxError extends Error {
@@ -1635,6 +1637,14 @@ export class PluginSandboxClient {
             } else if (request.method.startsWith("host.exec.")) {
                 this.#requireHostApi("exec")
                 result = await this.#handleExec(request.method, params)
+            } else if (request.method === "host.migrate.movePluginData") {
+                this.#requireHostApi("migrate")
+                if (this.#options.migrate === undefined) {
+                    throw new PluginSandboxError("宿主没有迁移服务")
+                }
+                result = await this.#options.migrate.movePluginData(
+                    params as unknown as Parameters<HostMigrateApi["movePluginData"]>[0],
+                )
             } else if (request.method === "host.pluginData") {
                 this.#requireHostApi("fs")
                 const targetId = String(params["targetId"] ?? "")
