@@ -27,10 +27,22 @@ export interface RpcTimeouts {
     readonly agentChat: number | null
     /** Agent 流式对话：一轮可能持续很久，不设上限 */
     readonly agentStream: number | null
-    /** 拉取供应商模型列表：要等网络超时与重试 */
-    readonly modelsFetch: number
+    /**
+     * 拉取供应商模型列表
+     *
+     * 供应商客户端自己按 `openai.timeoutMs`（默认 60s）× (1 + maxRetries 2) 结束，
+     * 最坏接近 180s；固定 120s 会在重试时先超时。
+     */
+    readonly modelsFetch: number | null
     /** 安装插件：解压、写文件，以及按插件声明的包管理器自动安装依赖（最多 5 分钟） */
     readonly pluginsInstall: number
+    /**
+     * 启用/禁用插件
+     *
+     * 启用会真的把插件拉起来：起沙盒子进程 + 跑 init，而 init 自己就有 30s 的 RPC 上限，
+     * 用默认 30s 等于一点余量都没有。
+     */
+    readonly pluginsToggle: number
     /**
      * 卸载插件：删目录
      *
@@ -66,8 +78,10 @@ export const RPC_TIMEOUT_MS: RpcTimeouts = {
     /* 一轮对话的时长由模型与工具决定，各步骤自己就有超时 */
     agentChat: null,
     agentStream: null,
-    modelsFetch: 120_000,
+    /* 供应商客户端自己按 timeoutMs × 重试次数结束，固定 120s 会在重试时先超时 */
+    modelsFetch: null,
     pluginsInstall: 660_000,
+    pluginsToggle: 120_000,
     pluginsRemove: 180_000,
     /* 逐个探针跑，探针 10s 一个；插件多时 120s 根本不够（20 个就 200s） */
     pluginsCheckUpdates: null,

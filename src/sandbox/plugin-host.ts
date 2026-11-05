@@ -506,7 +506,12 @@ function remotePlugins(): HostPluginsApi {
             )) as HostPluginMutationResult
         },
         async enable(id: string): Promise<HostPluginMutationResult> {
-            return (await bridgeRequest("host.plugins.enable", { id })) as HostPluginMutationResult
+            /* 启用会把插件真的拉起来（起沙盒 + 跑 init），init 自己就要 30s，不能吃默认值 */
+            return (await bridgeRequest(
+                "host.plugins.enable",
+                { id },
+                RPC_TIMEOUT_MS.pluginsToggle,
+            )) as HostPluginMutationResult
         },
         async checkUpdates(): Promise<HostPluginUpdateResult> {
             return (await bridgeRequest(
@@ -516,7 +521,11 @@ function remotePlugins(): HostPluginsApi {
             )) as HostPluginUpdateResult
         },
         async disable(id: string): Promise<HostPluginMutationResult> {
-            return (await bridgeRequest("host.plugins.disable", { id })) as HostPluginMutationResult
+            return (await bridgeRequest(
+                "host.plugins.disable",
+                { id },
+                RPC_TIMEOUT_MS.pluginsToggle,
+            )) as HostPluginMutationResult
         },
     }
 }

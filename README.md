@@ -750,10 +750,13 @@ const files = await ctx.workspaceFs.list("src")
 
 - 插件在独立子进程运行，通过 RPC bridge 访问宿主 API；命令、钩子、日志、event、getHost 都经宿主代理
 - bridge 请求默认 30 秒超时；下面这些不设上限——`agent.stream` / `agent.chat`（一轮对话的时长由模型与工具步骤
-  决定）、`plugins.checkUpdates`（逐个探针、每个 10 秒）、`capabilities.web*`（联网客户端自己按
-  `openai.timeoutMs` 超时）、`agent.pickDirectory`（要等用户翻目录）。规则是：**时长由用户或外部进程决定的
+  决定）、`plugins.checkUpdates`（逐个探针、每个 10 秒）、`models.fetchModels`（供应商客户端按
+  `openai.timeoutMs` × 重试次数结束）、`capabilities.web*`（联网客户端按 `openai.timeoutMs` 超时）、
+  `agent.pickDirectory`（要等用户翻目录，选择框脚本自己 300 秒放弃）。规则是：**时长由用户或外部进程决定的
   调用不设上限，前提是这条链路自己有时间界**；纯宿主内的快操作保留超时，宿主卡住时才有
-  `host RPC 超时` 这条线索，也能解开宿主与插件互相等待
+  `host RPC 超时` 这条线索，也能解开宿主与插件互相等待。`plugins.install` 660 秒、
+  `plugins.enable/disable` 120 秒（启用会起沙盒并跑 init）、`plugins.remove` 180 秒、
+  `capabilities.executeCode` 660 秒
 - `hostApi` 默认包含 `logger` / `fs` / `event` / `getHost` / `shutdown`；`workspaceFs` 仍需在 `fs.read` 里声明 `${workspace}`
 - `models` / `plugins` / `workspaces` / `fileRoots` / `http` / `exec` / `pty` / `capabilities` 需要在 `hostApi` 中显式声明；
   `http` 只保留给 `wellspring-http`，普通插件请走上面的 `wellspring/api/plugin/http-client.ts`
