@@ -60,10 +60,16 @@ export function groupChangedPlugins(files) {
  * 找出「改了代码但版本没动」的插件
  *
  * versions / baseVersions：plugins/<name> → 版本号；基线里没有该插件时缺省
+ *
+ * 插件在该区间里被删掉的情况跳过：`versions` 只包含当前还在的插件，
+ * 删掉的插件没有「涨版本」这回事（wellspring-core 就是这样搬去独立仓库的）。
  */
 export function findVersionViolations({ changed, versions, baseVersions }) {
     const violations = []
     for (const [dir, files] of changed) {
+        if (!versions.has(dir)) {
+            continue
+        }
         const version = versions.get(dir) ?? null
         const baseVersion = baseVersions.get(dir) ?? null
         if (version === null) {

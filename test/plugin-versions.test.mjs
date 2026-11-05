@@ -77,6 +77,17 @@ test("findVersionViolations：版本没动就是违规，动了就放行", () =>
     assert.equal(missing[0].reason, "missing")
 })
 
+test("插件被删除：不要求涨版本，也不算缺 version", () => {
+    const changed = groupChangedPlugins(["plugins/gone/index.ts", "plugins/gone/package.json"])
+    const violations = findVersionViolations({
+        changed,
+        /* versions 只含当前还在的插件；删掉的插件不会出现在这里 */
+        versions: new Map(),
+        baseVersions: new Map([["plugins/gone", "1.0.0"]]),
+    })
+    assert.deepEqual(violations, [])
+})
+
 test("官方插件：index.ts 里的 version 与 package.json 一致", () => {
     for (const id of OFFICIAL_PLUGINS) {
         const pkg = JSON.parse(
