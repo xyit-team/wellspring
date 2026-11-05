@@ -115,9 +115,8 @@ export interface PluginLaunchInput {
     readonly limits: SandboxLimits
     /**
      * 是否放开出网
-     *
-     * 插件清单里写 `sandbox.network: true` 才给；用来让插件自己查更新
-     * （版本探针要访问 npm registry）。默认断网。
+     * 清单 sandbox.network: true 才给；bwrap 加 --share-net，seatbelt 放行 (allow network*)
+     * Windows / Node permission 后端不隔离网络
      */
     readonly network?: boolean
 }

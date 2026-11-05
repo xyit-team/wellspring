@@ -210,6 +210,25 @@ test("bwrap plugin launch：插件只读、host SDK 只读、Node permission 开
     assert.ok(spec.args.includes(resolveNodeRuntime().nodePath), "插件用挂载后的 node 路径")
 })
 
+test("bwrap plugin launch：network 清单项控制 --share-net", () => {
+    const input = {
+        pluginDir: join(root, "plugin-net"),
+        pluginEntryRel: "index.ts",
+        pluginDataDir: join(root, "plugin-data-net"),
+        hostSdkDir: join(root, "host-sdk-net"),
+        runnerPath: join(root, "runner.ts"),
+        env: { PATH: "/usr/bin:/bin" },
+        limits: { timeoutMs: 10_000, memoryMB: 128, pids: 16, outputLimitBytes: 4096 },
+    }
+    const offline = buildBwrapPluginLaunch(input)
+    assert.ok(offline.args.includes("--unshare-all"))
+    assert.ok(!offline.args.includes("--share-net"), "默认断网")
+
+    const online = buildBwrapPluginLaunch({ ...input, network: true })
+    assert.ok(online.args.includes("--unshare-all"), "仍隔离其它命名空间")
+    assert.ok(online.args.includes("--share-net"), "共享宿主网络")
+})
+
 test("resolveNodeRuntime：完整发行版挂前缀，裸二进制退回单文件", () => {
     const posix = process.platform !== "win32"
     const execPath = posix ? "/opt/node-v24/bin/node" : "C:\\opt\\node-v24\\bin\\node.exe"

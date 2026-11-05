@@ -230,6 +230,10 @@ export function buildBwrapPluginLaunch(input: PluginLaunchInput): LaunchSpec {
         "--tmpfs",
         "/tmp",
     ]
+    // 清单声明 network 才共享宿主网络命名空间（--share-net 只能与 --unshare-all 同用）
+    if (input.network === true) {
+        args.push("--share-net")
+    }
     for (const dir of existingSystemDirs()) {
         args.push("--ro-bind-try", dir, dir)
     }

@@ -728,9 +728,12 @@ await ctx.fs.writeJson("state.json", { ok: true })
 const files = await ctx.workspaceFs.list("src")
 ```
 
-- `fs` 的根是插件数据目录 `<dataDir>/plugin-data/<id>/`
+- `fs` 的根是插件数据目录 `<dataDir>/plugin-data/<id>/`；插件安装目录 `<dataDir>/plugins/<id>/` 在 OS 层只读可见，
+  平台没有读取它的文件 API（入口模块靠 `import` 加载）
 - `workspaceFs` 的根是当前会话工作区（`api.workspaceFs.root` 是它的绝对路径；没有会话上下文时退回宿主启动目录）
-- 路径必须落在根内：`..` 越界会被拒绝；绝对路径只要在根内会换算成相对路径
+- 路径必须落在根内：`..` 越界会被拒绝；`api.fs` 不接受绝对路径，`workspaceFs` 会把根内的绝对路径换算成相对路径
+- 沙箱里的 `api.pluginDataDir` 只是展示路径：bwrap 下是 `/plugin-data`（沙箱内没有这个挂载点，读写都经 RPC 回宿主），
+  seatbelt / Node permission 下是宿主真实路径
 - 也可以从 `api.fs` / `api.workspaceFs` 使用（`init(api)` 与钩子之后）
 
 所有插件强制运行在独立 sandbox 子进程内，平台不再提供进程内插件模式。插件只能通过 RPC bridge 使用宿主 API，不能直接访问宿主文件系统。
@@ -747,8 +750,8 @@ const files = await ctx.workspaceFs.list("src")
             "profile": "plugin",
             "hostApi": ["logger", "fs", "event", "getHost"],
             "fs": {
-                "read": ["${pluginDir}", "${workspace}"],
-                "write": ["${dataDir}/my-plugin"]
+                "read": ["${workspace}"],
+                "write": ["${workspace}"]
             },
             "network": false,
             "process": false
@@ -757,6 +760,8 @@ const files = await ctx.workspaceFs.list("src")
 }
 ```
 
+- `fs.read` / `fs.write` 目前只有 `${workspace}` 参与判定（`workspaceFs` 的读/写权限）；`${pluginDir}` /
+  `${dataDir}` 等其它占位符不展开——安装目录只读、插件数据目录可写是后端固定提供的，写进清单也不生效
 - 插件在独立子进程运行，通过 RPC bridge 访问宿主 API；命令、钩子、日志、event、getHost 都经宿主代理
 - bridge 请求默认 30 秒超时；下面这些不设上限——`agent.stream` / `agent.chat`（一轮对话的时长由模型与工具步骤
   决定）、`plugins.checkUpdates`（逐个探针、每个 10 秒）、`models.fetchModels`（供应商客户端按
@@ -766,16 +771,21 @@ const files = await ctx.workspaceFs.list("src")
   `host RPC 超时` 这条线索，也能解开宿主与插件互相等待。`plugins.install` 660 秒、
   `plugins.enable/disable` 120 秒（启用会起沙盒并跑 init）、`plugins.remove` 180 秒、
   `capabilities.executeCode` 660 秒
-- `hostApi` 默认包含 `logger` / `fs` / `event` / `getHost` / `shutdown`；`workspaceFs` 仍需在 `fs.read` 里声明 `${workspace}`
+- `hostApi` 默认包含 `logger` / `fs` / `event` / `getHost` / `shutdown` / `agent`；`workspaceFs` 仍需在 `fs.read` 里
+  声明 `${workspace}`；`agent` 能驱动 Agent 对话与工具调用，不写 `sandbox` 块的插件默认拥有它
 - `models` / `plugins` / `workspaces` / `fileRoots` / `http` / `exec` / `pty` / `capabilities` 需要在 `hostApi` 中显式声明；
   `http` 只保留给 `wellspring-http`，普通插件请走上面的 `wellspring/api/plugin/http-client.ts`；
   `migrate` 是插件本地数据迁移（换插件 id 时搬 plugin-data / 配置 / 禁用状态），只给官方 core 插件用
 - `hostApi: "plugins"` 提供 `api.plugins.list/install/remove/enable/disable`：安装只接受 zip（≤10MB）；
   启用/禁用与禁用后的卸载即时生效，安装与禁用 `wellspring-web` 重启后生效；卸载 `wellspring-web` 被拒绝
+- `profile` / `process` 目前只是声明，代码不解析；插件的原生进程能力由访问守卫与 sandbox 后端拦截
 - `${workspace}` 默认只读，写 workspace 需放进 `fs.write`
-- `network` 默认 `false`：bwrap 不 `--share-net`、seatbelt 拒绝出网。插件要自己访问网络（例如版本探针
-  查 npm registry）必须在清单里写 `sandbox.network: true`；Windows / Node permission 后端本来就不隔离
-  网络，这个字段只是声明意图，不改变隔离效果
+- `network` 默认 `false`：bwrap 不加 `--share-net`、seatbelt 拒绝出网。插件自己访问网络（例如版本探针
+  查 npm registry）需在清单里写 `sandbox.network: true`：bwrap 加 `--share-net`（共享宿主网络命名空间，
+  没有域名/端口粒度）、seatbelt 放行 `(allow network*)`；Windows / Node permission 后端不隔离
+  网络，这个字段只表示声明意图
+- `--share-net` 下插件既能出网也能自己监听端口；HTTP 服务器仍只由 `wellspring-http` 创建，
+  抓网页走 `hostApi: capabilities` 的 `webFetch` / `webSearch`
 - 没有可用 OS 后端时插件加载失败；插件不做 direct 降级
 - `sandbox.mode: off` 时插件全部拒绝加载
 - 插件后端：Linux 为 `bwrap`，macOS 为 `seatbelt`，Windows 与 Android/Termux 退回 Node permission model
