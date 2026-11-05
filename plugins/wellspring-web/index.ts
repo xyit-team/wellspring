@@ -8,7 +8,7 @@ export function setup() {
     return {
         id: "wellspring-web",
         name: "Wellspring Web 插件",
-        version: "1.21.1",
+        version: "1.22.0",
         status: "ok" as const,
         deps: ["wellspring-http"],
         init: async (api: PluginApi) => {
