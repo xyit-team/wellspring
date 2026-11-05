@@ -326,6 +326,8 @@ export interface PluginSandboxPermissions {
     readonly hostApi: readonly string[]
     readonly workspaceRead: boolean
     readonly workspaceWrite: boolean
+    /** 清单里声明了 sandbox.network 才放开出网（版本探针要查 npm） */
+    readonly network?: boolean
 }
 
 export interface PluginSandboxClientOptions {
@@ -569,6 +571,7 @@ export class PluginSandboxClient {
             runnerPath: join(this.#hostSdkDir, "src", "sandbox", "plugin-host.ts"),
             env,
             limits: this.#options.limits,
+            ...(this.#options.permissions.network === true ? { network: true } : {}),
         }
         const spec = this.#options.backend.buildPluginLaunch(input)
         const child = spawn(spec.command, [...spec.args], {

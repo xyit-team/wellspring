@@ -254,7 +254,7 @@ function ownerOf(id: string, pkg: PluginPackageJson | null): string {
     return id
 }
 
-function sandboxPermissions(pkg: PluginPackageJson | null): PluginSandboxPermissions {
+export function sandboxPermissions(pkg: PluginPackageJson | null): PluginSandboxPermissions {
     const raw = pkg?.wellspring?.sandbox
     const manifest =
         typeof raw === "object" && raw !== null && !Array.isArray(raw)
@@ -279,6 +279,8 @@ function sandboxPermissions(pkg: PluginPackageJson | null): PluginSandboxPermiss
         hostApi,
         workspaceRead: read.includes("${workspace}") || write.includes("${workspace}"),
         workspaceWrite: write.includes("${workspace}"),
+        // 默认断网；插件要自己查更新（版本探针访问 npm）才在清单里显式声明
+        network: manifest["network"] === true,
     }
 }
 

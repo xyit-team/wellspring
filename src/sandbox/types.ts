@@ -113,6 +113,13 @@ export interface PluginLaunchInput {
     readonly runnerPath: string
     readonly env: Readonly<Record<string, string>>
     readonly limits: SandboxLimits
+    /**
+     * 是否放开出网
+     *
+     * 插件清单里写 `sandbox.network: true` 才给；用来让插件自己查更新
+     * （版本探针要访问 npm registry）。默认断网。
+     */
+    readonly network?: boolean
 }
 
 export interface AgentLaunchInput {

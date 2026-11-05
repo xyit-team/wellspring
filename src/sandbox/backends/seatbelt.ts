@@ -358,7 +358,8 @@ export function buildSeatbeltPluginLaunch(input: PluginLaunchInput, launcher: st
     const nodePrefix = seatbeltNodePrefix()
     const profile = buildSeatbeltProfile({
         access: "read-only",
-        network: false,
+        /* 清单里声明 sandbox.network 才放开：插件自己查更新要访问 npm */
+        network: input.network === true,
         command: process.execPath,
         workspaceDir: input.pluginDir,
         scratchDir: input.pluginDataDir,
