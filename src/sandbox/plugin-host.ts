@@ -908,10 +908,19 @@ async function bootstrap(params: ConfigurePayload): Promise<{
                 return await bridgeRequest("host.capabilities.stopTask", { taskId, mode })
             },
             async webSearch(query: string, count?: number) {
-                return await bridgeRequest("host.capabilities.webSearch", { query, count })
+                /* 联网客户端自己有 openai.timeoutMs，RPC 不再叠一层固定上限 */
+                return await bridgeRequest(
+                    "host.capabilities.webSearch",
+                    { query, count },
+                    RPC_TIMEOUT_MS.webTools,
+                )
             },
             async webFetch(url: string) {
-                return await bridgeRequest("host.capabilities.webFetch", { url })
+                return await bridgeRequest(
+                    "host.capabilities.webFetch",
+                    { url },
+                    RPC_TIMEOUT_MS.webTools,
+                )
             },
         } as never,
         http: remoteHttp(),
