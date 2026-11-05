@@ -19,7 +19,7 @@ import {
 
 const projectRoot = join(import.meta.dirname, "..")
 
-const OFFICIAL_PLUGINS = ["wellspring-code", "wellspring-core", "wellspring-http", "wellspring-web"]
+const OFFICIAL_PLUGINS = ["wellspring-code", "wellspring-http", "wellspring-web"]
 
 test("pluginDirOf：只认 plugins/<name>/ 下的文件", () => {
     assert.equal(pluginDirOf("plugins/a/index.ts"), "plugins/a")

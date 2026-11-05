@@ -10,11 +10,15 @@ npm install -g @xyit/wellspring
 wellspring version
 ```
 
-npm 包只包含**宿主与 CLI**，不包含 `plugins/` 下的自带插件。Agent 工具、网页端等能力都由插件提供，
-需要另行获取官方插件（仓库里的 `plugins/wellspring-core`、`plugins/wellspring-web` 等）后安装：
+npm 包只包含**宿主与 CLI**，不包含插件。Agent 工具、网页端等能力都由插件提供：
+
+- `wellspring-core`（Agent 工具与会话环境注入）已独立成仓库
+  [wellspring-core](https://github.com/EtherosGroup/wellspring-core)，npm 上是 `@etheros/wellspring-core`；
+  从 GitHub Release 的 zip 安装，`wellspring plugin list --check` 会问 npm 有没有新版本
+- `wellspring-web` / `wellspring-http` / `wellspring-code` 仍在仓库的 `plugins/` 下，开发时直接 link
 
 ```bash
-wellspring plugin link ./plugins/wellspring-core
+wellspring plugin install ./wellspring-core-1.4.1.zip
 wellspring plugin link ./plugins/wellspring-web
 ```
 
@@ -177,26 +181,19 @@ hi
 
 ## wellspring-core 插件
 
-Agent 工具实现已抽到 [`plugins/wellspring-core`](plugins/wellspring-core)：
+Agent 工具（`read` / `delete_file` / `execute_code` / `web_search` / `web_fetch` / `query_task` /
+`stop_task` / `skill_*`）与会话环境注入由 **wellspring-core** 提供。这个插件已经独立成仓库，
+按自己的版本与节奏发布，不再跟着宿主一起打包：
 
-- `read`
-- `delete_file`（把工作区文件/目录移入回收站；目录需 `recursive:true`，read-only 权限下拒绝）
-- `execute_code`（支持 `background` / `network`）
-- `web_search`
-- `web_fetch`
-- `query_task`
-- `stop_task`
-- `skill_list` / `skill_read` / `skill_install` / `skill_modify`（通用 SKILL.md 规范）
-- `onSessionStart`：新会话第一轮向 system prompt 注入运行环境（OS / Node / 工作目录 / 时间 / 模型 / 沙箱权限）
-  与本轮可用工具列表（名称 + 一行描述）
+- 仓库：<https://github.com/EtherosGroup/wellspring-core>
+- npm：`@etheros/wellspring-core`；GitHub Release 附 `wellspring-core-<版本>.zip`
+- 插件 id 是 `@etheros/wellspring-core`（带 scope），目录按 npm 惯例嵌套：
+  `<dataDir>/plugins/@etheros/wellspring-core/`、`<dataDir>/plugin-data/@etheros/wellspring-core/`
 
-所有插件都由用户手动安装或链接，平台不会自动安装插件：
+它自带版本探针：`wellspring plugin list --check` 会查 npm registry 的 latest，并给出对应 Release 的 zip。
+安装、升级、SKILL 与回收站等细节见该仓库的 README。
 
-```bash
-wellspring plugin link plugins/wellspring-core
-```
-
-平台本体不再包含 Agent 工具实现；工具全部由该插件注册。core 插件未加载时 Agent 只保留会话循环，没有工具。
+平台本体不包含任何 Agent 工具实现；core 插件未加载时 Agent 只保留会话循环，没有工具。
 
 插件通过 `api.capabilities` 调用宿主能力：
 
@@ -217,10 +214,10 @@ await api.capabilities.webFetch("https://example.com")
 
 ## Agent 工具
 
-`run` 模式提供：
+以下工具由 wellspring-core 插件注册（实现在独立仓库），这里记录宿主侧行为契约；`run` 模式提供：
 
 - `read`：读取 workspace 内 UTF-8 文本，带行号，支持 offset/limit。相对路径按会话工作区解析（`api.workspaceFs.root`），工作区内的绝对路径也接受；offset 越界、二进制文件、非 UTF-8 文本都返回带 `code` 的错误（`FS_NOT_FOUND` / `FS_NOT_DIRECTORY` / `FS_NOT_TEXT` / `FS_OUT_OF_RANGE` / `FS_BAD_ARGUMENT`），不返回空的读取窗口
-- `delete_file`：把 workspace 内文件或目录移入插件数据目录的回收站（`<dataDir>/plugin-data/wellspring-core/trash/<时间戳>/files/<原路径>`），不会永久删除；`path` 为工作区相对路径，目录要 `recursive:true`；工作区根目录与 `..` 路径拒绝，只读权限下不允许调用。回收站保留最近 200 次删除，恢复时把 `files/` 里的条目移回原路径即可
+- `delete_file`：把 workspace 内文件或目录移入插件数据目录的回收站（`<dataDir>/plugin-data/@etheros/wellspring-core/trash/<时间戳>/files/<原路径>`），不会永久删除；`path` 为工作区相对路径，目录要 `recursive:true`；工作区根目录与 `..` 路径拒绝，只读权限下不允许调用。回收站保留最近 200 次删除，恢复时把 `files/` 里的条目移回原路径即可
 - `execute_code`：sandbox 内执行命令；默认 `read-only`，普通命令不弹审批；模型请求 `workspace-write` / `danger-full-access` 时才审批。
   沙箱把当前 Node 安装前缀挂到 `/opt/wellspring`（`node` / `npm` / `npx` 都在 PATH 上）；`HOME=/scratch`，
   `/tmp` 与 `/scratch` 都是单次调用生命周期，跨调用持久保留的只有 workspace 与显式导出的 artifact
@@ -341,8 +338,8 @@ await api.capabilities.webFetch("https://example.com")
 插件 id 支持可选的 `@scope/` 前缀，规则同 npm：
 
 ```text
-wellspring-core            # 无 scope
-@xyit/wellspring-core      # 带 scope
+hello-plugin               # 无 scope
+@etheros/wellspring-core   # 带 scope
 ```
 
 允许字符：`A-Z a-z 0-9 . _ -`，每段最长 64，`@scope` 与名字之间用 `/` 分隔。
@@ -351,9 +348,9 @@ wellspring-core            # 无 scope
 目录按 npm 惯例嵌套，无 scope 时与旧版完全一致：
 
 ```text
-<dataDir>/plugins/@xyit/wellspring-core/
-<dataDir>/plugin-data/@xyit/wellspring-core/
-<configDir>/plugins/@xyit/wellspring-core.json
+<dataDir>/plugins/@etheros/wellspring-core/
+<dataDir>/plugin-data/@etheros/wellspring-core/
+<configDir>/plugins/@etheros/wellspring-core.json
 ```
 
 - `plugin install` 读 zip 或 tarball 内 `package.json` 的 `name` 决定落点，带 scope 时自动建 scope 目录
@@ -390,7 +387,10 @@ node src/index.ts plugin list
 node src/index.ts plugin list --check                        # 顺带问每个插件「最新版本是多少」
 ```
 
-仓库自带官方插件：[plugins/wellspring-core](plugins/wellspring-core)、[plugins/wellspring-web](plugins/wellspring-web)、[plugins/wellspring-http](plugins/wellspring-http)、[plugins/wellspring-code](plugins/wellspring-code)。
+主仓库自带官方插件：[plugins/wellspring-web](plugins/wellspring-web)、[plugins/wellspring-http](plugins/wellspring-http)、
+[plugins/wellspring-code](plugins/wellspring-code)。
+`wellspring-core` 已独立成 [EtherosGroup/wellspring-core](https://github.com/EtherosGroup/wellspring-core)，
+从 npm / GitHub Release 单独升级。
 
 ### 插件依赖与 zip 分发
 
@@ -448,8 +448,8 @@ export function setup() {
 
 ```text
 $ wellspring plugin list --check
-wellspring-core  @xyit/wellspring-core@1.3.2  enabled  deps=-
-  可更新：1.3.2 → 1.4.0  下载：https://example.com/wellspring-core-1.4.0.zip
+wellspring-core  @etheros/wellspring-core@1.4.0  enabled  deps=-
+  可更新：1.4.0 → 1.4.1  下载：https://github.com/EtherosGroup/wellspring-core/releases/download/v1.4.1/wellspring-core-1.4.1.zip
 ```
 
 ### 发版产物
@@ -457,7 +457,7 @@ wellspring-core  @xyit/wellspring-core@1.3.2  enabled  deps=-
 推 `v*` 标签会触发两个工作流：
 
 - `publish-npm.yml`：类型检查、全量测试、构建、tarball 冒烟后发布 npm；
-- `release.yml`：把 `plugins/*/` 打包成 `<插件名>-<版本>.zip`（不含 `node_modules`，附带根 LICENSE），
+- `release.yml`：把主仓库的 `plugins/*/` 打包成 `<插件名>-<版本>.zip`（不含 `node_modules`，附带根 LICENSE），
   连同 `SHA256SUMS` 与 `PLUGINS.md`（插件清单）一起附到同名 GitHub Release。
 
 Release 里的插件 zip 可以直接用 `wellspring plugin install <zip>` 或网页「插件管理」上传安装；
@@ -763,6 +763,9 @@ const files = await ctx.workspaceFs.list("src")
 - `hostApi: "plugins"` 提供 `api.plugins.list/install/remove/enable/disable`：安装只接受 zip（≤10MB）；
   启用/禁用与禁用后的卸载即时生效，安装与禁用 `wellspring-web` 重启后生效；卸载 `wellspring-web` 被拒绝
 - `${workspace}` 默认只读，写 workspace 需放进 `fs.write`
+- `network` 默认 `false`：bwrap 不 `--share-net`、seatbelt 拒绝出网。插件要自己访问网络（例如版本探针
+  查 npm registry）必须在清单里写 `sandbox.network: true`；Windows / Node permission 后端本来就不隔离
+  网络，这个字段只是声明意图，不改变隔离效果
 - 没有可用 OS 后端时插件加载失败；插件不做 direct 降级
 - `sandbox.mode: off` 时插件全部拒绝加载
 - 插件后端：Linux 为 `bwrap`，macOS 为 `seatbelt`，Windows 与 Android/Termux 退回 Node permission model
