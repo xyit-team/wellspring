@@ -12,6 +12,7 @@ import {
     activeBusy,
     activeConversation,
     addWorkspace,
+    addWorkspaceManually,
     chooseModel,
     chooseReasoning,
     confirmDialog,
@@ -61,6 +62,11 @@ const SLASH_COMMANDS: Array<{ name: string; description: string; run: () => void
     { name: "status", description: "查看宿主与插件状态", run: () => void router.push("/status") },
     { name: "theme", description: "切换主题", run: () => cycleTheme() },
     { name: "workspace", description: "添加工作区", run: () => void addWorkspace() },
+    {
+        name: "workspace-path",
+        description: "手动输入工作区路径",
+        run: () => void addWorkspaceManually(),
+    },
     { name: "help", description: "查看可用指令", run: () => showSlashHelp() },
 ]
 

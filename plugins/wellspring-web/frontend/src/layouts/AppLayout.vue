@@ -4,6 +4,7 @@ import { RouterView } from "vue-router"
 
 import ApprovalDialog from "../components/ApprovalDialog.vue"
 import ConfirmDialog from "../components/ConfirmDialog.vue"
+import PromptDialog from "../components/PromptDialog.vue"
 import Sidebar from "../components/Sidebar.vue"
 import StatsDialog from "../components/StatsDialog.vue"
 import { addWorkspace, addWorkspaceAt, store, toast } from "../store"
@@ -102,6 +103,7 @@ onBeforeUnmount(() => {
             <p>松开以添加工作区</p>
         </div>
         <ConfirmDialog />
+        <PromptDialog />
         <ApprovalDialog />
         <StatsDialog />
     </div>

@@ -382,7 +382,12 @@ function remoteAgent(): HostAgentApi {
             })) as HostWorkspaceCheck
         },
         async pickDirectory() {
-            return (await bridgeRequest("host.agent.pickDirectory", {})) as HostWorkspaceCheck
+            /* 模态窗口，等用户翻完目录；用默认 30s 会先超时 */
+            return (await bridgeRequest(
+                "host.agent.pickDirectory",
+                {},
+                RPC_TIMEOUT_MS.picker,
+            )) as HostWorkspaceCheck
         },
         async openPath(path: string, mode: HostAgentOpenMode = "default") {
             await bridgeRequest("host.agent.openPath", { path, mode })
@@ -494,7 +499,11 @@ function remotePlugins(): HostPluginsApi {
             )) as HostPluginMutationResult
         },
         async remove(id: string): Promise<HostPluginMutationResult> {
-            return (await bridgeRequest("host.plugins.remove", { id })) as HostPluginMutationResult
+            return (await bridgeRequest(
+                "host.plugins.remove",
+                { id },
+                RPC_TIMEOUT_MS.pluginsRemove,
+            )) as HostPluginMutationResult
         },
         async enable(id: string): Promise<HostPluginMutationResult> {
             return (await bridgeRequest("host.plugins.enable", { id })) as HostPluginMutationResult

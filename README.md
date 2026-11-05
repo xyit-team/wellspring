@@ -385,7 +385,7 @@ node src/index.ts plugin new my-plugin --dir ./plugins
 node src/index.ts plugin link ./plugins/my-plugin      # 开发时链接（只改文件，不启动插件）
 node src/index.ts plugin install ./plugins/my-plugin    # 目录或 zip；有依赖会按 packageManager 自动安装
 node src/index.ts plugin update  ./dist/my-plugin.zip    # 覆盖已安装的同名插件；link 进来的开发插件不会被覆盖
-node src/index.ts plugin remove <name>                     # 被依赖时拒绝；加 --ignore 强制删除
+node src/index.ts plugin remove <name>                     # 不存在会报错；被依赖时拒绝，加 --ignore 强制删除
 node src/index.ts plugin list
 node src/index.ts plugin list --check                        # 顺带问每个插件「最新版本是多少」
 ```
@@ -876,6 +876,9 @@ wellspring start
   （宿主侧 `/api/files/open` → `api.agent.openPath`，只接受绝对路径）
 - 拖文件夹进页面即添加工作区：Firefox 等会给 `file://` 路径的浏览器直接建工作区；
   拿不到绝对路径的浏览器提示后自动打开原生目录选择框
+- 「添加工作区」默认弹系统目录选择框（Windows 走 PowerShell + WinForms，macOS 走 osascript，
+  Linux 走 zenity / kdialog）；选择框起不来时（远程会话、没有图形桌面）自动退回手动输入路径，
+  命令面板里的 `/workspace-path` 也能随时手输
 - 侧栏「关闭 Wellspring」：二次确认后优雅关闭服务（等价于 `wellspring stop`），先执行插件 onShutdown
   再清理服务记录；会话与工作区数据保留，需要时重新 `wellspring start`
 - 字体与字号沿用 code 插件的设计 token：界面与代码统一使用系统等宽字体

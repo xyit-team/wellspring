@@ -73,9 +73,31 @@ export async function statIfExists(file: string): Promise<Stats | null> {
     }
 }
 
-/** 删除文件或目录，不存在时忽略 */
+/** 删除时「等一会儿会好」的错误码：Windows 进程退出与句柄释放不同步 */
+const TRANSIENT_REMOVE_CODES = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"])
+
+/**
+ * 删除文件或目录，不存在时忽略
+ *
+ * Windows 上目录被进程当成 cwd、或者还有句柄没关时，`rm` 会 EBUSY / EPERM。
+ * 进程刚退出那一刻句柄还在释放，等几十毫秒就好，所以这里退避重试几次；
+ * 仍然删不掉就把原始错误抛出去，让调用方说明「被占用」而不是假装成功。
+ */
 export async function removePath(file: string): Promise<void> {
-    await rm(file, { recursive: true, force: true })
+    let wait = 50
+    for (let attempt = 1; ; attempt += 1) {
+        try {
+            await rm(file, { recursive: true, force: true })
+            return
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException | null)?.code ?? ""
+            if (attempt >= 6 || !TRANSIENT_REMOVE_CODES.has(code)) {
+                throw error
+            }
+            await sleep(wait)
+            wait = Math.min(wait * 2, 800)
+        }
+    }
 }
 
 /** 读取 JSON 文件，不存在时返回 null。解析失败向上抛出 */

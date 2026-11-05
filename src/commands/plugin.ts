@@ -250,20 +250,31 @@ export async function runPluginCommand(
                 const target =
                     plugins.find((plugin) => plugin.id === name) ??
                     plugins.find((plugin) => plugin.name === name)
-                const id = target === undefined ? name : target.id
-                const dependents = dependentsOf(plugins, id, target?.name ?? id)
+                /*
+                 * 找不到就必须说找不到
+                 *
+                 * 以前无论有没有这个插件都会打印「已删除插件」：`rm --force` 对不存在的路径
+                 * 不报错，名字打错或者已经被删掉时，用户以为卸载成功、实际什么都没发生。
+                 */
+                if (target === undefined) {
+                    ctx.elog.error(`没有这个插件：${name}（wellspring plugin list 看已装的）`)
+                    return failure(`plugin.not-found:${name}`)
+                }
+                const dependents = dependentsOf(plugins, target.id, target.name)
                 if (dependents.length > 0 && !ignore) {
                     ctx.elog.error(
-                        `插件 ${id} 被这些插件依赖：${dependents.join(", ")}；` +
+                        `插件 ${target.id} 被这些插件依赖：${dependents.join(", ")}；` +
                             "确认要强制卸载请加 --ignore",
                     )
                     return failure(`plugin.has-dependents:${dependents.join(",")}`)
                 }
-                await removePlugin(id, ctx.paths)
+                await removePlugin(target.id, ctx.paths)
+                // 删掉目录后禁用记录也要跟着清，否则同名的插件重装回来还是禁用态
+                await setPluginEnabled(target.id, true, ctx.paths)
                 ctx.elog.info(
-                    `已删除插件 ${id}${ignore && dependents.length > 0 ? "（忽略依赖）" : ""}`,
+                    `已删除插件 ${target.id}${ignore && dependents.length > 0 ? "（忽略依赖）" : ""}`,
                 )
-                return success({ id })
+                return success({ id: target.id })
             }
             default:
                 return failure(`${USAGE_CODES.unknownSubcommand}:plugin ${subcommand ?? ""}`)

@@ -265,6 +265,18 @@ export function createHostPluginManager(options: HostPluginManagerOptions): Host
             }
             try {
                 await removePath(target.dirPath)
+                /*
+                 * 再确认一次：Windows 上目录被进程占成 cwd 时删不掉，
+                 * 而 `rm --force` 对「没删掉但其实还在」不会报错，
+                 * 不复查就会出现「界面说卸载成功、插件还在」。
+                 */
+                if ((await statIfExists(target.dirPath)) !== null) {
+                    logger.warn({ id: target.id, dir: target.dirPath }, "插件目录没删掉")
+                    return failure(
+                        target.id,
+                        `插件目录没删掉，可能还有进程在用：${target.dirPath}；先禁用并重启 Wellspring 再试`,
+                    )
+                }
                 await setPluginEnabled(target.dir, true, options.paths)
                 await options.runtime?.hotForget?.(target.dir)
                 logger.info({ id: target.id }, "已删除插件")
@@ -276,6 +288,7 @@ export function createHostPluginManager(options: HostPluginManagerOptions): Host
                     ...(options.runtime === undefined ? {} : { hot: true }),
                 }
             } catch (error) {
+                logger.warn({ id: target.id, error: errorText(error) }, "删除插件失败")
                 return failure(target.id, errorText(error))
             }
         },

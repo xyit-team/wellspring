@@ -90,7 +90,16 @@ interface NativeCommandResult {
     readonly stderr: string
 }
 
-function runNativeCommand(command: string, args: readonly string[]): Promise<NativeCommandResult> {
+/** 选择框最长停留时间：用户在翻目录，不该被宿主打断 */
+const PICKER_TIMEOUT_MS = 300_000
+/** 其它一次性系统命令（打开路径、找 zenity）用不着等太久 */
+const NATIVE_COMMAND_TIMEOUT_MS = 120_000
+
+function runNativeCommand(
+    command: string,
+    args: readonly string[],
+    timeoutMs: number = NATIVE_COMMAND_TIMEOUT_MS,
+): Promise<NativeCommandResult> {
     return new Promise((resolvePromise) => {
         let settled = false
         let stdout = ""
@@ -98,7 +107,7 @@ function runNativeCommand(command: string, args: readonly string[]): Promise<Nat
         const child = spawn(command, [...args], { stdio: ["ignore", "pipe", "pipe"] })
         const timer = setTimeout(() => {
             child.kill("SIGTERM")
-        }, 120_000)
+        }, timeoutMs)
         const finish = (code: number | null): void => {
             if (settled) {
                 return
@@ -120,6 +129,79 @@ function runNativeCommand(command: string, args: readonly string[]): Promise<Nat
             finish(code)
         })
     })
+}
+
+/**
+ * Windows 目录选择框脚本
+ *
+ * 几个刻意为之的点：
+ * - `[Console]::OutputEncoding` 设成 UTF-8：否则脚本按 OEM 代码页（中文机器是 GBK）
+ *   写出路径，Node 按 UTF-8 解码，选到含中文的目录会变成乱码。
+ * - 挂一个透明、置顶的 owner 窗口：直接 `ShowDialog()` 没有父窗口，对话框可能出现在
+ *   浏览器后面，用户以为「点了没反应」。
+ * - 成功 / 取消 / 出错都用一行标记写出来：退出码不可靠（脚本抛异常也是 1），
+ *   以前把「退出码 1」当成用户取消，选择框起不来时界面一点提示都没有。
+ */
+export const WINDOWS_PICKER_SCRIPT = [
+    "$ErrorActionPreference = 'Stop'",
+    "try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }",
+    "try {",
+    "  Add-Type -AssemblyName System.Windows.Forms",
+    "  Add-Type -AssemblyName System.Drawing",
+    "  $owner = New-Object System.Windows.Forms.Form",
+    "  $owner.Text = 'Wellspring'",
+    "  $owner.StartPosition = 'CenterScreen'",
+    "  $owner.Size = New-Object System.Drawing.Size(1, 1)",
+    "  $owner.ShowInTaskbar = $false",
+    "  $owner.TopMost = $true",
+    "  $owner.Opacity = 0",
+    "  $owner.Show()",
+    "  $dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
+    "  $dialog.Description = '选择工作区文件夹'",
+    /*
+     * 不要设 UseDescriptionForTitle：那是 .NET Core 3.0 才加的属性，
+     * Windows PowerShell 5.1 的 WinForms 里没有，一设就抛异常、对话框还没出来就结束。
+     */
+    "  $dialog.ShowNewFolderButton = $true",
+    "  if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {",
+    "    [Console]::Out.WriteLine('PICKED ' + $dialog.SelectedPath)",
+    "  } else {",
+    "    [Console]::Out.WriteLine('CANCELLED')",
+    "  }",
+    "  $owner.Close()",
+    "} catch {",
+    "  [Console]::Out.WriteLine('ERROR ' + $_.Exception.Message)",
+    "}",
+].join("\n")
+
+export type WindowsPickerOutcome =
+    | { readonly kind: "picked"; readonly path: string }
+    | { readonly kind: "cancelled" }
+    | { readonly kind: "error"; readonly detail: string }
+
+/** 解析 Windows 选择框脚本的输出；没有标记说明脚本根本没跑起来 */
+export function parseWindowsPickerOutput(stdout: string): WindowsPickerOutcome {
+    for (const raw of stdout.split("\n")) {
+        const line = raw.trim()
+        if (line.startsWith("PICKED ")) {
+            return { kind: "picked", path: line.slice("PICKED ".length).trim() }
+        }
+        if (line === "CANCELLED") {
+            return { kind: "cancelled" }
+        }
+        if (line.startsWith("ERROR ")) {
+            return { kind: "error", detail: line.slice("ERROR ".length).trim() }
+        }
+        if (line === "ERROR") {
+            return { kind: "error", detail: "" }
+        }
+    }
+    return { kind: "error", detail: "" }
+}
+
+/** PowerShell 的 -EncodedCommand 吃 UTF-16LE 的 base64，避免命令行代码页把中文拆坏 */
+export function encodeWindowsCommand(script: string): string {
+    return Buffer.from(script, "utf16le").toString("base64")
 }
 
 function hasExecutable(name: string): boolean {
@@ -157,6 +239,17 @@ function pickerOutcome(command: string, result: NativeCommandResult): HostWorksp
                 ? `${command} 没有返回目录（退出码 ${result.code}）`
                 : `${command} 无法显示选择框：${detail}`,
     }
+}
+
+/** stderr 的第一行非空内容；脚本报错时最有用的通常就是这句 */
+function firstLine(text: string): string {
+    for (const raw of text.split("\n")) {
+        const line = raw.trim()
+        if (line !== "") {
+            return line.slice(0, 300)
+        }
+    }
+    return ""
 }
 
 const IGNORED_DIRECTORIES = new Set([
@@ -674,23 +767,38 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
             return pickerOutcome("osascript", result)
         }
         if (process.platform === "win32") {
-            const script = [
-                "Add-Type -AssemblyName System.Windows.Forms",
-                "$dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
-                `$dialog.Description = '${title}'`,
-                "if ($dialog.ShowDialog() -eq 'OK') { Write-Output $dialog.SelectedPath }",
-            ].join("; ")
-            const result = await runNativeCommand("powershell.exe", [
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                script,
-            ])
-            const selected = result.stdout.trim()
-            if (result.code === 0 && selected !== "") {
-                return await validateWorkspace(selected)
+            const result = await runNativeCommand(
+                "powershell.exe",
+                [
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-STA",
+                    "-EncodedCommand",
+                    encodeWindowsCommand(WINDOWS_PICKER_SCRIPT),
+                ],
+                PICKER_TIMEOUT_MS,
+            )
+            const outcome = parseWindowsPickerOutput(result.stdout)
+            if (outcome.kind === "picked") {
+                if (outcome.path === "") {
+                    return pickerOutcome("powershell", result)
+                }
+                return await validateWorkspace(outcome.path)
             }
-            return pickerOutcome("powershell", result)
+            if (outcome.kind === "cancelled") {
+                return { ok: false, root: "", name: "", error: "已取消" }
+            }
+            // 脚本没留下标记 / 自己报了错：这是「对话框起不来」，不是用户取消
+            const detail = outcome.detail !== "" ? outcome.detail : firstLine(result.stderr)
+            return {
+                ok: false,
+                root: "",
+                name: "",
+                error:
+                    detail === ""
+                        ? "PowerShell 没能显示文件夹选择框（可能没有交互式桌面）；可以手动输入路径"
+                        : `PowerShell 没能显示文件夹选择框：${detail}；可以手动输入路径`,
+            }
         }
         if (hasExecutable("zenity")) {
             const result = await runNativeCommand("zenity", [

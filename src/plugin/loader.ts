@@ -35,7 +35,7 @@ import { DEFAULT_SETTINGS } from "../config/defaults.ts"
 import { SETTING_FILE_NAME } from "../config/loader.ts"
 import type { AppSetting, SandboxSetting } from "../config/types.ts"
 import { getElog } from "../logger/elog4js.ts"
-import { ensureDir, readJsonIfExists } from "../platform/file.ts"
+import { ensureDir, readJsonIfExists, removePath } from "../platform/file.ts"
 import { getPaths, type ResolvedPaths } from "../platform/path.ts"
 import { isLinux, isMacOS, isWindows } from "../platform/os.ts"
 import { BwrapBackend } from "../sandbox/backends/bwrap.ts"
@@ -1043,11 +1043,44 @@ export async function linkPlugin(
     return name
 }
 
-/** 删除插件目录 */
+/**
+ * 删除插件目录
+ *
+ * 两个「说到做到」的约束：
+ * - 删之前先看有没有：`rm` 带 force 时目标不存在也不报错，以前输入一个不存在的名字
+ *   照样打印「已删除插件 xxx」，看着成功其实什么都没发生。
+ * - 删完再确认一次：Windows 上目录被进程占成 cwd / 有句柄没关时会删不掉，
+ *   这里等到重试也无用时给出可执行的说明，而不是把错误码直接丢给用户。
+ */
 export async function removePlugin(name: string, paths: ResolvedPaths = getPaths()): Promise<void> {
     const target = pluginDirOf(pluginsRoot(paths), name)
     if (target === null) {
         throw new Error(`插件名不合法：${name}`)
     }
-    await rm(target, { recursive: true, force: true })
+    const existing = await lstat(target).catch(() => null)
+    if (existing === null) {
+        throw new Error(`插件不存在：${name}`)
+    }
+    try {
+        await removePath(target)
+    } catch (error) {
+        throw new Error(describeRemoveFailure(error, target))
+    }
+    if ((await lstat(target).catch(() => null)) !== null) {
+        throw new Error(`插件目录没有删掉，可能还有进程在用：${target}；先停止服务再试`)
+    }
 }
+
+/** 删除失败的说明：Windows 的 EBUSY/EPERM 基本都是「还有进程占着」 */
+function describeRemoveFailure(error: unknown, target: string): string {
+    const code = (error as NodeJS.ErrnoException | null)?.code ?? ""
+    if (TRANSIENT_REMOVE_CODES.has(code)) {
+        return (
+            `插件目录被占用，删不掉：${target}；` +
+            "先停掉正在运行的 Wellspring（wellspring stop）再卸载"
+        )
+    }
+    return error instanceof Error ? error.message : String(error)
+}
+
+const TRANSIENT_REMOVE_CODES = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"])

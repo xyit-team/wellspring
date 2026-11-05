@@ -841,13 +841,15 @@ export async function addWorkspace(): Promise<void> {
             jsonBody({}),
         )
         if (!picked.ok) {
-            /*
-             * 用户主动取消是正常路径，不要弹提示；
-             * 但选择框起不来（没装 zenity、没有图形会话、脚本报错）必须说出来，
-             * 否则界面上表现和「点了没反应」完全一样，没法排查。
-             */
             const reason = typeof picked.error === "string" ? picked.error : ""
-            if (reason !== "" && reason !== "已取消") toast(reason, "error")
+            // 用户主动取消是正常路径，什么都不做
+            if (reason === "已取消") return
+            /*
+             * 选择框起不来（没有交互式桌面、PowerShell 起不来、Linux 没装 zenity）：
+             * 退回手动输入路径。以前只弹一个错误提示就结束，用户除了「点了没反应」
+             * 没有别的出路；拖文件夹进页面能用，但也不是什么时候都方便。
+             */
+            await addWorkspaceManually(reason)
             return
         }
         const created = await apiJson<{ workspace: WorkspaceView }>(
@@ -860,6 +862,28 @@ export async function addWorkspace(): Promise<void> {
         if (reloadOnAuth(error)) return
         toast(error instanceof Error ? error.message : String(error), "error")
     }
+}
+
+/**
+ * 手输路径添加工作区
+ *
+ * 原生选择框不可用时（远程会话、没有图形会话、PowerShell 被策略挡住）的兜底：
+ * 路径校验交给服务端，这里只负责把用户敲的字符串送过去。
+ */
+export async function addWorkspaceManually(reason = ""): Promise<void> {
+    const body =
+        reason === ""
+            ? "输入工作区目录的绝对路径。"
+            : `系统文件夹选择框没能打开（${reason}）。可以直接输入目录的绝对路径。`
+    const path = await promptDialog({
+        title: "手动添加工作区",
+        body,
+        label: "工作区目录",
+        placeholder: "绝对路径，例如 D:\\项目 或 /home/me/project",
+        confirmLabel: "添加",
+    })
+    if (path === null) return
+    await addWorkspaceAt(path)
 }
 
 /**
@@ -2759,6 +2783,46 @@ export function settleConfirm(value: boolean): void {
     confirmState.options = null
     const resolver = confirmResolver
     confirmResolver = null
+    resolver?.(value)
+}
+
+/* ── 通用输入弹窗 ─────────────────────────────────────────── */
+
+export interface PromptOptions {
+    readonly title?: string
+    readonly body: string
+    readonly label?: string
+    readonly placeholder?: string
+    readonly value?: string
+    readonly confirmLabel?: string
+    readonly cancelLabel?: string
+}
+
+export const promptState = reactive({
+    open: false,
+    options: null as PromptOptions | null,
+})
+
+let promptResolver: ((value: string | null) => void) | null = null
+
+/** 打开输入弹窗；取消返回 null */
+export function promptDialog(options: PromptOptions): Promise<string | null> {
+    if (promptResolver !== null) {
+        promptResolver(null)
+        promptResolver = null
+    }
+    promptState.options = options
+    promptState.open = true
+    return new Promise((resolve) => {
+        promptResolver = resolve
+    })
+}
+
+export function settlePrompt(value: string | null): void {
+    promptState.open = false
+    promptState.options = null
+    const resolver = promptResolver
+    promptResolver = null
     resolver?.(value)
 }
 
