@@ -1,7 +1,7 @@
 # Wellspring 源泉 —— 聚合式 Agent 平台
 
 > [!WARNING]
-> Windows 用户暂时请勿安装，我们正在解决 Windows 的 Sandbox 问题！
+> 由于 Windows 系统本身的限制，Wellspring 无法防止 Windows 操作系统被恶意代码破坏。因此，请确保您安装的插件和 Agent 执行的命令是安全的。
 
 ## 安装
 
