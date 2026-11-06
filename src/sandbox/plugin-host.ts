@@ -1015,7 +1015,6 @@ function readyOf(current: PluginRuntime): {
         introduction: { params: Record<string, unknown>; content: string }
     }>
     hooks: string[]
-
 } {
     return {
         plugin: {
@@ -1171,7 +1170,6 @@ async function handleHostRequest(request: RpcRequest): Promise<void> {
                     ? await invoke()
                     : await toolContext.run(contextId, invoke)
             })
-
         } else if (request.method === "plugin.init") {
             if (runtime === null) {
                 throw new Error("插件尚未初始化")

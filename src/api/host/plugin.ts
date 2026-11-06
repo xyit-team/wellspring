@@ -107,7 +107,6 @@ import type { HostWorkspacesApi } from "./workspace.ts"
  */
 export const PLUGIN_ID = /^(?:@[A-Za-z0-9][A-Za-z0-9._-]*\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 
-
 export interface AgentTool {
     readonly name: string
     readonly introduction: AgentToolIntroduction
