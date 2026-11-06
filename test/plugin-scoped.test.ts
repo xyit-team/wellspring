@@ -178,7 +178,7 @@ test("启用状态：作用域 id 作 key，互不影响", async () => {
     assert.equal(plugins.find((plugin) => plugin.id === "on-plugin")?.status, "ok")
 })
 
-test("installPlugin：zip 内的 scope 名落到嵌套目录", async () => {
+test("installPlugin：带 scope 的包名落到单层 plugins/<本地名>", async () => {
     const dir = join(root, "install")
     await mkdir(dir, { recursive: true })
     const zip = join(dir, "scoped.zip")
@@ -195,8 +195,10 @@ test("installPlugin：zip 内的 scope 名落到嵌套目录", async () => {
         }),
     )
     const result = await installPlugin(zip, paths(dir), {})
-    assert.equal(result.id, "@xyit/installed")
-    assert.equal(result.target, join(dir, "plugins", "@xyit", "installed"))
+    /* 1.7 起目录用本地名（包名最后一段），与 scope 无关 */
+    assert.equal(result.id, "installed")
+    assert.equal(result.packageName, "@xyit/installed")
+    assert.equal(result.target, join(dir, "plugins", "installed"))
     const pkg = JSON.parse(await readFile(join(result.target, "package.json"), "utf8")) as {
         name: string
     }

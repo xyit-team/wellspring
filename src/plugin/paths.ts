@@ -48,13 +48,16 @@ export interface PluginDirEntry {
     readonly dirName: string
     /** 绝对路径 */
     readonly dir: string
+    /** 旧布局：1.7 之前的 plugins/@scope/name，只在读取时兼容 */
+    readonly legacy: boolean
 }
 
 /**
  * 列出插件根目录下的插件目录
  *
- * 支持 @scope 嵌套：`plugins/@xyit/x` 记为 id `@xyit/x`
- * 顶层与 scope 内的点开头目录、非目录条目都跳过
+ * 新布局是单层的 `plugins/<本地名>`；同时兼容 1.7 之前的 `plugins/@scope/name`
+ * （id 仍是 `@scope/name`，标记 legacy: true，方便升级提示与 update 时迁移）。
+ * 点开头目录与非目录条目跳过。
  */
 export async function listPluginDirs(root: string): Promise<readonly PluginDirEntry[]> {
     let names: string[]
@@ -86,7 +89,7 @@ export async function listPluginDirs(root: string): Promise<readonly PluginDirEn
                 }
                 const dir = join(scopeDir, child)
                 if (await isDirectory(dir)) {
-                    found.push({ id: `${name}/${child}`, dirName: child, dir })
+                    found.push({ id: `${name}/${child}`, dirName: child, dir, legacy: true })
                 }
             }
             continue
@@ -96,7 +99,7 @@ export async function listPluginDirs(root: string): Promise<readonly PluginDirEn
         }
         const dir = join(root, name)
         if (await isDirectory(dir)) {
-            found.push({ id: name, dirName: name, dir })
+            found.push({ id: name, dirName: name, dir, legacy: false })
         }
     }
     return found

@@ -2,7 +2,7 @@ import type { LevelWithSilent } from "pino"
 
 import { Result } from "../api/result/result.ts"
 import { CONFIG_CODES, invalidCode } from "./codes.ts"
-import { DEFAULT_MODELS, DEFAULT_SETTINGS } from "./defaults.ts"
+import { DEFAULT_MODELS, DEFAULT_PLUGINS, DEFAULT_SETTINGS } from "./defaults.ts"
 import {
     REASONING_LEVELS,
     SETTING_VERSION,
@@ -15,6 +15,9 @@ import {
     type SandboxAccess,
     type SandboxBackend,
     type SandboxMode,
+    type PluginUpdateSetting,
+    type PluginUpdateType,
+    type PluginsSetting,
     type SandboxSetting,
 } from "./types.ts"
 
@@ -380,6 +383,41 @@ function validateSandbox(input: Record<string, unknown>): Result<SandboxSetting>
     })
 }
 
+const UPDATE_TYPES: ReadonlySet<string> = new Set<PluginUpdateType>(["npm", "github", "file"])
+
+function validatePlugins(input: Record<string, unknown>): Result<PluginsSetting> {
+    const rawUpdate = input["update"]
+    if (rawUpdate !== undefined && !isPlainObject(rawUpdate)) {
+        return Result.error<PluginsSetting>(invalidCode("plugins.update"))
+    }
+    let type = DEFAULT_PLUGINS.update.type
+    const rawType = rawUpdate === undefined ? undefined : rawUpdate["type"]
+    if (rawType !== undefined) {
+        if (typeof rawType !== "string" || !UPDATE_TYPES.has(rawType)) {
+            return Result.error<PluginsSetting>(invalidCode("plugins.update.type"))
+        }
+        type = rawType as PluginUpdateType
+    }
+    let registry = DEFAULT_PLUGINS.update.registry
+    const rawRegistry = rawUpdate === undefined ? undefined : rawUpdate["registry"]
+    if (rawRegistry !== undefined) {
+        if (!isBaseUrl(rawRegistry)) {
+            return Result.error<PluginsSetting>(invalidCode("plugins.update.registry"))
+        }
+        registry = String(rawRegistry).trim()
+    }
+    let githubToken = DEFAULT_PLUGINS.update.githubToken
+    const rawToken = rawUpdate === undefined ? undefined : rawUpdate["githubToken"]
+    if (rawToken !== undefined && rawToken !== null) {
+        if (typeof rawToken !== "string" || rawToken.trim() === "") {
+            return Result.error<PluginsSetting>(invalidCode("plugins.update.githubToken"))
+        }
+        githubToken = rawToken.trim()
+    }
+    const update: PluginUpdateSetting = { type, registry, githubToken }
+    return Result.successWithData<PluginsSetting>({ update })
+}
+
 /** 校验并补齐默认值；未声明字段忽略，不做保留 */
 export function validateSettings(input: unknown): Result<AppSetting> {
     if (!isPlainObject(input)) {
@@ -453,6 +491,19 @@ export function validateSettings(input: unknown): Result<AppSetting> {
         sandboxSetting = validated.getData() ?? DEFAULT_SETTINGS.sandbox
     }
 
+    const rawPlugins = input["plugins"]
+    if (rawPlugins !== undefined && rawPlugins !== null && !isPlainObject(rawPlugins)) {
+        return Result.error<AppSetting>(invalidCode("plugins"))
+    }
+    let pluginsSetting = DEFAULT_PLUGINS
+    if (rawPlugins !== undefined && rawPlugins !== null) {
+        const validated = validatePlugins(rawPlugins)
+        if (!validated.isSuccess()) {
+            return Result.error<AppSetting>(validated.getCode() ?? CONFIG_CODES.invalid)
+        }
+        pluginsSetting = validated.getData() ?? DEFAULT_PLUGINS
+    }
+
     return Result.successWithData<AppSetting>({
         version: SETTING_VERSION,
         logger: { level: rawLevel ?? DEFAULT_SETTINGS.logger.level },
@@ -460,5 +511,6 @@ export function validateSettings(input: unknown): Result<AppSetting> {
         models: modelsSetting,
         network: networkSetting,
         sandbox: sandboxSetting,
+        plugins: pluginsSetting,
     })
 }

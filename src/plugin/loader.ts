@@ -26,7 +26,6 @@ import type {
     AgentTool,
     PluginCommand,
     PluginConfig,
-    PluginLatestVersion,
     PluginStatus,
     WellspringPlugin,
 } from "../api/host/plugin.ts"
@@ -49,15 +48,16 @@ import { createHostCapabilities } from "./capabilities.ts"
 import { PluginDataService } from "./data-access.ts"
 import { ensureAccessGuard } from "./access-guard.ts"
 import { ensureHostAlias } from "./host-alias.ts"
-import { PLUGIN_ID, listPluginDirs, pluginDirOf, pluginsRoot } from "./paths.ts"
+import { listPluginDirs, pluginDirOf, pluginsRoot, PLUGIN_ID, PLUGIN_NAME } from "./paths.ts"
+import { manifestLocalName, readPluginManifest } from "./manifest.ts"
 import { PluginRegistry } from "./registry.ts"
 import { createHostAgentService, type HostAgentService } from "./agent-service.ts"
 import { createHostModelsService } from "./models-service.ts"
 import { createHostNetworkService } from "./network-service.ts"
 import { loadPluginConfig } from "./runtime.ts"
 import { readPluginState, setPluginEnabled } from "./state.ts"
-import { removeVersionProbe, setVersionProbe } from "./version-probes.ts"
 import { createHostMigrator } from "./migrate.ts"
+import { sourceOptionsOf } from "./update.ts"
 import {
     createHostPluginManager,
     type HostPluginManager,
@@ -227,33 +227,11 @@ interface PluginEntry {
 }
 
 /**
- * 收集插件的版本探针
+ * 插件在宿主侧的归属名
  *
- * 探针在 init 里注册，运行于 sandbox 进程，宿主侧存 RPC 包装
- * init 回报 hasVersionProbe 时才注册
+ * 1.7 起目录名（本地名）就是插件 id，直接用它；参数保留是为了少改调用点。
  */
-function attachVersionProbe(
-    client: PluginSandboxClient,
-    owner: string,
-    ready: { readonly hasVersionProbe?: boolean },
-): void {
-    if (ready.hasVersionProbe !== true) {
-        return
-    }
-    setVersionProbe(owner, async () => {
-        const value = await client.getLatestVersion()
-        if (value === null || value === undefined) {
-            throw new Error("插件没有注册版本探针")
-        }
-        // 形态交给 version-probes 校验：字符串或 { version, downloadUrl }
-        return value as string | PluginLatestVersion
-    })
-}
-
-function ownerOf(id: string, pkg: PluginPackageJson | null): string {
-    if (typeof pkg?.name === "string" && PLUGIN_ID.test(pkg.name)) {
-        return pkg.name
-    }
+function ownerOf(id: string, _pkg: PluginPackageJson | null): string {
     return id
 }
 
@@ -282,11 +260,10 @@ export function sandboxPermissions(pkg: PluginPackageJson | null): PluginSandbox
         hostApi,
         workspaceRead: read.includes("${workspace}") || write.includes("${workspace}"),
         workspaceWrite: write.includes("${workspace}"),
-        // 默认断网；插件要自己查更新（版本探针访问 npm）才在清单里显式声明
+        // 默认断网；插件自己访问网络（例如查更新）才在清单里显式声明
         network: manifest["network"] === true,
     }
 }
-
 async function loadEntry(
     id: string,
     dir: string,
@@ -393,8 +370,17 @@ async function loadEntry(
             })
             const ready = await client.start({ deferInit: true })
             entry.sandboxClient = client
+            /*
+             * id 以目录/本地名为准：目录名来自清单的 wellspring.name，
+             * setup() 里再写一遍只会漂移。
+             */
+            if (ready.plugin.id !== id) {
+                options.logger.warn(
+                    `插件 id 以本地名为准：${id}（setup() 声明的是 ${ready.plugin.id}）`,
+                )
+            }
             entry.plugin = {
-                id: ready.plugin.id,
+                id,
                 name: ready.plugin.name,
                 version: ready.plugin.version,
                 status: ready.plugin.status,
@@ -420,11 +406,6 @@ async function cleanupEntry(entry: PluginEntry, options: LoadPluginsOptions): Pr
     }
     options.agentTools?.removePlugin(entry.plugin?.id ?? entry.owner)
     removeHooksByOwner(entry.owner)
-    // 插件已经关掉了，探针再留着只会让检查更新报「sandbox 已关闭」
-    removeVersionProbe(entry.owner)
-    if (entry.plugin !== null) {
-        removeVersionProbe(entry.plugin.id)
-    }
 }
 
 /** 按 deps 做稳定拓扑排序；循环依赖 / 缺失依赖的节点会写入 error */
@@ -629,18 +610,17 @@ async function hotEnableEntry(state: RuntimeState, idOrDir: string): Promise<Plu
     publishHostPlugins(state.entries, state.options.registry)
     try {
         const ready = await entry.sandboxClient.initialize()
-        attachVersionProbe(entry.sandboxClient, entry.owner, ready)
         for (const command of entry.sandboxClient.commandStubs()) {
-            state.options.registry.register(ready.plugin.id, command)
+            state.options.registry.register(entry.id, command)
         }
         for (const tool of entry.sandboxClient.agentToolStubs()) {
-            state.options.agentTools?.register(ready.plugin.id, tool)
+            state.options.agentTools?.register(entry.id, tool)
         }
         await setPluginEnabled(id, true, state.paths)
-        await emitInitHooksForOwner(ready.plugin.id)
+        await emitInitHooksForOwner(entry.id)
         refreshDataAccess(state)
         publishHostPlugins(state.entries, state.options.registry)
-        return { ok: true, id: ready.plugin.id, changed: true }
+        return { ok: true, id: entry.id, changed: true }
     } catch (error) {
         entry.error = errorText(error)
         await cleanupEntry(entry, state.options)
@@ -866,6 +846,7 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
         paths: resolvedPaths,
         logger: options.logger,
         runtime: controllerOf(state),
+        sources: sourceOptionsOf(options.config),
     })
     state.pluginManager = pluginManager
     const migrator = createHostMigrator({ paths: resolvedPaths, logger: options.logger })
@@ -928,12 +909,11 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
         if (entry.sandboxClient !== null) {
             try {
                 const ready = await entry.sandboxClient.initialize()
-                attachVersionProbe(entry.sandboxClient, entry.owner, ready)
                 for (const command of entry.sandboxClient.commandStubs()) {
-                    options.registry.register(ready.plugin.id, command)
+                    options.registry.register(entry.id, command)
                 }
                 for (const tool of entry.sandboxClient.agentToolStubs()) {
-                    options.agentTools?.register(ready.plugin.id, tool)
+                    options.agentTools?.register(entry.id, tool)
                 }
                 finished.add(entry)
             } catch (error) {
@@ -1002,19 +982,21 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
  * 存在性用 lstat：悬空符号链接的 stat 为 ENOENT，会被判成不存在，
  * 随后的 symlink 撞 EEXIST 再回落 cp，报 Cannot overwrite non-directory with directory
  */
+/** 没有清单时用目录名兜底：清洗成合法本地名 */
+function localNameFromDir(dir: string): string | null {
+    const cleaned = basename(dir).replace(/[^A-Za-z0-9._-]/g, "-")
+    return PLUGIN_NAME.test(cleaned) ? cleaned : null
+}
 export async function linkPlugin(
     sourcePath: string,
     paths: ResolvedPaths = getPaths(),
 ): Promise<string> {
     const source = resolve(sourcePath)
-    const pkg = await readJsonIfExists<PluginPackageJson>(join(source, "package.json")).catch(
-        () => null,
-    )
-    // id 取 package.json 的 name，缺失时用目录名
-    const declared = typeof pkg?.name === "string" && PLUGIN_ID.test(pkg.name) ? pkg.name : null
-    const name = declared ?? basename(source)
-    if (!PLUGIN_ID.test(name)) {
-        throw new Error(`插件目录名不合法：${name}`)
+    const pkg = await readPluginManifest(source)
+    // 本地名取 wellspring.name；旧插件没有该字段时回退到包名最后一段 / 目录名
+    const name = manifestLocalName(pkg) ?? localNameFromDir(source)
+    if (name === null || !PLUGIN_NAME.test(name)) {
+        throw new Error(`插件目录名不合法：${basename(source)}`)
     }
 
     const sourceInfo = await stat(source).catch(() => null)

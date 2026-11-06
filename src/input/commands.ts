@@ -46,7 +46,7 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandSpec[] = [
     {
         name: "plugin",
         summary: "插件列表、安装与删除",
-        usage: "wellspring plugin <list|new|install|link|enable|disable|remove> [args]",
+        usage: "wellspring plugin <list|new|install|update|link|enable|disable|remove> [args]",
     },
     {
         name: "sandbox",

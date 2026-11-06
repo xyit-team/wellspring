@@ -18,8 +18,10 @@ npm 包只包含**宿主与 CLI**，不包含插件。Agent 工具、网页端�
 - `wellspring-web` / `wellspring-http` / `wellspring-code` 仍在仓库的 `plugins/` 下，开发时直接 link
 
 ```bash
-wellspring plugin install ./wellspring-core-1.4.1.zip
-wellspring plugin link ./plugins/wellspring-web
+# 官方 core 插件（独立仓库发布）
+wellspring plugin install npm:@etheros/wellspring-core
+# 其它插件同理：github:<owner>/<repo> 或本地路径
+wellspring plugin install github:EtherosGroup/wellspring-web
 ```
 
 只安装 npm 包时 CLI 与宿主可以运行，但 Agent 没有工具，网页端也不会启动。
@@ -344,27 +346,40 @@ await api.capabilities.webFetch("https://example.com")
 
 ## 插件命名
 
-插件 id 支持可选的 `@scope/` 前缀，规则同 npm：
+插件在本地有两个身份，分开声明：
 
-```text
-hello-plugin               # 无 scope
-@etheros/wellspring-core   # 带 scope
+```json
+{
+    "name": "@xyit/test",
+    "version": "1.4.2",
+    "wellspring": {
+        "apiVersion": 1,
+        "name": "demo",
+        "npm": "@xyit/test",
+        "github": "EtherosGroup/wellspring-server"
+    }
+}
 ```
 
-允许字符：`A-Z a-z 0-9 . _ -`，每段最长 64，`@scope` 与名字之间用 `/` 分隔。
-`..`、绝对路径、盘符与多级路径一律拒绝。
+- **`wellspring.name`（本地名）**：目录、插件 id、`plugin-data`、配置文件都用它。显式声明，
+  不从 npm 包名推导——没有 npm / github 的本地插件照样能装、能测。
+  规则：字母数字开头，允许 `A-Z a-z 0-9 . _ -`，最长 64。
+- **`package.json` 的 `name`**：npm 发布身份，可以带 `@scope/`，与本地名无关。
+- **`wellspring.npm` / `wellspring.github`**：更新来源，都可选；没有声明时 `plugin update` 会明确报错，
+  `plugin list --check` 标记「未声明更新源」。
 
-目录按 npm 惯例嵌套，无 scope 时与旧版完全一致：
+目录是单层的：
 
 ```text
-<dataDir>/plugins/@etheros/wellspring-core/
-<dataDir>/plugin-data/@etheros/wellspring-core/
-<configDir>/plugins/@etheros/wellspring-core.json
+<dataDir>/plugins/demo/
+<dataDir>/plugin-data/demo/
+<configDir>/plugins/demo.json
 ```
 
-- `plugin install` 读 zip 或 tarball 内 `package.json` 的 `name` 决定落点，带 scope 时自动建 scope 目录
-- `plugin enable/disable/remove/list --check` 接受完整 id；也接受 package.json 的 `name` 匹配
-- `plugins-state.json` 的禁用项以完整 id 为 key，旧的扁平名继续有效
+- `plugin install` 读包里的 `wellspring.name` 决定落点；没有该字段的旧包回退到包名最后一段
+  （`@xyit/test` → `test`），并提示补字段
+- `setup()` 返回的 `id` 应与本地名一致；不一致时以本地名为准并打 warning
+- 1.7 之前的 `plugins/@scope/name` 布局仍可读（列表里标「旧布局」），`plugin update` 成功后自动迁到单层
 - 宿主与 sandbox 内的插件进程共用 `api/host/plugin.ts` 里的 `PLUGIN_ID`，两侧规则不会漂移
 
 ## 插件数据互访
@@ -388,7 +403,7 @@ if (other) {
 
 ```bash
 node src/index.ts plugin new my-plugin --dir ./plugins
-node src/index.ts plugin link ./plugins/my-plugin      # 开发时链接（只改文件，不启动插件）
+node src/index.ts plugin link ./my-plugin               # 开发时链接（只改文件，不启动插件）
 node src/index.ts plugin install ./plugins/my-plugin    # 目录或 zip；有依赖会按 packageManager 自动安装
 node src/index.ts plugin update  ./dist/my-plugin.zip    # 覆盖已安装的同名插件；link 进来的开发插件不会被覆盖
 node src/index.ts plugin remove <name>                     # 不存在会报错；被依赖时拒绝，加 --ignore 强制删除
@@ -396,10 +411,10 @@ node src/index.ts plugin list
 node src/index.ts plugin list --check                        # 顺带问每个插件「最新版本是多少」
 ```
 
-主仓库自带官方插件：[plugins/wellspring-web](plugins/wellspring-web)、[plugins/wellspring-http](plugins/wellspring-http)、
-[plugins/wellspring-code](plugins/wellspring-code)。
-`wellspring-core` 已独立成 [EtherosGroup/wellspring-core](https://github.com/EtherosGroup/wellspring-core)，
-从 npm / GitHub Release 单独升级。
+主仓库不再内置任何插件：官方插件各自成仓库、各自发版，用来源装进来
+（`npm:<包名>`、`github:<owner>/<repo>` 或本地路径）。例如
+[EtherosGroup/wellspring-core](https://github.com/EtherosGroup/wellspring-core) 对应
+`npm:@etheros/wellspring-core`。
 
 ### 插件依赖与 zip 分发
 
@@ -426,39 +441,46 @@ node src/index.ts plugin list --check                        # 顺带问每个�
 
 ### 让宿主知道有新版本
 
-插件自己知道最新版本在哪儿（npm registry、GitHub Release、自建更新服务），宿主不该写死。
-所以在 `init` 里交出一个异步探针：
+更新来源写在插件自己的 `package.json` 里（`wellspring.npm` / `wellspring.github`），
+宿主自己查——插件不再注册探针，也不需要联网权限：
 
-```ts
-export function setup() {
-    return {
-        id: "my-plugin",
-        name: "My Plugin",
-        version: "0.1.0",
-        status: "ok",
-        init(api) {
-            api.registerVersionProbe?.(async () => ({
-                version: "0.2.0",
-                downloadUrl: "https://example.com/my-plugin-0.2.0.zip",
-            }))
-        },
+```json
+{
+    "wellspring": {
+        "apiVersion": 1,
+        "name": "demo",
+        "npm": "@xyit/test",
+        "github": "EtherosGroup/wellspring-test"
     }
 }
 ```
 
-- 只报版本号时返回字符串：`async () => "0.2.0"`
-- `downloadUrl` 可选，**给出时必须是 http/https 的 .zip**（安装入口只接受 zip 包）
-  tarball 与仓库页面在检查阶段报错
-- 探针仅在 `plugin list --check` 或宿主 `plugins.checkUpdates()` 时调用，**加载插件时不发起网络请求**
-- 单个探针抛错 / 超时（10 秒）/ 返回空只影响这一项
-- 每个插件一个探针，重复注册报错
+```bash
+wellspring plugin list --check     # 只读清单 + 查网络，不再启动插件进程
+wellspring plugin update demo      # 用配置里的默认渠道（plugins.update.type）
+wellspring plugin update demo --type github
+wellspring plugin update demo --type file --from ./demo   # 本地开发包
+wellspring plugin update demo --check                     # 只看有没有新版
+```
 
-比较按 semver 规则（预发布低于同号正式版）；解析不出版本号的值（`latest` 这类标签）不计为更新。
+- npm 渠道取 `${plugins.update.registry}/<包名>/latest` 的 `dist.tarball`
+- GitHub 渠道先找 Release 的 `.zip` 资产，没有再回落源码 tarball（codeload）
+- 没有声明对应来源时报错，不会静默跳过；比较按 semver 规则
+- **有正在运行的 Wellspring 服务时 `plugin update` 直接拒绝**：先 `wellspring stop`
+- 安装时的来源记录进已装 `package.json` 的 `wellspring.source`，`--type file` 不再传 `--from` 也能重装
+
+配置项：
+
+```bash
+wellspring config set plugins.update.type npm        # npm / github / file
+wellspring config set plugins.update.registry https://registry.npmjs.org
+wellspring config set plugins.update.githubToken <token>   # 私有仓库才需要
+```
 
 ```text
 $ wellspring plugin list --check
-wellspring-core  @etheros/wellspring-core@1.4.0  enabled  deps=-
-  可更新：1.4.0 → 1.4.1  下载：https://github.com/EtherosGroup/wellspring-core/releases/download/v1.4.1/wellspring-core-1.4.1.zip
+wellspring-core  @etheros/wellspring-core@1.4.1  enabled  deps=-
+  可更新（npm）：1.4.1 → 1.4.2  下载：https://registry.npmjs.org/@etheros/wellspring-core/-/wellspring-core-1.4.2.tgz
 ```
 
 ### 发版产物
@@ -466,10 +488,9 @@ wellspring-core  @etheros/wellspring-core@1.4.0  enabled  deps=-
 推 `v*` 标签会触发两个工作流：
 
 - `publish-npm.yml`：类型检查、全量测试、构建、tarball 冒烟后发布 npm；
-- `release.yml`：把主仓库的 `plugins/*/` 打包成 `<插件名>-<版本>.zip`（不含 `node_modules`，附带根 LICENSE），
-  连同 `SHA256SUMS` 与 `PLUGINS.md`（插件清单）一起附到同名 GitHub Release。
+  主仓库只发宿主 npm 包；插件由各自的仓库发版（npm 包 / GitHub Release zip）。
 
-Release 里的插件 zip 可以直接用 `wellspring plugin install <zip>` 或网页「插件管理」上传安装；
+插件 zip 或 npm tarball 都可以用 `wellspring plugin install <来源>` 安装，
 依赖会按插件 `package.json` 的 `packageManager` 在安装端自动安装。
 
 **插件版本独立于宿主版本**，以各自 `package.json` 的 `version` 为准（`setup()` 里写的 `version`
@@ -535,7 +556,8 @@ onShutdown(() => {
 - `init(api)` 在每次加载插件时都会执行；`onInit` 只由 `wellspring start` 触发，`run` / `chat` 等命令不会触发（`plugin list` 默认也不加载插件，加 `--check` 才加载）
 - 插件配置：`<configDir>/plugins/<id>.json`，通过 `api.pluginConfig` / `ctx.pluginConfig` 读取
 - 插件数据：`<dataDir>/plugin-data/<id>/`，通过 `api.pluginDataDir` / `ctx.pluginDataDir` 使用
-- `api.registerVersionProbe(fn)` 在 `init` 里交出「最新版本」，供 `plugin list --check` 使用（见上文「让宿主知道有新版本」）
+- 插件不注册版本探针：更新来源写在 `package.json` 的 `wellspring.npm` / `wellspring.github`，
+  宿主自己查（见上文「让宿主知道有新版本」）；`plugin list --check` 不再加载插件进程
 - `deps` 声明插件依赖，加载器会按依赖拓扑排序；缺失依赖或循环依赖会标记失败
 - `plugin disable <name>` / `plugin enable <name>` 会把状态写到 `<dataDir>/plugins-state.json`，下次运行生效
 - 插件里的 `console.*` 会被拦截，输出用 `ctx.logger` / `ctx.output` / `api.logger`
@@ -706,7 +728,7 @@ list / stat / mkdir / remove / exists
 ```
 
 ```bash
-cd plugins/wellspring-web
+cd <插件仓库目录>
 pnpm exec tsc --noEmit
 ```
 
@@ -832,22 +854,22 @@ export function setup() {
   超限响应返回 `502`。需要传大文件请按分片接口设计
 - 启动失败（端口占用 / 重名 / TLS 不合法）会让 `registerHttpServer` reject，可以按失败插件处理
 - 插件 `onShutdown` 里 `await server.close()`；wellspring-http 关闭时所有托管服务器一起关闭
-- 细节、完整事件表与错误码见 [`plugins/wellspring-http/README.md`](plugins/wellspring-http/README.md)
+- 细节、完整事件表与错误码见 `wellspring-http` 插件仓库的 README
 
 因为 `deps` 是硬依赖，没链接 `wellspring-http`（或它被禁用）时依赖方会以「依赖不存在 / 依赖被禁用」失败。
 `package.json` 里也不再需要 `hostApi: ["http"]`——`api.http` 只剩 wellspring-http 自己使用。
 
-前端可以自由选择框架。`wellspring-web` 使用 **Vue 3 + Vite**：前端源码在 `plugins/wellspring-web/frontend/`，
+前端可以自由选择框架。`wellspring-web` 使用 **Vue 3 + Vite**：前端源码在插件仓库的 `frontend/`，
 构建产物打包成插件内 TS 资源，由插件自己的 HTTP 服务同源下发（严格 CSP，无 `unsafe-eval`、无外部 CDN）。
-改前端后执行 `node plugins/wellspring-web/scripts/build-ui.mjs` 再重启服务。
+改前端后执行插件仓库里的 `scripts/build-ui.mjs`（生成 UI 资源）再重启服务。
 
 ### wellspring-http 插件
 
-`plugins/wellspring-http` 是平台里唯一的 HTTP 服务器管理器：校验注册参数、创建 HTTP/HTTPS/WebSocket
+`wellspring-http` 插件是平台里唯一的 HTTP 服务器管理器：校验注册参数、创建 HTTP/HTTPS/WebSocket
 服务器、把请求转发给注册方、注销与关闭时统一释放端口，并广播 `wellspring-http:servers` 列表。
 
 ```bash
-wellspring plugin link plugins/wellspring-http
+wellspring plugin install npm:<wellspring-http 包名>
 ```
 
 - 事件频道：`wellspring-http:register` / `wellspring-http:unregister`，每个服务器的
@@ -859,11 +881,11 @@ wellspring plugin link plugins/wellspring-http
 
 ### Web 插件
 
-`plugins/wellspring-web` 提供网页聊天界面，依赖 `wellspring-http`：
+`wellspring-web` 插件提供网页聊天界面，依赖 `wellspring-http`：
 
 ```bash
-wellspring plugin link plugins/wellspring-http
-wellspring plugin link plugins/wellspring-web
+wellspring plugin install npm:<wellspring-http 包名>
+wellspring plugin install npm:<wellspring-web 包名>
 wellspring start
 ```
 
@@ -951,18 +973,18 @@ wellspring start
 { "host": "0.0.0.0", "port": 8787 }
 ```
 
-路由、配置与设计说明见 [`plugins/wellspring-web/README.md`](plugins/wellspring-web/README.md)。
+路由、配置与设计说明见 `wellspring-web` 插件仓库的 README。
 
 ### Code 插件（VS Code 风格）
 
-`plugins/wellspring-code` 提供浏览器里的 VS Code 风格代码编辑器，只依赖 `wellspring-http`
+`wellspring-code` 插件提供浏览器里的 VS Code 风格代码编辑器，只依赖 `wellspring-http`
 （Web 插件是可选搭配：装了就多一个侧栏入口）：
 
 ```bash
-wellspring plugin link plugins/wellspring-http
-wellspring plugin link plugins/wellspring-code
+wellspring plugin install npm:<wellspring-http 包名>
+wellspring plugin install npm:<wellspring-code 包名>
 # 可选：网页聊天界面
-wellspring plugin link plugins/wellspring-web
+wellspring plugin install npm:<wellspring-web 包名>
 wellspring start
 ```
 
@@ -997,7 +1019,7 @@ wellspring start
   语法高亮由插件自带的词法着色实现；语法诊断只做括号/字符串/注释/JSON 的结构检查，不做语义分析；
   转到定义只查当前文件与已打开标签里的符号名；工作区符号索引按行级正则扫描文本文件，不做类型解析
 
-路由、快捷键与设计说明见 [`plugins/wellspring-code/README.md`](plugins/wellspring-code/README.md)。
+路由、快捷键与设计说明见 `wellspring-code` 插件仓库的 README。
 
 ### 宿主信息
 
@@ -1037,10 +1059,11 @@ off()
 
 - 配置：`<configDir>/app-setting.json`；API Key：`<configDir>/credentials.json`（0600，与环境变量分开）
 - 会话：`<dataDir>/sessions/<cwd桶>/<sessionId>/`，`turns/NNNN.jsonl.zstd` 是事件段；一轮会在开始、每步结束和收尾时各落一段，中断后已产生的部分可回放
-- 插件：`<dataDir>/plugins/<name>/`，入口导出 `setup(): WellspringPlugin`；支持 `plugin install <zip|目录>`
-- 工作区注册表：`<dataDir>/workspaces.json`（宿主级，`wellspring-web` 通过 `api.workspaces` 访问）；
-  `wellspring-code` 使用自己的 `<dataDir>/plugin-data/wellspring-code/workspaces.json`
-- 插件配置/数据：`<configDir>/plugins/<id>.json`、`<dataDir>/plugin-data/<id>/`
+- 插件：`<dataDir>/plugins/<本地名>/`，入口导出 `setup(): WellspringPlugin`；
+  来源支持 `plugin install npm:<包名>` / `github:<owner>/<repo>` / 本地路径
+- 工作区注册表：`<dataDir>/workspaces.json`（宿主级，网页插件通过 `api.workspaces` 访问）；
+  代码编辑器插件使用自己的 `<dataDir>/plugin-data/<本地名>/workspaces.json`
+- 插件配置/数据：`<configDir>/plugins/<本地名>.json`、`<dataDir>/plugin-data/<本地名>/`
 - 服务状态：`<dataDir>/service.json`
 - 日志：`<logDir>/app.log`；human 模式 Pino 只写文件，终端输出走 `elog4js`
 

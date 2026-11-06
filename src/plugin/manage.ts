@@ -21,7 +21,9 @@ import type {
     HostPluginsApi,
 } from "../api/host/plugins.ts"
 import type { ResolvedPaths } from "../platform/path.ts"
-import { checkPluginUpdates } from "./version-probes.ts"
+import { manifestGithub, manifestLocalName, manifestNpm, readPluginManifest } from "./manifest.ts"
+import type { SourceOptions } from "./sources.ts"
+import { checkPluginUpdates } from "./update-check.ts"
 import {
     ensureDir,
     readJsonIfExists,
@@ -30,7 +32,7 @@ import {
     writeBytesAtomic,
 } from "../platform/file.ts"
 import { installPlugin } from "./install.ts"
-import { PLUGIN_ID, listPluginDirs, pluginDirOf, pluginsRoot } from "./paths.ts"
+import { listPluginDirs, pluginDirOf, pluginsRoot } from "./paths.ts"
 import { readPluginState, setPluginEnabled } from "./state.ts"
 
 const WEB_PLUGIN_ID = "wellspring-web"
@@ -64,6 +66,8 @@ export interface HostPluginManagerOptions {
     readonly getHostPlugins?: () => readonly HostPlugin[]
     /** 提供热启用/禁用；没有时一律写状态并要求重启 */
     readonly runtime?: PluginHotController
+    /** 检查更新用的来源参数（registry / token / 代理） */
+    readonly sources?: SourceOptions
 }
 
 export interface HostPluginManager extends HostPluginsApi {}
@@ -98,14 +102,16 @@ export function createHostPluginManager(options: HostPluginManagerOptions): Host
         const entries: ScannedPlugin[] = []
         for (const found of await listPluginDirs(root)) {
             const dirPath = found.dir
-            const pkg = await readJsonIfExists<{ name?: unknown; version?: unknown }>(
-                join(dirPath, "package.json"),
-            )
+            const manifest = await readPluginManifest(dirPath)
+            /* 本地名：清单 wellspring.name；旧插件回退到目录名（兼容 @scope 布局） */
+            const localName = manifestLocalName(manifest) ?? found.dirName
             const pkgName =
-                typeof pkg?.name === "string" && PLUGIN_ID.test(pkg.name) ? pkg.name : null
+                typeof manifest?.name === "string" && manifest.name.trim() !== ""
+                    ? manifest.name.trim()
+                    : null
             const matched =
                 loaded.find((plugin) => plugin.id === found.id) ??
-                (pkgName === null ? undefined : loaded.find((plugin) => plugin.id === pkgName))
+                loaded.find((plugin) => plugin.id === localName)
             const enabled = !disabled.has(found.id)
             let status: HostPluginEntryStatus
             if (!enabled) status = "disabled"
@@ -115,10 +121,11 @@ export function createHostPluginManager(options: HostPluginManagerOptions): Host
                 status = hostStatus === "disabled" ? "disabled" : hostStatus
             }
             entries.push({
-                id: matched?.id ?? pkgName ?? found.id,
-                name: matched?.name ?? pkgName ?? found.id,
+                id: matched?.id ?? localName,
+                name: matched?.name ?? pkgName ?? localName,
                 version:
-                    matched?.version ?? (typeof pkg?.version === "string" ? pkg.version : "0.0.0"),
+                    matched?.version ??
+                    (typeof manifest?.version === "string" ? manifest.version : "0.0.0"),
                 status,
                 enabled,
                 deps: matched?.deps ?? [],
@@ -167,20 +174,22 @@ export function createHostPluginManager(options: HostPluginManagerOptions): Host
         },
 
         /**
-         * 检查更新：探针由插件注册，此处负责并发调用与失败隔离
-         * 停用的插件一并检查
+         * 检查更新：按清单里的 wellspring.npm / wellspring.github 查；停用的插件一并检查
          */
         async checkUpdates(): Promise<HostPluginUpdateResult> {
             try {
                 const entries = await scan()
-                const checks = await checkPluginUpdates(
-                    entries.map((entry) => ({
+                const targets = []
+                for (const entry of entries) {
+                    const manifest = await readPluginManifest(entry.dirPath)
+                    targets.push({
                         id: entry.id,
                         version: entry.version,
-                        // 探针按归属名注册，可能和对外 id 不同
-                        probeIds: [entry.dir, entry.name],
-                    })),
-                )
+                        npm: manifestNpm(manifest),
+                        github: manifestGithub(manifest),
+                    })
+                }
+                const checks = await checkPluginUpdates(targets, options.sources ?? {})
                 return { plugins: checks }
             } catch (error) {
                 logger.warn({ error: errorText(error) }, "检查插件更新失败")

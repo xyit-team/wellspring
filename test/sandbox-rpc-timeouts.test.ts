@@ -37,8 +37,12 @@ test("无上限的 RPC 必须自己有时间界", async () => {
     assert.match(agentService, /const PICKER_TIMEOUT_MS = 300_000/)
     assert.match(agentService, /PICKER_TIMEOUT_MS,\s*\)/)
 
-    const probes = await readFile(join(projectRoot, "src", "plugin", "version-probes.ts"), "utf8")
-    assert.match(probes, /VERSION_PROBE_TIMEOUT_MS = 10_000/)
+    // 更新检查：宿主按清单来源查，单次查询 20 秒超时
+    const updateCheck = await readFile(
+        join(projectRoot, "src", "plugin", "update-check.ts"),
+        "utf8",
+    )
+    assert.match(updateCheck, /UPDATE_CHECK_TIMEOUT_MS = 20_000/)
 
     // 联网工具：客户端按 openai.timeoutMs 超时
     const capabilities = await readFile(

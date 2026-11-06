@@ -1,20 +1,3 @@
-# 自动发布 npm：@xyit/wellspring
-#
-# 入口两个：
-#   1. 推 v* 标签时自动发布（如 v1.0.0）
-#   2. 手动触发（Actions 页面或 gh workflow run publish-npm.yml）：dry-run 默认 true，只演练
-#
-# 授权优先用 npm Trusted Publishing（OIDC），不需要长期 token：
-#   npmjs.com -> @xyit/wellspring -> Settings -> Trusted Publisher -> GitHub Actions
-#   仓库填 <owner>/<repo>，工作流文件名填 publish-npm.yml
-#   npm 认的是「触发这次运行的入口工作流」，所以本文件改名后要同步改 npm 侧配置；
-#   被别的文件用 workflow_call 调用时拿不到正确的 OIDC，会回 404。
-#   还没配 Trusted Publishing 时，也可以新建仓库 Secret：NPM_TOKEN（npm Automation token，带 publish 权限），
-#   并取消「发布」步骤下面 env 的注释。
-#
-# 发布包不包含 plugins/，但包含 dist/（编译产物）和 src/（宿主运行 sandbox 插件需要的 TS SDK）。
-# 发布前会构建、核对标签版本、检查该版本是否已发布，并把 tarball 装进空项目跑一次冒烟。
-
 name: publish-npm
 
 on:
@@ -56,14 +39,6 @@ jobs:
             - name: 安装依赖（严格按 lockfile）
               run: pnpm install --frozen-lockfile
 
-            - name: 安装插件依赖
-              # plugins/ 不在根 pnpm workspace 里；网页扩展编译要用 @vue/compiler-sfc，
-              # 前端测试也会直接用 frontend 的 vue，因此分别按各自的 lockfile 安装
-              run: |
-                  set -euo pipefail
-                  npm ci --prefix plugins/wellspring-web --no-audit --no-fund
-                  npm ci --prefix plugins/wellspring-web/frontend --no-audit --no-fund
-
             - name: 类型检查
               run: pnpm typecheck
 
@@ -84,10 +59,6 @@ jobs:
                   grep -q "dist/index.js" /tmp/pack.txt
                   grep -q "src/index.ts" /tmp/pack.txt
                   grep -q "src/sandbox/pty-bridge.py" /tmp/pack.txt
-                  if grep -q "plugins/" /tmp/pack.txt; then
-                    echo "发布包里不应包含 plugins/"
-                    exit 1
-                  fi
                   grep -E "total files|package size|unpacked size" /tmp/pack.txt
 
             # 推标签进来的那条路：发出去的版本号必须与标签一致

@@ -51,8 +51,6 @@
         "format": "oxfmt",
         "format:check": "oxfmt --check",
         "pty:build": "node scripts/build-node-pty.mjs",
-        "build:web-ui": "node plugins/wellspring-web/scripts/build-ui.mjs",
-        "typecheck:web-ui": "node plugins/wellspring-web/scripts/check-ui.mjs",
         "build": "tsc -p tsconfig.build.json && node scripts/rewrite-dts.mjs",
         "prepack": "npm run build",
         "seatbelt:build": "node scripts/build-seatbelt.mjs",

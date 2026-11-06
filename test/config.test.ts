@@ -42,6 +42,13 @@ test("默认配置已冻结", () => {
             activeReasoning: "off",
         },
         network: { proxy: null },
+        plugins: {
+            update: {
+                type: "npm",
+                registry: "https://registry.npmjs.org",
+                githubToken: null,
+            },
+        },
         sandbox: {
             mode: "strict",
             backend: "auto",
@@ -57,6 +64,7 @@ test("默认配置已冻结", () => {
     assert.equal(Object.isFrozen(DEFAULT_SETTINGS.openai), true)
     assert.equal(Object.isFrozen(DEFAULT_SETTINGS.models), true)
     assert.equal(Object.isFrozen(DEFAULT_SETTINGS.network), true)
+    assert.equal(Object.isFrozen(DEFAULT_SETTINGS.plugins), true)
     assert.equal(Object.isFrozen(DEFAULT_SETTINGS.sandbox), true)
 })
 
@@ -69,6 +77,7 @@ test("validateSettings 接受完整配置", () => {
         openai: DEFAULT_SETTINGS.openai,
         models: DEFAULT_SETTINGS.models,
         network: DEFAULT_SETTINGS.network,
+        plugins: DEFAULT_SETTINGS.plugins,
         sandbox: DEFAULT_SETTINGS.sandbox,
     })
 })
@@ -87,6 +96,7 @@ test("validateSettings 忽略未声明字段", () => {
         openai: DEFAULT_SETTINGS.openai,
         models: DEFAULT_SETTINGS.models,
         network: DEFAULT_SETTINGS.network,
+        plugins: DEFAULT_SETTINGS.plugins,
         sandbox: DEFAULT_SETTINGS.sandbox,
     })
 })
@@ -281,6 +291,7 @@ test("saveSettings 写盘后可读回", async () => {
         openai: DEFAULT_SETTINGS.openai,
         models: DEFAULT_SETTINGS.models,
         network: DEFAULT_SETTINGS.network,
+        plugins: DEFAULT_SETTINGS.plugins,
         sandbox: DEFAULT_SETTINGS.sandbox,
     })
 })
@@ -309,6 +320,7 @@ test("saveSettings 丢弃未声明字段", async () => {
         openai: DEFAULT_SETTINGS.openai,
         models: DEFAULT_SETTINGS.models,
         network: DEFAULT_SETTINGS.network,
+        plugins: DEFAULT_SETTINGS.plugins,
         sandbox: DEFAULT_SETTINGS.sandbox,
     })
 })

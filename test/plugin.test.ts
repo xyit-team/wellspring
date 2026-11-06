@@ -608,8 +608,9 @@ test("依赖按拓扑排序初始化：目录名靠前的依赖后执行", async
             "    }",
             "}",
         ].join("\n")
-    await writeCustomPlugin(dataDir, "z-base", source("base", []))
-    await writeCustomPlugin(dataDir, "a-child", source("child", ["base"]))
+    /* 1.7 起 id 与依赖名都是本地名（目录名）：依赖写在 z-base 上、目录顺序却在后面 */
+    await writeCustomPlugin(dataDir, "z-base", source("z-base", []))
+    await writeCustomPlugin(dataDir, "a-child", source("a-child", ["z-base"]))
 
     try {
         const registry = new PluginRegistry()
@@ -624,7 +625,7 @@ test("依赖按拓扑排序初始化：目录名靠前的依赖后执行", async
             plugins.map((plugin) => plugin.status),
             ["ok", "ok"],
         )
-        assert.deepEqual(order, ["base", "child"])
+        assert.deepEqual(order, ["z-base", "a-child"])
     } finally {
         off()
     }
@@ -913,7 +914,7 @@ test("热禁用：wellspring-web 被拒绝，只能走重启流程", async () =>
     const dataDir = join(root, "hot-data-web")
     await writeSourcePlugin(
         dataDir,
-        "web-plugin",
+        "wellspring-web",
         [
             "export function setup() {",
             "    return {",

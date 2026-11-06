@@ -11,7 +11,8 @@ import {
     writeJsonAtomic,
     writeTextAtomic,
 } from "../platform/file.ts"
-import { PLUGIN_ID } from "./paths.ts"
+import { PLUGIN_ID, PLUGIN_NAME } from "./paths.ts"
+import { packageLocalName } from "./manifest.ts"
 
 export interface ScaffoldPluginOptions {
     readonly name: string
@@ -120,8 +121,12 @@ export async function scaffoldPlugin(
         throw new Error(`插件名不合法：${name}`)
     }
     const parentDir = resolve(options.parentDir ?? process.cwd())
-    // scope 名按 npm 惯例落成嵌套目录
-    const dir = join(parentDir, ...name.split("/"))
+    /* 本地名取包名最后一段：@scope/demo → 目录 demo */
+    const localName = packageLocalName(name)
+    if (localName === null || !PLUGIN_NAME.test(localName)) {
+        throw new Error(`插件本地名不合法：${name}`)
+    }
+    const dir = join(parentDir, localName)
     const existing = await statIfExists(dir)
     if (existing !== null) {
         if (options.force !== true) {
@@ -138,7 +143,7 @@ export async function scaffoldPlugin(
         packageManager: "npm@11.20.0",
         type: "module",
         main: "index.ts",
-        wellspring: { apiVersion: 1 },
+        wellspring: { apiVersion: 1, name: localName },
     })
     await writeTextAtomic(join(dir, "index.ts"), template(name, commandName))
     await writeJsonAtomic(join(dir, "tsconfig.json"), {

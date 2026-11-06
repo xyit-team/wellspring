@@ -77,6 +77,22 @@ export interface SandboxSetting {
     readonly outputLimitBytes: number
 }
 
+/** 插件更新默认渠道 */
+export type PluginUpdateType = "npm" | "github" | "file"
+
+export interface PluginUpdateSetting {
+    /** 不指定 --type 时用它 */
+    readonly type: PluginUpdateType
+    /** npm registry；自建镜像可改 */
+    readonly registry: string
+    /** 私有 GitHub 仓库需要的 token；null 表示不带认证 */
+    readonly githubToken: string | null
+}
+
+export interface PluginsSetting {
+    readonly update: PluginUpdateSetting
+}
+
 export interface AppSetting {
     readonly version: number
     readonly logger: LoggerSetting
@@ -85,4 +101,6 @@ export interface AppSetting {
     readonly models?: ModelsSetting
     readonly network: NetworkSetting
     readonly sandbox: SandboxSetting
+    /** 插件相关设置；旧配置没有这一节时按默认值处理 */
+    readonly plugins?: PluginsSetting
 }

@@ -1,30 +1,55 @@
 /*
  * plugin 命令：list / new / install / update / link / enable / disable / remove。
+ *
+ * install 支持三种来源：`npm:<包名>[@版本]`、`github:<owner/repo>[@tag]`、本地路径。
+ * update 按清单声明的来源（wellspring.npm / wellspring.github）或安装时记录来源更新；
+ * 有正在运行的 Wellspring 服务时拒绝。
  */
 
+import { mkdtemp } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join, resolve } from "node:path"
 import { readFile } from "node:fs/promises"
-import { basename, join } from "node:path"
 
 import { Result } from "../api/result/result.ts"
 import { USAGE_CODES } from "../input/codes.ts"
 import { booleanValue, parseCommandArgs } from "../input/parse-options.ts"
 import type { ResolvedPaths } from "../platform/path.ts"
-import { statIfExists } from "../platform/file.ts"
+import { removePath, statIfExists } from "../platform/file.ts"
 import { installPlugin } from "../plugin/install.ts"
 import { linkPlugin, removePlugin } from "../plugin/loader.ts"
+import {
+    manifestGithub,
+    manifestLocalName,
+    manifestNpm,
+    readPluginManifest,
+} from "../plugin/manifest.ts"
 import { PLUGIN_ID, listPluginDirs, pluginDirOf, pluginsRoot } from "../plugin/paths.ts"
 import { scaffoldPlugin } from "../plugin/scaffold.ts"
 import { readPluginState, setPluginEnabled } from "../plugin/state.ts"
-import { checkPluginUpdates, type PluginUpdateCheck } from "../plugin/version-probes.ts"
+import { sourceOptionsOf, updatePlugin } from "../plugin/update.ts"
+import { checkPluginUpdates, type PluginUpdateCheck } from "../plugin/update-check.ts"
+import {
+    downloadPluginPackage,
+    parsePluginSpec,
+    resolveGithubRelease,
+    resolveNpmRelease,
+    type PluginSpec,
+} from "../plugin/sources.ts"
 import { failure, success, type CommandContext, type CommandOutcome } from "./shared.ts"
 
 interface ScannedPlugin {
-    /** 完整 id，可带 @scope 前缀 */
+    /** 本地名（目录名 / 插件 id） */
     readonly id: string
-    readonly name: string
+    /** 包名（npm 身份）；没有 package.json 时为 null */
+    readonly name: string | null
     readonly version: string
     readonly enabled: boolean
     readonly deps: readonly string[]
+    /** 1.7 之前的 plugins/@scope/name 布局 */
+    readonly legacy: boolean
+    readonly npm: string | null
+    readonly github: string | null
 }
 
 /** 只扫插件目录的文件，不启动插件进程（plugin list / enable / disable 用） */
@@ -34,18 +59,12 @@ async function scanPluginDirs(paths: ResolvedPaths): Promise<ScannedPlugin[]> {
     const plugins: ScannedPlugin[] = []
     for (const found of await listPluginDirs(root)) {
         const dir = found.dir
-        let name = found.id
-        let version = "0.0.0"
-        try {
-            const pkg = JSON.parse(await readFile(join(dir, "package.json"), "utf8")) as {
-                name?: unknown
-                version?: unknown
-            }
-            if (typeof pkg.name === "string" && pkg.name !== "") name = pkg.name
-            if (typeof pkg.version === "string" && pkg.version !== "") version = pkg.version
-        } catch {
-            /* 没有 package.json 时用目录名 */
-        }
+        const manifest = await readPluginManifest(dir)
+        const localName = manifestLocalName(manifest) ?? found.dirName
+        const version =
+            typeof manifest?.version === "string" && manifest.version !== ""
+                ? manifest.version
+                : "0.0.0"
         let deps: string[] = []
         try {
             const source = await readFile(join(dir, "index.ts"), "utf8")
@@ -59,44 +78,31 @@ async function scanPluginDirs(paths: ResolvedPaths): Promise<ScannedPlugin[]> {
             /* 读不到入口时按没有依赖处理 */
         }
         plugins.push({
-            id: found.id,
-            name,
+            id: localName,
+            name: manifest?.name ?? null,
             version,
             enabled: !disabled.has(found.id),
             deps: deps.filter((dep) => dep !== ""),
+            legacy: found.legacy,
+            npm: manifestNpm(manifest),
+            github: manifestGithub(manifest),
         })
     }
     return plugins
 }
 
 /** 依赖目标插件的其它插件 */
-function dependentsOf(plugins: readonly ScannedPlugin[], id: string, pluginName: string): string[] {
+function dependentsOf(
+    plugins: readonly ScannedPlugin[],
+    id: string,
+    names: readonly string[],
+): string[] {
     return plugins
         .filter(
             (plugin) =>
-                plugin.id !== id && (plugin.deps.includes(id) || plugin.deps.includes(pluginName)),
+                plugin.id !== id && plugin.deps.some((dep) => dep === id || names.includes(dep)),
         )
         .map((plugin) => plugin.id)
-}
-
-/**
- * 加载插件并获取各自的最新版本
- *
- * 探针在 init 里注册，需先启动插件进程
- * 该开销仅属 `list --check`；普通 list 只读目录
- */
-async function loadAndCheckUpdates(ctx: CommandContext): Promise<Map<string, PluginUpdateCheck>> {
-    await ctx.loadPlugins()
-    const plugins = await scanPluginDirs(ctx.paths)
-    const checks = await checkPluginUpdates(
-        plugins.map((plugin) => ({
-            id: plugin.id,
-            version: plugin.version,
-            // 探针以 package.json 的 name 注册，缺失时退回目录名
-            probeIds: [plugin.name],
-        })),
-    )
-    return new Map(checks.map((check) => [check.id, check]))
 }
 
 /** 检查结果行 */
@@ -104,17 +110,50 @@ function describeUpdate(check: PluginUpdateCheck | undefined): string {
     if (check === undefined) {
         return "检查更新：没有结果"
     }
-    if (!check.hasProbe) {
-        return "检查更新：插件没有注册版本探针"
+    if (!check.hasSource) {
+        return "检查更新：没有声明 wellspring.npm / wellspring.github"
     }
     if (check.error !== null) {
-        return `检查更新失败：${check.error}`
+        return `检查更新失败（${check.channel ?? "来源"}）：${check.error}`
     }
     if (!check.updateAvailable) {
         return `已是最新（${check.installed}）`
     }
     const download = check.downloadUrl === null ? "" : `  下载：${check.downloadUrl}`
-    return `可更新：${check.installed} → ${check.latest}${download}`
+    return `可更新（${check.channel ?? "来源"}）：${check.installed} → ${check.latest}${download}`
+}
+
+/** 从来源装一个新插件；npm/github 会先下载到临时目录 */
+async function installFromSpec(
+    ctx: CommandContext,
+    raw: string,
+    force: boolean,
+): Promise<{ readonly id: string }> {
+    const spec: PluginSpec = parsePluginSpec(raw)
+    if (spec.type === "file") {
+        const target = resolve(spec.path)
+        const installed = await installPlugin(target, ctx.paths, {
+            force,
+            source: { type: "file", spec: target },
+        })
+        return installed
+    }
+    const sourceOptions = sourceOptionsOf(ctx.settings)
+    const release =
+        spec.type === "npm"
+            ? await resolveNpmRelease(spec.name, spec.version, sourceOptions)
+            : await resolveGithubRelease(spec.repo, spec.ref, sourceOptions)
+    const workDir = await mkdtemp(join(tmpdir(), "wellspring-plugin-install-"))
+    try {
+        const file = await downloadPluginPackage(release.url, workDir, sourceOptions)
+        const installed = await installPlugin(file, ctx.paths, {
+            force,
+            source: { type: spec.type, spec: raw.slice(raw.indexOf(":") + 1) },
+        })
+        return installed
+    } finally {
+        await removePath(workDir)
+    }
 }
 
 export async function runPluginCommand(
@@ -126,8 +165,12 @@ export async function runPluginCommand(
         force: { type: "boolean" },
         ignore: { type: "boolean" },
         dir: { type: "string" },
-        // 只对 list 有意义：问每个插件「最新版本是多少」
+        // list / update 用
         check: { type: "boolean" },
+        // update 用：npm / github / file
+        type: { type: "string" },
+        // update --type file 用
+        from: { type: "string" },
     })
     if (!parsed.isSuccess()) {
         return { result: Result.error<unknown>(parsed.getCode() ?? USAGE_CODES.invalidValue) }
@@ -144,22 +187,32 @@ export async function runPluginCommand(
         switch (subcommand) {
             case "list": {
                 const plugins = await scanPluginDirs(ctx.paths)
-                // --check 需插件进程在场（探针在 init 里注册）
-                // 仅此路径加载插件，默认 list 只读目录
-                const updates = check ? await loadAndCheckUpdates(ctx) : null
+                /* --check 只读清单 + 查网络，不再需要启动插件进程 */
+                const updates = check
+                    ? await checkPluginUpdates(
+                          plugins.map((plugin) => ({
+                              id: plugin.id,
+                              version: plugin.version,
+                              npm: plugin.npm,
+                              github: plugin.github,
+                          })),
+                          sourceOptionsOf(ctx.settings),
+                      )
+                    : null
                 for (const plugin of plugins) {
                     const deps = plugin.deps.length === 0 ? "-" : plugin.deps.join(",")
                     const status = plugin.enabled ? "enabled" : "disabled"
+                    const legacy = plugin.legacy ? "  [旧布局]" : ""
                     ctx.elog.print(
-                        `${plugin.id}  ${plugin.name}@${plugin.version}  ${status}  deps=${deps}`,
+                        `${plugin.id}  ${plugin.name ?? plugin.id}@${plugin.version}  ${status}  deps=${deps}${legacy}`,
                     )
                     if (updates === null) continue
-                    ctx.elog.print(`  ${describeUpdate(updates.get(plugin.id))}`)
+                    ctx.elog.print(
+                        `  ${describeUpdate(updates.find((item) => item.id === plugin.id))}`,
+                    )
                 }
                 if (updates !== null) {
-                    const count = [...updates.values()].filter(
-                        (item) => item.updateAvailable,
-                    ).length
+                    const count = updates.filter((item) => item.updateAvailable).length
                     ctx.elog.print(count === 0 ? "没有可用更新" : `${count} 个插件有可用更新`)
                 }
                 return success(plugins)
@@ -196,41 +249,49 @@ export async function runPluginCommand(
                 const match =
                     plugins.find((plugin) => plugin.id === name) ??
                     plugins.find((plugin) => plugin.name === name)
-                const id = match === undefined ? name : match.id
-                const dir = pluginDirOf(pluginsRoot(ctx.paths), id)
-                if (dir === null || (await statIfExists(dir)) === null) {
+                if (match === undefined) {
                     return failure(`plugin.not-found:${name}`)
                 }
                 const enabled = subcommand === "enable"
-                await setPluginEnabled(id, enabled, ctx.paths)
-                ctx.elog.info(`${enabled ? "已启用" : "已禁用"}插件 ${id}（下次运行生效）`)
-                return success({ id, enabled })
+                await setPluginEnabled(match.id, enabled, ctx.paths)
+                ctx.elog.info(`${enabled ? "已启用" : "已禁用"}插件 ${match.id}（下次运行生效）`)
+                return success({ id: match.id, enabled })
             }
             case "install": {
                 const source = line.positionals[0]
                 if (source === undefined) {
-                    return failure(`${USAGE_CODES.missingValue}:path`)
+                    return failure(`${USAGE_CODES.missingValue}:source`)
                 }
-                const installed = await installPlugin(source, ctx.paths, { force })
-                ctx.elog.info(
-                    installed.dependenciesInstalled
-                        ? `已安装插件 ${installed.id}，已用 ${installed.packageManager ?? "包管理器"} 安装依赖`
-                        : `已安装插件 ${installed.id}`,
-                )
+                const installed = await installFromSpec(ctx, source, force)
+                ctx.elog.info(`已安装插件 ${installed.id}`)
                 return success(installed)
             }
             case "update": {
-                const source = line.positionals[0]
-                if (source === undefined) {
-                    return failure(`${USAGE_CODES.missingValue}:path`)
+                const name = line.positionals[0]
+                if (name === undefined) {
+                    return failure(`${USAGE_CODES.missingValue}:name`)
                 }
-                const updated = await installPlugin(source, ctx.paths, { mode: "update" })
-                ctx.elog.info(
-                    updated.dependenciesInstalled
-                        ? `已更新插件 ${updated.id}，已用 ${updated.packageManager ?? "包管理器"} 安装依赖`
-                        : `已更新插件 ${updated.id}`,
-                )
-                return success(updated)
+                const rawType = line.values["type"]
+                const type = typeof rawType === "string" ? rawType.trim() : undefined
+                if (type !== undefined && type !== "npm" && type !== "github" && type !== "file") {
+                    return failure(`${USAGE_CODES.invalidValue}:--type（npm / github / file）`)
+                }
+                const rawFrom = line.values["from"]
+                const result = await updatePlugin(name, {
+                    paths: ctx.paths,
+                    config: ctx.settings,
+                    logger: ctx.logger,
+                    ...(type === undefined ? {} : { type }),
+                    ...(typeof rawFrom === "string" ? { from: rawFrom } : {}),
+                    force,
+                    checkOnly: check,
+                })
+                if (!result.ok) {
+                    ctx.elog.error(result.message)
+                    return failure(`plugin.update-failed:${result.message}`)
+                }
+                ctx.elog.info(result.message)
+                return success(result)
             }
             case "link": {
                 const source = line.positionals[0]
@@ -260,13 +321,18 @@ export async function runPluginCommand(
                     ctx.elog.error(`没有这个插件：${name}（wellspring plugin list 看已装的）`)
                     return failure(`plugin.not-found:${name}`)
                 }
-                const dependents = dependentsOf(plugins, target.id, target.name)
+                const names = [target.name ?? target.id]
+                const dependents = dependentsOf(plugins, target.id, names)
                 if (dependents.length > 0 && !ignore) {
                     ctx.elog.error(
                         `插件 ${target.id} 被这些插件依赖：${dependents.join(", ")}；` +
                             "确认要强制卸载请加 --ignore",
                     )
                     return failure(`plugin.has-dependents:${dependents.join(",")}`)
+                }
+                const dir = pluginDirOf(pluginsRoot(ctx.paths), target.id)
+                if (dir === null || (await statIfExists(dir)) === null) {
+                    return failure(`plugin.not-found:${target.id}`)
                 }
                 await removePlugin(target.id, ctx.paths)
                 // 删掉目录后禁用记录也要跟着清，否则同名的插件重装回来还是禁用态
@@ -281,6 +347,6 @@ export async function runPluginCommand(
         }
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        return failure(`plugin.install-failed:${message}`)
+        return failure(`plugin.failed:${message}`)
     }
 }

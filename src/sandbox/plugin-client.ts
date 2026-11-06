@@ -144,7 +144,6 @@ export interface SandboxPluginReady {
     readonly agentTools: readonly SandboxAgentToolMeta[]
     readonly hooks: readonly string[]
     /** init 里注册了版本探针；旧插件没有这个字段，按未注册处理 */
-    readonly hasVersionProbe?: boolean
 }
 
 /** stat 但不存在时返回 null，用于 cwd 校验 */
@@ -1983,9 +1982,6 @@ export class PluginSandboxClient {
      * 未注册探针时返回 null；探针抛错原样抛给调用方
      * 返回形态由插件决定（字符串或 { version, downloadUrl }），宿主侧校验
      */
-    async getLatestVersion(timeoutMs = 10_000): Promise<unknown> {
-        return await this.#request("plugin.getLatestVersion", {}, timeoutMs)
-    }
 
     commandStubs(): PluginCommand[] {
         if (this.#ready === null) {

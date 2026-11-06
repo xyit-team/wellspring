@@ -22,5 +22,12 @@
         "defaultTimeoutMs": 60000,
         "defaultMemoryMB": 512,
         "outputLimitBytes": 16777216
+    },
+    "plugins": {
+        "update": {
+            "type": "npm",
+            "registry": "https://registry.npmjs.org",
+            "githubToken": null
+        }
     }
 }

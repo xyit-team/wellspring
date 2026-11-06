@@ -5,6 +5,7 @@
 import { Result } from "../api/result/result.ts"
 import { CONFIG_CODES } from "../config/codes.ts"
 import { saveSettings } from "../config/loader.ts"
+import { DEFAULT_PLUGINS } from "../config/defaults.ts"
 import { modelsSetting } from "../config/providers.ts"
 import type { AppSetting } from "../config/types.ts"
 import { readJsonIfExists, writeJsonAtomic } from "../platform/file.ts"
@@ -25,6 +26,9 @@ const KEYS = [
     "models.activeReasoning",
     "network.proxy",
     "network.noProxy",
+    "plugins.update.type",
+    "plugins.update.registry",
+    "plugins.update.githubToken",
 ] as const
 
 type ConfigKey = (typeof KEYS)[number]
@@ -120,6 +124,12 @@ function readValue(settings: AppSetting, key: ConfigKey): unknown {
             return settings.network.proxy
         case "network.noProxy":
             return settings.network.proxy?.noProxy ?? []
+        case "plugins.update.type":
+            return settings.plugins?.update.type ?? "npm"
+        case "plugins.update.registry":
+            return settings.plugins?.update.registry ?? "https://registry.npmjs.org"
+        case "plugins.update.githubToken":
+            return settings.plugins?.update.githubToken ?? null
     }
 }
 
@@ -200,6 +210,50 @@ function writeValue(settings: AppSetting, key: ConfigKey, raw: string): AppSetti
                 network: { proxy: url === null ? null : { type: "http", url, noProxy } },
             }
         }
+        case "plugins.update.type": {
+            if (raw !== "npm" && raw !== "github" && raw !== "file") {
+                return `${USAGE_CODES.invalidValue}:plugins.update.type（npm / github / file）`
+            }
+            return {
+                ...settings,
+                plugins: {
+                    update: {
+                        ...(settings.plugins?.update ?? DEFAULT_PLUGINS.update),
+                        type: raw,
+                    },
+                },
+            }
+        }
+        case "plugins.update.registry": {
+            const url = normalizeProxyUrl(raw)
+            if (typeof url === "string" && url.startsWith(USAGE_CODES.invalidValue)) {
+                return `${USAGE_CODES.invalidValue}:plugins.update.registry`
+            }
+            if (url === null) {
+                return `${USAGE_CODES.invalidValue}:plugins.update.registry`
+            }
+            return {
+                ...settings,
+                plugins: {
+                    update: {
+                        ...(settings.plugins?.update ?? DEFAULT_PLUGINS.update),
+                        registry: url,
+                    },
+                },
+            }
+        }
+        case "plugins.update.githubToken": {
+            const token = raw === "null" || raw === "none" || raw === "" ? null : raw
+            return {
+                ...settings,
+                plugins: {
+                    update: {
+                        ...(settings.plugins?.update ?? DEFAULT_PLUGINS.update),
+                        githubToken: token,
+                    },
+                },
+            }
+        }
         case "network.noProxy": {
             const noProxy = splitNoProxy(raw)
             const current = settings.network.proxy
@@ -244,6 +298,11 @@ export async function runConfigCommand(
             if (key === undefined) {
                 return failure(`${USAGE_CODES.missingValue}:key`)
             }
+            if (isKey(key)) {
+                const value = readValue(ctx.settings, key)
+                ctx.elog.print(value === null ? "null" : JSON.stringify(value))
+                return success({ key, value })
+            }
             const pluginRef = parsePluginKey(key)
             if (pluginRef !== null) {
                 const config = await readPluginConfig(ctx, pluginRef.pluginId)
@@ -254,12 +313,7 @@ export async function runConfigCommand(
                 ctx.elog.print(value === null ? "null" : JSON.stringify(value))
                 return success({ key, value })
             }
-            if (!isKey(key)) {
-                return failure(`${USAGE_CODES.unknownConfigKey}:${key}`)
-            }
-            const value = readValue(ctx.settings, key)
-            ctx.elog.print(value === null ? "null" : JSON.stringify(value))
-            return success({ key, value })
+            return failure(`${USAGE_CODES.unknownConfigKey}:${key}`)
         }
         case "set": {
             const key = line.positionals[0]
