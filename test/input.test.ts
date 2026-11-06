@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
+import { errorMessage } from "../src/commands/shared.ts"
 import { formatGlobalHelp } from "../src/input/help.ts"
 import { parseCommandArgs } from "../src/input/parse-options.ts"
 import { parseGlobal } from "../src/input/parse.ts"
@@ -49,4 +50,16 @@ test("帮助文本包含内置命令与全局参数", () => {
     assert.match(text, /chat/)
     assert.match(text, /run/)
     assert.match(text, /--json/)
+})
+
+test("errorMessage：详情里的冒号不被截断（URL / Windows 路径）", () => {
+    assert.equal(
+        errorMessage("plugin.failed:https://api.github.com/x 返回 403"),
+        "plugin.failed：https://api.github.com/x 返回 403",
+    )
+    assert.equal(
+        errorMessage("plugin.not-found:C:\\Users\\demo"),
+        "插件不存在：C:\\Users\\demo",
+    )
+    assert.equal(errorMessage("usage.invalid-value"), "参数值非法")
 })

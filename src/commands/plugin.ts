@@ -347,6 +347,8 @@ export async function runPluginCommand(
         }
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
+        /* 码里再带一份，终端会按人类可读文案打印；详情里的冒号不再被截断 */
+        ctx.elog.error(message)
         return failure(`plugin.failed:${message}`)
     }
 }

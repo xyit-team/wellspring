@@ -122,7 +122,12 @@ async function readJson(
         signal: AbortSignal.timeout(timeoutOf(options)),
     })
     if (!response.ok) {
-        throw new Error(`${url} 返回 ${response.status}`)
+        /* GitHub 未认证调用有频率限制：403/429 时把解法说出来 */
+        const hint =
+            url.includes("api.github.com") && (response.status === 403 || response.status === 429)
+                ? "（GitHub 未认证调用有频率限制：配置 plugins.update.githubToken 或稍后再试）"
+                : ""
+        throw new Error(`${url} 返回 ${response.status}${hint}`)
     }
     const value: unknown = await response.json()
     if (typeof value !== "object" || value === null || Array.isArray(value)) {

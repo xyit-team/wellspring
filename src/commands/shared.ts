@@ -93,11 +93,16 @@ const MESSAGES: Readonly<Record<string, string>> = {
     "sandbox.cleanup-failed": "清理 sandbox ACL 失败",
 }
 
-/** 错误码 → 人类可读文案，字段级细节保留在冒号后 */
+/** 错误码 → 人类可读文案，字段级细节保留在第一个冒号后（详情里可能还有冒号） */
 export function errorMessage(code: string): string {
-    const [base, detail] = code.split(":", 2)
-    const message = MESSAGES[base ?? ""] ?? base ?? code
-    return detail === undefined || detail === "" ? message : `${message}：${detail}`
+    const separator = code.indexOf(":")
+    if (separator === -1) {
+        return MESSAGES[code] ?? code
+    }
+    const base = code.slice(0, separator)
+    const detail = code.slice(separator + 1)
+    const message = MESSAGES[base] ?? base
+    return detail === "" ? message : `${message}：${detail}`
 }
 
 export function exitCodeFor(code: string | null): number {

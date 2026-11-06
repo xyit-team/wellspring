@@ -321,6 +321,19 @@ export async function runConfigCommand(
             if (key === undefined || raw === undefined) {
                 return failure(`${USAGE_CODES.missingValue}:key value`)
             }
+            /* 全局键优先：plugins.update.* 不是某个插件的配置 */
+            if (isKey(key)) {
+                const next = writeValue(ctx.settings, key, raw)
+                if (typeof next === "string") {
+                    return failure(next)
+                }
+                const saved = await saveSettings(next, ctx.settingsFile)
+                if (!saved.isSuccess()) {
+                    return failure(saved.getCode() ?? "config.write-failed")
+                }
+                ctx.elog.info(`已更新 ${key}`)
+                return success({ key, value: readValue(next, key) })
+            }
             const pluginRef = parsePluginKey(key)
             if (pluginRef !== null) {
                 const config = await readPluginConfig(ctx, pluginRef.pluginId)
@@ -340,19 +353,7 @@ export async function runConfigCommand(
                 ctx.elog.info(`已更新 ${key}（重启服务后生效）`)
                 return success({ key, value })
             }
-            if (!isKey(key)) {
-                return failure(`${USAGE_CODES.unknownConfigKey}:${key}`)
-            }
-            const next = writeValue(ctx.settings, key, raw)
-            if (typeof next === "string") {
-                return failure(next)
-            }
-            const saved = await saveSettings(next, ctx.settingsFile)
-            if (!saved.isSuccess()) {
-                return failure(saved.getCode() ?? "config.write-failed")
-            }
-            ctx.elog.info(`已更新 ${key}`)
-            return success({ key, value: readValue(next, key) })
+            return failure(`${USAGE_CODES.unknownConfigKey}:${key}`)
         }
         default:
             return failure(`${USAGE_CODES.unknownSubcommand}:config ${subcommand ?? ""}`)
