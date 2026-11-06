@@ -386,7 +386,19 @@ test("maxConcurrent 限制并发执行数量", { timeout: 20_000 }, async () => 
         }),
     ])
     const lines = (await readFile(log, "utf8")).trim().split("\n")
-    assert.deepEqual(lines, ["start:0", "end:0", "start:1", "end:1"])
+    /*
+     * 只保证「同一时刻只有一条在跑」，不假设两条调用谁先拿到槽位：
+     * startAgentCode 在拿槽位之前还有几个 await（stat / 选后端），
+     * 两个并发调用的恢复顺序本来就不保证（CI 上偶发反序）。
+     */
+    assert.equal(lines.length, 4)
+    assert.match(lines[0] ?? "", /^start:\d+$/)
+    const firstId = (lines[0] ?? "").split(":")[1]
+    assert.equal(lines[1], `end:${firstId}`)
+    assert.match(lines[2] ?? "", /^start:\d+$/)
+    const secondId = (lines[2] ?? "").split(":")[1]
+    assert.notEqual(secondId, firstId)
+    assert.equal(lines[3], `end:${secondId}`)
 })
 
 test("后端能力位与真实机制一致", () => {
