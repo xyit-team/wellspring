@@ -153,11 +153,25 @@ export async function checkPluginUpdates(
                     npm === null
                         ? await resolveGithubRelease(github ?? "", null, sourceOptions)
                         : await resolveNpmRelease(npm, null, sourceOptions)
+                const latest = release.version
+                if (latest === null) {
+                    return {
+                        id: plugin.id,
+                        installed: plugin.version,
+                        latest: null,
+                        updateAvailable: false,
+                        error: "无法确认最新版本（下载地址来自源码 tarball）",
+                        hasSource: true,
+                        hasProbe: true,
+                        channel,
+                        downloadUrl: release.url,
+                    }
+                }
                 return {
                     id: plugin.id,
                     installed: plugin.version,
-                    latest: release.version,
-                    updateAvailable: compareVersions(release.version, plugin.version) > 0,
+                    latest,
+                    updateAvailable: compareVersions(latest, plugin.version) > 0,
                     error: null,
                     hasSource: true,
                     hasProbe: true,

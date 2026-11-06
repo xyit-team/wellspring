@@ -250,6 +250,9 @@ export async function updatePlugin(
                 )
             }
             const release = await resolveNpmRelease(spec, null, sourceOptions)
+            if (release.version === null) {
+                return fail(installed.id, installed.version, channel, `npm 没有返回版本号：${spec}`)
+            }
             return await installFromRelease(installed, release.version, release.url, channel, {
                 ...options,
                 source: { type: "npm", spec },
@@ -268,6 +271,14 @@ export async function updatePlugin(
             )
         }
         const release = await resolveGithubRelease(repo, null, sourceOptions)
+        if (release.version === null) {
+            return fail(
+                installed.id,
+                installed.version,
+                channel,
+                `无法确认 GitHub 上的最新版本：${repo}`,
+            )
+        }
         return await installFromRelease(installed, release.version, release.url, channel, {
             ...options,
             source: { type: "github", spec: repo },

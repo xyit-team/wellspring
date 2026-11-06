@@ -83,7 +83,8 @@ export interface SourceOptions {
 }
 
 export interface LatestRelease {
-    readonly version: string
+    /** 版本号；兜底的源码 tarball 无法在下载前得知版本，为 null */
+    readonly version: string | null
     /** 下载地址（zip 或 tar.gz） */
     readonly url: string
     /** 下载来源渠道 */
@@ -236,6 +237,29 @@ export async function resolveGithubRelease(
             `https://codeload.github.com/${repo}/tar.gz/refs/tags/${encodeURIComponent(tag)}`,
         channel: "github",
     }
+}
+
+/**
+ * GitHub API 被限流时的兜底：codeload 的源码 tarball（默认分支 HEAD）
+ *
+ * 这条 URL 不经过 REST API，未认证调用不受 60 次/小时的限制；
+ * 代价是拿不到版本号，也可能比最近一次 Release 新。
+ */
+export function resolveGithubTarball(repo: string): LatestRelease {
+    return {
+        version: null,
+        url: `https://codeload.github.com/${repo}/tar.gz/HEAD`,
+        channel: "github",
+    }
+}
+
+/** 错误是不是 GitHub API 限流（403/429） */
+export function isGithubRateLimitError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error)
+    return (
+        message.includes("api.github.com") &&
+        (message.includes("返回 403") || message.includes("返回 429"))
+    )
 }
 
 /**

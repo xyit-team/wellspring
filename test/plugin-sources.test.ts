@@ -10,7 +10,9 @@ import {
     DEFAULT_NPM_REGISTRY,
     downloadPluginPackage,
     parsePluginSpec,
+    isGithubRateLimitError,
     resolveGithubRelease,
+    resolveGithubTarball,
     resolveNpmRelease,
     tagToVersion,
 } from "../src/plugin/sources.ts"
@@ -158,6 +160,19 @@ test("tagToVersion：去掉 v 前缀", () => {
     assert.equal(tagToVersion("1.2.3"), "1.2.3")
 })
 
+test("GitHub 限流兜底：codeload tarball 不走 REST API", () => {
+    const fallback = resolveGithubTarball("xyit-team/wellspring-core")
+    assert.equal(fallback.version, null, "源码 tarball 拿不到版本号")
+    assert.equal(fallback.url, "https://codeload.github.com/xyit-team/wellspring-core/tar.gz/HEAD")
+    assert.equal(fallback.channel, "github")
+})
+
+test("isGithubRateLimitError：只认 GitHub API 的 403/429", () => {
+    assert.equal(isGithubRateLimitError(new Error("https://api.github.com/x 返回 403")), true)
+    assert.equal(isGithubRateLimitError(new Error("https://api.github.com/x 返回 429")), true)
+    assert.equal(isGithubRateLimitError(new Error("https://api.github.com/x 返回 404")), false)
+    assert.equal(isGithubRateLimitError(new Error("https://registry.npmjs.org/x 返回 403")), false)
+})
 test("downloadPluginPackage：下载到临时目录，内容原样落盘", async () => {
     const payload = gzipSync(Buffer.from("not-a-real-tar"))
     const file = await downloadPluginPackage("https://x/p.tgz", join(root, "dl"), {

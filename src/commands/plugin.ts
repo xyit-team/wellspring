@@ -31,9 +31,12 @@ import { sourceOptionsOf, updatePlugin } from "../plugin/update.ts"
 import { checkPluginUpdates, type PluginUpdateCheck } from "../plugin/update-check.ts"
 import {
     downloadPluginPackage,
+    isGithubRateLimitError,
     parsePluginSpec,
     resolveGithubRelease,
+    resolveGithubTarball,
     resolveNpmRelease,
+    type LatestRelease,
     type PluginSpec,
 } from "../plugin/sources.ts"
 import { failure, success, type CommandContext, type CommandOutcome } from "./shared.ts"
@@ -139,10 +142,26 @@ async function installFromSpec(
         return installed
     }
     const sourceOptions = sourceOptionsOf(ctx.settings)
-    const release =
-        spec.type === "npm"
-            ? await resolveNpmRelease(spec.name, spec.version, sourceOptions)
-            : await resolveGithubRelease(spec.repo, spec.ref, sourceOptions)
+    let release: LatestRelease
+    if (spec.type === "npm") {
+        release = await resolveNpmRelease(spec.name, spec.version, sourceOptions)
+    } else {
+        try {
+            release = await resolveGithubRelease(spec.repo, spec.ref, sourceOptions)
+        } catch (error) {
+            /*
+             * 未认证的 GitHub REST API 只有 60 次/小时，很容易被限流；
+             * codeload 的 tarball 不走 API，装插件够用了（版本号从包里的 package.json 读）。
+             */
+            if (spec.ref !== null || !isGithubRateLimitError(error)) {
+                throw error
+            }
+            ctx.elog.warn(
+                "GitHub API 被限流，改用源码 tarball（HEAD）；要按 Release 安装请配 plugins.update.githubToken",
+            )
+            release = resolveGithubTarball(spec.repo)
+        }
+    }
     const workDir = await mkdtemp(join(tmpdir(), "wellspring-plugin-install-"))
     try {
         const file = await downloadPluginPackage(release.url, workDir, sourceOptions)
