@@ -258,6 +258,7 @@ export function buildBwrapPluginLaunch(input: PluginLaunchInput): LaunchSpec {
         "--permission",
         "--allow-fs-read=/plugin",
         "--allow-fs-read=/host",
+        ...(input.network === true ? ["--allow-net"] : []),
         "/host/src/sandbox/plugin-host.ts",
     )
 

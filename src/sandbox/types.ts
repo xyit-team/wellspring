@@ -117,8 +117,8 @@ export interface PluginLaunchInput {
     /**
      * 是否放开出网
      *
-     * 清单 sandbox.network: true 才给；bwrap 加 --share-net，seatbelt 放行 (allow network*)
-     * Windows / Node permission 后端不隔离网络
+     * 清单 sandbox.network: true 才给：bwrap 加 --share-net 与 Node --allow-net，
+     * seatbelt 放行 (allow network*)，Node permission 后端加 --allow-net
      */
     readonly network?: boolean
 }

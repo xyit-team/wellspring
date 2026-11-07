@@ -31,6 +31,7 @@ export function buildNodePermissionPluginLaunch(input: PluginLaunchInput): Launc
             "--permission",
             ...permissionFlags(read, "--allow-fs-read"),
             ...permissionFlags(write, "--allow-fs-write"),
+            ...(input.network === true ? ["--allow-net"] : []),
             input.runnerPath,
         ],
         cwd: input.pluginDir,
@@ -51,7 +52,7 @@ export class NodePermissionBackend implements SandboxBackend {
     enforcementNotes(_access: SandboxAccess): readonly string[] {
         return [
             "fs: Node --permission 的文件读写白名单，不覆盖子进程",
-            "network: 不隔离",
+            "network: 默认拒绝，清单 network: true 时 --allow-net",
             "process: 不隔离",
         ]
     }

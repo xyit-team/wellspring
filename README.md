@@ -15,7 +15,8 @@ npm 包只包含**宿主与 CLI**，不包含插件。Agent 工具、网页端�
 - `wellspring-core`（Agent 工具与会话环境注入）已独立成仓库
   [wellspring-core](https://github.com/EtherosGroup/wellspring-core)，npm 上是 `@etheros/wellspring-core`；
   从 GitHub Release 的 zip 安装，`wellspring plugin list --check` 会问 npm 有没有新版本
-- `wellspring-web` / `wellspring-http` / `wellspring-code` 仍在仓库的 `plugins/` 下，开发时直接 link
+- `wellspring-web` / `wellspring-code` / `wellspring-gateway` 各自独立仓库；网关插件提供统一对外入口，
+  其余插件用 `hostApi.http` 在自己的 loopback 端口上提供服务
 
 ```bash
 # 官方 core 插件（独立仓库发布）
@@ -566,27 +567,27 @@ onShutdown(() => {
 
 `setup()` 的 `init(api: PluginApi)` 暴露以下能力。
 
-| 成员                       | 说明                                                          |
-| -------------------------- | ------------------------------------------------------------- |
-| `apiVersion`               | 宿主 API 版本                                                 |
-| `plugin`                   | `{ id, name, version }`                                       |
-| `paths`                    | 配置、数据、缓存、日志根目录                                  |
-| `config`                   | 全局配置 `AppSetting`                                         |
-| `logger`                   | pino Logger                                                   |
-| `output`                   | `info` / `warn` / `error` / `print`，走终端渲染               |
-| `pluginDataDir`            | 插件数据目录，已创建                                          |
-| `pluginConfig`             | `<configDir>/plugins/<id>.json` 内容                          |
-| `fs`                       | 插件数据目录内的文件 API                                      |
-| `workspaceFs`              | 当前会话工作区的文件 API，需 `fs.read` 声明 `${workspace}`    |
-| `registerCommand(command)` | 运行时注册命令                                                |
-| `registerAgentTool(tool)`  | 运行时注册 Agent 工具                                         |
-| `pluginData(pluginId)`     | 读取依赖插件的数据目录，无权限返回 `null`                     |
-| `capabilities`             | 代码执行与网络能力                                            |
-| `http`                     | 宿主 HTTP/HTTPS/SSE/WebSocket 服务（只给 wellspring-http 用） |
-| `workspaces`               | 宿主级工作区注册表：列表 / 添加 / 移除 / 重命名 / touch       |
-| `fileRoots`                | 按绝对目录打开文件 API，需 `hostApi: fileRoots`（可信插件）   |
-| `agent`                    | 与 Agent 会话交互，`chat({ message, sessionId? })`            |
-| `network`                  | 出站代理配置：`state()` / `saveProxy({ url, noProxy? })`      |
+| 成员                       | 说明                                                             |
+| -------------------------- | ---------------------------------------------------------------- |
+| `apiVersion`               | 宿主 API 版本                                                    |
+| `plugin`                   | `{ id, name, version }`                                          |
+| `paths`                    | 配置、数据、缓存、日志根目录                                     |
+| `config`                   | 全局配置 `AppSetting`                                            |
+| `logger`                   | pino Logger                                                      |
+| `output`                   | `info` / `warn` / `error` / `print`，走终端渲染                  |
+| `pluginDataDir`            | 插件数据目录，已创建                                             |
+| `pluginConfig`             | `<configDir>/plugins/<id>.json` 内容                             |
+| `fs`                       | 插件数据目录内的文件 API                                         |
+| `workspaceFs`              | 当前会话工作区的文件 API，需 `fs.read` 声明 `${workspace}`       |
+| `registerCommand(command)` | 运行时注册命令                                                   |
+| `registerAgentTool(tool)`  | 运行时注册 Agent 工具                                            |
+| `pluginData(pluginId)`     | 读取依赖插件的数据目录，无权限返回 `null`                        |
+| `capabilities`             | 代码执行与网络能力                                               |
+| `http`                     | 宿主 HTTP/HTTPS/SSE/WebSocket 服务（插件自己的 loopback 服务器） |
+| `workspaces`               | 宿主级工作区注册表：列表 / 添加 / 移除 / 重命名 / touch          |
+| `fileRoots`                | 按绝对目录打开文件 API，需 `hostApi: fileRoots`（可信插件）      |
+| `agent`                    | 与 Agent 会话交互，`chat({ message, sessionId? })`               |
+| `network`                  | 出站代理配置：`state()` / `saveProxy({ url, noProxy? })`         |
 
 #### capabilities
 
@@ -796,19 +797,18 @@ const files = await ctx.workspaceFs.list("src")
 - `hostApi` 默认包含 `logger` / `fs` / `event` / `getHost` / `shutdown` / `agent`；`workspaceFs` 仍需在 `fs.read` 里
   声明 `${workspace}`；`agent` 能驱动 Agent 对话与工具调用，不写 `sandbox` 块的插件默认拥有它
 - `models` / `plugins` / `workspaces` / `fileRoots` / `http` / `exec` / `pty` / `capabilities` 需要在 `hostApi` 中显式声明；
-  `http` 是宿主原语，只给 `wellspring-http` 插件用，普通插件在 `deps` 里依赖它、用
-  `@xyit-team/wellspring-http/client` 注册服务器；
+  `http` 给插件创建自己的 loopback HTTP 服务；对外入口、TLS 与统一登录由 `wellspring-gateway` 插件负责；
   `migrate` 是插件本地数据迁移（换插件 id 时搬 plugin-data / 配置 / 禁用状态），只给官方 core 插件用
 - `hostApi: "plugins"` 提供 `api.plugins.list/install/remove/enable/disable`：安装只接受 zip（≤10MB）；
   启用/禁用与禁用后的卸载即时生效，安装与禁用 `wellspring-web` 重启后生效；卸载 `wellspring-web` 被拒绝
 - `profile` / `process` 目前只是声明，代码不解析；插件的原生进程能力由访问守卫与 sandbox 后端拦截
 - `${workspace}` 默认只读，写 workspace 需放进 `fs.write`
-- `network` 默认 `false`：bwrap 不加 `--share-net`、seatbelt 拒绝出网。插件自己访问网络（例如版本探针
-  查 npm registry）需在清单里写 `sandbox.network: true`：bwrap 加 `--share-net`（共享宿主网络命名空间，
-  没有域名/端口粒度）、seatbelt 放行 `(allow network*)`；Windows / Node permission 后端不隔离
-  网络，这个字段只表示声明意图
-- `--share-net` 下插件既能出网也能自己监听端口；但插件不要自己监听，HTTP 服务器统一由
-  `wellspring-http` 插件创建（它持有宿主原语 `hostApi.http`），抓网页走 `hostApi: capabilities` 的
+- `network` 默认 `false`：bwrap 不加 `--share-net`、Node permission model 不加 `--allow-net`、
+  seatbelt 拒绝出网。插件自己访问或监听网络（例如网关）需在清单里写 `sandbox.network: true`：
+  bwrap 加 `--share-net`（共享宿主网络命名空间，没有域名/端口粒度）与 Node `--allow-net`，
+  seatbelt 放行 `(allow network*)`，Node permission 后端加 `--allow-net`
+- `--share-net` 下插件既能出网也能自己监听端口：`wellspring-gateway` 用这个能力做唯一对外入口；
+  普通插件用 `hostApi.http` 在 loopback 上提供服务，不直接对外；抓网页走 `hostApi: capabilities` 的
   `webFetch` / `webSearch`
 - 没有可用 OS 后端时插件加载失败；插件不做 direct 降级
 - `sandbox.mode: off` 时插件全部拒绝加载
@@ -818,23 +818,19 @@ const files = await ctx.workspaceFs.list("src")
 ### 插件的 HTTP 服务
 
 宿主只提供原语 `hostApi.http`（`createServer` + 请求 / 流式 / WebSocket 回调，见
-`src/api/host/http.ts`）。托管、协议与消费者 helper 都在 `wellspring-http` 插件里：其它插件在
-`setup().deps` 里声明 `wellspring-http`，用插件发布的 helper 注册服务器：
+`src/api/host/http.ts`）。插件用它创建自己的 loopback 服务器，对外入口统一由
+`wellspring-gateway` 插件负责：
 
 ```ts
 import type { HttpRequest, HttpResponse } from "wellspring/api/host/index.ts"
-import { eventBus } from "wellspring/api/host/index.ts"
-import { registerHttpServer } from "@xyit-team/wellspring-http/client"
 
 export function setup() {
     return {
         // ...
-        deps: ["wellspring-http"],
         init: async (api) => {
-            const server = await registerHttpServer(
-                eventBus,
-                { name: "my-app", host: "127.0.0.1", port: 8787 },
-                async (request: HttpRequest, stream): Promise<HttpResponse> => ({
+            const server = await api.http.createServer(
+                { host: "127.0.0.1", port: 8787 },
+                async (request: HttpRequest): Promise<HttpResponse> => ({
                     status: 200,
                     headers: { "content-type": "text/plain" },
                     body: `hello ${request.url}`,
@@ -846,52 +842,63 @@ export function setup() {
 }
 ```
 
-- `@xyit-team/wellspring-http/client` 与 `@xyit-team/wellspring-http/protocol` 是插件发布的编译产物（插件里的 `dist/`），
-  消费者在 `package.json` 的 `dependencies` 里依赖 `wellspring-http` 即可
-- `host` 默认 `127.0.0.1`，也可 `0.0.0.0` / `::` / 指定网卡地址；`port: 0` 用随机端口，
-  实际端口在返回的 `server.port` 里
-- HTTPS 传 `tls: { cert, key, ca? }`（PEM 字符串）；证书可以放在消费者自己的 data 目录用 `api.fs` 读
-- 请求体以 base64 传入、响应可返回 `utf8` 或 `base64`；`stream: true` + `stream.write/end` 支持 SSE；
-  `websocket: (socket, request) => void` 支持 WebSocket 升级（不传则升级请求返回 1008）
-- 请求/响应经事件总线转发，**单个体上限 2.5 MiB**（sandbox 单帧 4 MiB）；超限请求返回 `413`，
-  超限响应返回 `502`。需要传大文件请按分片接口设计
-- 启动失败（端口占用 / 重名 / TLS 不合法）会让 `registerHttpServer` reject，按失败插件处理
-- 插件 `onShutdown` 里 `await server.close()`；wellspring-http 关闭时所有托管服务器一起关闭
+- `host` 默认 `127.0.0.1`；`port: 0` 使用随机端口，实际端口在返回的 `server.port` 里
+- HTTPS 传 `tls: { cert, key, ca? }`（PEM 字符串）；证书可以放在插件数据目录用 `api.fs` 读
+- 请求体是 base64 字符串、响应可返回 `utf8` 或 `base64`；`stream: true` + `stream.write/end` 支持 SSE；
+  `websocket: (socket, request) => void` 支持 WebSocket 升级
+- 单个请求体上限 16 MiB（宿主侧约束）
+- 插件关闭时宿主自动关闭它的服务器；`onShutdown` 里也可以主动 `await server.close()`
+- 对外访问、TLS、登录与路径路由由 `wellspring-gateway` 统一下发，插件不需要自己处理鉴权
+- 网关把登录用户放在 `x-wellspring-user` 头里传给上游；上游只监听 loopback，只信任这个头
 
-因为 `deps` 是硬依赖，没装 `wellspring-http`（或它被禁用）时依赖方会以「依赖不存在 / 依赖被禁用」失败。
-`hostApi: ["http"]` 只给 `wellspring-http` 自己用。
+### wellspring-gateway 插件
 
-### wellspring-http 插件
-
-`wellspring-http` 插件是平台里唯一的 HTTP 服务器管理器：校验注册参数、创建 HTTP/HTTPS/WebSocket
-服务器、把请求转发给注册方、注销与关闭时统一释放端口，并广播 `wellspring-http:servers` 列表。
-协议与消费者 helper 都由插件自己定义和发布，宿主不再提供这部分代码。
+`wellspring-gateway` 是平台唯一的对外入口：单端口、路径路由、TLS、统一登录与访问日志。
+它在清单里声明 `sandbox.network: true`，自己监听端口；其它插件用 `hostApi.http` 监听 loopback。
 
 ```bash
-wellspring plugin install npm:@xyit-team/wellspring-http
+wellspring plugin install npm:@xyit-team/wellspring-gateway
 # 或者
-wellspring plugin install github:xyit-team/wellspring-http
+wellspring plugin install github:xyit-team/wellspring-gateway
 ```
 
-- 协议：`wellspring-http:register` / `wellspring-http:unregister`，每个服务器的
-  `wellspring-http:request:<name>` / `wellspring-http:response:<name>`
-- 错误码：`port-in-use`、`permission-denied`、`address-unavailable`、`invalid-register`、
-  `duplicate-name`、`too-many-servers`、`listen-failed`、`internal-error`
-- 端口 / 超时 / 白名单等配置：`<configDir>/plugins/wellspring-http.json`
-- 细节、完整事件表与测试见 `wellspring-http` 插件仓库的 README（测试用 fixture 消费者覆盖请求、
-  SSE、错误、超时、重名、端口占用、WebSocket 与 HTTPS）
+```json
+{
+    "host": "127.0.0.1",
+    "port": 8780,
+    "routes": [
+        { "prefix": "/web", "target": "http://127.0.0.1:8787" },
+        { "prefix": "/code", "target": "http://127.0.0.1:8788" }
+    ],
+    "auth": { "enabled": true }
+}
+```
+
+- 配置：`<configDir>/plugins/wellspring-gateway.json`；路由按前缀最长匹配，默认去掉前缀再转发；
+  `stripPrefix: false` 时上游收到完整路径
+- 首次访问设置管理密码（scrypt 哈希存插件数据目录，`auth.json`）；会话只在内存，重启后重新登录
+- 登录失败按来源 IP 限流；`/login`、`/logout`、`/__gateway/*` 为保留路径
+- TLS 证书放插件数据目录，配置 `tls.certFile` / `tls.keyFile`
+- 细节、配置字段与安全边界见 `wellspring-gateway` 插件仓库的 README
 
 ### Web 插件
 
-`wellspring-web` 插件提供网页聊天界面，依赖 `wellspring-http`：
+`wellspring-web` 插件提供网页聊天界面，用 `hostApi.http` 监听 loopback（默认 `127.0.0.1:8787`），
+对外访问由 `wellspring-gateway` 提供：
 
 ```bash
-wellspring plugin install npm:@xyit-team/wellspring-http
+wellspring plugin install npm:@xyit-team/wellspring-gateway
 wellspring plugin install npm:<wellspring-web 包名>
 wellspring start
 ```
 
-打开 `http://127.0.0.1:8787`。
+网关配置加路由后打开 `http://127.0.0.1:8780/web`：
+
+```json
+{ "routes": [{ "prefix": "/web", "target": "http://127.0.0.1:8787" }] }
+```
+
+登录由网关统一处理。
 
 - 第一次访问设置密码，密码以 scrypt 哈希保存在 `<dataDir>/plugin-data/wellspring-web/auth.json`
 - 侧栏「修改密码」：校验当前密码后更新哈希并让其他设备重新登录；密码至少 6 位、最多 200 位
@@ -979,18 +986,22 @@ wellspring start
 
 ### Code 插件（VS Code 风格）
 
-`wellspring-code` 插件提供浏览器里的 VS Code 风格代码编辑器，只依赖 `wellspring-http`
-（Web 插件是可选搭配：装了就多一个侧栏入口）：
+`wellspring-code` 插件提供浏览器里的 VS Code 风格代码编辑器，用 `hostApi.http` 监听 loopback
+（默认 `127.0.0.1:8788`；Web 插件是可选搭配：装了就多一个侧栏入口）：
 
 ```bash
-wellspring plugin install npm:@xyit-team/wellspring-http
+wellspring plugin install npm:@xyit-team/wellspring-gateway
 wellspring plugin install npm:<wellspring-code 包名>
 # 可选：网页聊天界面
 wellspring plugin install npm:<wellspring-web 包名>
 wellspring start
 ```
 
-打开 `http://127.0.0.1:8788`（与 Web 插件默认的 `8787` 不冲突）。
+网关配置加路由后打开 `http://127.0.0.1:8780/code`：
+
+```json
+{ "routes": [{ "prefix": "/code", "target": "http://127.0.0.1:8788" }] }
+```
 
 - 工作区由 code 插件自己管理（`<dataDir>/plugin-data/wellspring-code/workspaces.json`），
   在切换面板里可以添加机器上任意绝对目录；不依赖宿主工作区注册表，也不依赖 `wellspring-web`

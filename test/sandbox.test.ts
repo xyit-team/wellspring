@@ -227,6 +227,8 @@ test("bwrap plugin launch：network 清单项控制 --share-net", () => {
     const online = buildBwrapPluginLaunch({ ...input, network: true })
     assert.ok(online.args.includes("--unshare-all"), "仍隔离其它命名空间")
     assert.ok(online.args.includes("--share-net"), "共享宿主网络")
+    assert.ok(online.args.includes("--allow-net"), "Node permission model 放行 net")
+    assert.ok(!offline.args.includes("--allow-net"), "默认拒绝 net")
 })
 
 test("resolveNodeRuntime：完整发行版挂前缀，裸二进制退回单文件", () => {

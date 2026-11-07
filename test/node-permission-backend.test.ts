@@ -32,6 +32,13 @@ test("node permission：只允许插件、宿主 SDK 与插件数据目录", () 
     assert.equal(spec.cwd, input.pluginDir)
 })
 
+test("node permission：network 清单项控制 --allow-net", () => {
+    assert.ok(!buildNodePermissionPluginLaunch(input).args.includes("--allow-net"))
+    assert.ok(
+        buildNodePermissionPluginLaunch({ ...input, network: true }).args.includes("--allow-net"),
+    )
+})
+
 test("node permission：probe 报告可用，但明确说明隔离边界", async () => {
     const status = await new NodePermissionBackend().probe()
     assert.equal(status.available, true)
