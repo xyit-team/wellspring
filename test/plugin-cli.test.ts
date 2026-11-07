@@ -3,7 +3,7 @@
  */
 
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { after, before, test } from "node:test"
@@ -138,4 +138,25 @@ test("卸载被依赖的插件会被拒绝，--ignore 可强制删除", async ()
     const consumer = join(pluginsRoot(context().paths), "consumer")
     const source = await readFile(join(consumer, "index.ts"), "utf8")
     assert.match(source, /deps/)
+})
+
+test("remove：悬空符号链接按目录名删除", async () => {
+    const ctx = context()
+    const rootDir = pluginsRoot(ctx.paths)
+    await mkdir(rootDir, { recursive: true })
+    const link = join(rootDir, "ghost-plugin")
+    await symlink(join(root, "missing-source"), link)
+    await assert.rejects(() => stat(link), "先确认链接是悬空的")
+
+    const outcome = await runPluginCommand(ctx, ["remove", "ghost-plugin"])
+    assert.equal(outcome.result.isSuccess(), true, JSON.stringify(outcome.result.getCode()))
+    await assert.rejects(() => stat(link))
+    assert.equal(ctx.loadCalls, 0)
+})
+
+test("install：裸包名提示补 npm: / github: 前缀", async () => {
+    const ctx = context()
+    const outcome = await runPluginCommand(ctx, ["install", "@xyit-team/wellspring-gateway"])
+    assert.equal(outcome.result.isSuccess(), false)
+    assert.match(outcome.result.getCode() ?? "", /npm:<包名> 或 github:<owner>\/<repo>/)
 })

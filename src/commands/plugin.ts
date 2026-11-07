@@ -6,10 +6,9 @@
  * 有运行中的 Wellspring 服务时拒绝更新
  */
 
-import { mkdtemp } from "node:fs/promises"
+import { lstat, mkdtemp, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { readFile } from "node:fs/promises"
 
 import { Result } from "../api/result/result.ts"
 import { USAGE_CODES } from "../input/codes.ts"
@@ -127,6 +126,15 @@ function describeUpdate(check: PluginUpdateCheck | undefined): string {
 }
 
 /** 从来源装一个新插件；npm/github 会先下载到临时目录 */
+/** 不带前缀、又像包名 / owner/repo 的写法，多半是漏了 npm: / github: */
+function looksLikeRemotePackage(raw: string): boolean {
+    const value = raw.trim()
+    if (value.startsWith("@")) {
+        return value.includes("/")
+    }
+    return /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9._-]+$/.test(value)
+}
+
 async function installFromSpec(
     ctx: CommandContext,
     raw: string,
@@ -135,11 +143,19 @@ async function installFromSpec(
     const spec: PluginSpec = parsePluginSpec(raw)
     if (spec.type === "file") {
         const target = resolve(spec.path)
-        const installed = await installPlugin(target, ctx.paths, {
-            force,
-            source: { type: "file", spec: target },
-        })
-        return installed
+        try {
+            const installed = await installPlugin(target, ctx.paths, {
+                force,
+                source: { type: "file", spec: target },
+            })
+            return installed
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (message.includes("ENOENT") && looksLikeRemotePackage(raw)) {
+                throw new Error(`${message}；远程来源需要前缀：npm:<包名> 或 github:<owner>/<repo>`)
+            }
+            throw error
+        }
     }
     const sourceOptions = sourceOptionsOf(ctx.settings)
     let release: LatestRelease
@@ -336,6 +352,18 @@ export async function runPluginCommand(
                  * `rm --force` 对不存在的路径不报错，删除成功与路径不存在无法从返回值区分
                  */
                 if (target === undefined) {
+                    /*
+                     * 悬空符号链接、清单读不出来的目录不会出现在插件列表里，
+                     * 但安装时会按目录判重，卸载也按目录名兜底
+                     */
+                    const direct = pluginDirOf(pluginsRoot(ctx.paths), name)
+                    const leftover = direct === null ? null : await lstat(direct).catch(() => null)
+                    if (leftover !== null) {
+                        await removePlugin(name, ctx.paths)
+                        await setPluginEnabled(name, true, ctx.paths)
+                        ctx.elog.warn(`插件目录不在列表里（可能是失效链接），已删除：${name}`)
+                        return success({ id: name })
+                    }
                     ctx.elog.error(`没有这个插件：${name}（wellspring plugin list 看已装的）`)
                     return failure(`plugin.not-found:${name}`)
                 }
