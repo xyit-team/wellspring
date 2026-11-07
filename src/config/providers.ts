@@ -1,8 +1,8 @@
 /*
- * 模型供应商与模型解析。
+ * 模型供应商与模型解析
  *
- * 内置供应商 id 为 openai，由 app-setting.json 的 openai.* 描述；
- * 自定义供应商来自 models.providers，接口都按 OpenAI 兼容处理（baseUrl + key）。
+ * 内置供应商 id 为 openai，由 app-setting.json 的 openai.* 描述
+ * 自定义供应商来自 models.providers，接口按 OpenAI 兼容处理（baseUrl + key）
  */
 
 import { BUILTIN_PROVIDER_ID, credentialsFile, resolveProviderApiKeySync } from "./credentials.ts"
@@ -48,10 +48,8 @@ export function activeModelProvider(settings: AppSetting): ResolvedModelProvider
     return active ?? listModelProviders(settings)[0]!
 }
 
-/**
- * 某次请求实际使用的模型：
- * 显式覆盖 > 全局 activeModel（仅当前供应商）> 供应商 defaultModel > 模型列表第一个 > 全局 openai.model
- */
+// 某次请求实际使用的模型，优先级从高到低：
+// 显式覆盖 > 全局 activeModel（仅当前供应商）> 供应商 defaultModel > 模型列表第一个 > 全局 openai.model
 export function effectiveModel(
     settings: AppSetting,
     provider: ResolvedModelProvider,
@@ -74,7 +72,7 @@ export function effectiveModel(
     return settings.openai.model
 }
 
-/** 某次请求使用的供应商：请求里带了就用它，否则用全局当前供应商 */
+/** 某次请求使用的供应商；请求未指定时取全局当前供应商 */
 export function requestProvider(
     settings: AppSetting,
     providerId?: string | null,
@@ -89,10 +87,7 @@ export function requestProvider(
     return activeModelProvider(settings)
 }
 
-/**
- * 某次请求的推理强度：
- * 显式覆盖 > 全局 activeReasoning（仅当前供应商）> off
- */
+// 某次请求的推理强度：显式覆盖 > 全局 activeReasoning（仅当前供应商）> off
 export function effectiveReasoning(
     settings: AppSetting,
     provider: ResolvedModelProvider,

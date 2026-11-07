@@ -2,9 +2,8 @@
 /*
  * PTY 可用性探测：node-pty 与 python3 两条后端各拉起一次真实会话
  *
- * 终端打不开有两种根因——原生模块 ABI 不匹配、python3 不可用。
- * 这里不看 pty.available() 的探测结论，而是真的开 shell 并读回显，
- * 两者要能分别判定。
+ * 终端打不开有两种根因：原生模块 ABI 不匹配、python3 不可用
+ * 本脚本开 shell 并读回显，两条后端分别判定
  *
  * 用法：node scripts/check-pty.mjs [--json]
  * 退出码：0 至少一条后端可用；1 两条都不可用
@@ -30,7 +29,7 @@ function record(backend, ok, detail) {
     results.push({ backend, ok, detail })
 }
 
-/** 等到输出里出现 marker，或超时 */
+// 等到 marker 出现或超时
 function untilMarker(onData, timeoutMs = TIMEOUT_MS) {
     let buffer = ""
     let settle = () => {}
@@ -78,14 +77,14 @@ async function checkNodePty() {
         try {
             pty.write(`echo ${MARKER}\r`)
         } catch {
-            /* 已退出 */
+            // 已退出
         }
     }, 300)
     const output = await waiter.promise
     try {
         pty.kill()
     } catch {
-        /* 已退出 */
+        // 已退出
     }
     if (output.includes(MARKER)) {
         record("node-pty", true, `spawn ${shell} 并读回显成功`)
@@ -152,7 +151,7 @@ async function checkPythonPty() {
         try {
             child.stdin.write(`${JSON.stringify({ type: "input", data: `echo ${MARKER}\r` })}\n`)
         } catch {
-            /* 已退出 */
+            // 已退出
         }
     }, 500)
     const output = await waiter.promise
@@ -161,7 +160,7 @@ async function checkPythonPty() {
         child.stdin.write(`${JSON.stringify({ type: "kill" })}\n`)
         child.kill()
     } catch {
-        /* 已退出 */
+        // 已退出
     }
 
     if (output.includes(MARKER)) {

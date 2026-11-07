@@ -1,10 +1,10 @@
 /*
- * API Key 凭据（支持多个模型供应商）。
+ * API Key 凭据（支持多个模型供应商）
  *
- * 与 app-setting.json 分开存放：配置文件可能被分享或进版本库，凭据单独放
- * <configDir>/credentials.json，权限 0600。v2 结构按供应商分槽，v1 只有 openai 槽。
- * 读取顺序：显式参数 > 供应商指定的环境变量（内置为 OPENAI_API_KEY）> 本地凭据。
- * 明文只进请求，界面/日志一律用掩码。
+ * 与 app-setting.json 分开存放，文件为 <configDir>/credentials.json，权限 0600
+ * v2 结构按供应商分槽，v1 只有 openai 槽
+ * 读取顺序：显式参数 > 供应商指定的环境变量（内置为 OPENAI_API_KEY）> 本地凭据
+ * 明文只进请求，界面与日志一律用掩码
  */
 
 import { readFileSync } from "node:fs"
@@ -22,13 +22,13 @@ export const CREDENTIALS_FILE_NAME = "credentials.json"
 /** 凭据文件结构版本；v2 增加 providers 分槽，v1 只认 openai */
 export const CREDENTIALS_VERSION = 2
 
-/** 单个 key 的长度上限，避免把异常输入写进文件 */
+/** 单个 key 的长度上限 */
 export const MAX_API_KEY_CHARS = 4096
 
 /** 内置供应商的 id；它的 key 放在 openai 槽，兼容 v1 与 OPENAI_API_KEY */
 export const BUILTIN_PROVIDER_ID = "openai"
 
-/** 凭据文件结构；缺失的槽都视为没有 */
+/** 凭据文件结构；缺失的槽视为未配置 */
 interface CredentialsFile {
     readonly version: number
     readonly openai?: { readonly apiKey?: string | null } | null
@@ -49,11 +49,11 @@ export interface ApiKeyStatus {
     readonly source: ApiKeySource | null
     /** 掩码后的 key，例如 `sk-…abcd`；未配置为 null */
     readonly masked: string | null
-    /** 凭据文件路径，便于界面提示 */
+    /** 凭据文件路径 */
     readonly file: string
     /** 环境变量是否设置（设置时优先于文件） */
     readonly envOverride: boolean
-    /** 本地凭据文件里是否有 key（即使被环境变量覆盖也保留，便于界面提供清除） */
+    /** 本地凭据文件是否有 key；环境变量覆盖时仍为 true */
     readonly stored: boolean
 }
 
@@ -208,7 +208,7 @@ export function resolveApiKeySync(file: string = credentialsFile()): ResolvedApi
     return resolveProviderApiKeySync({ id: BUILTIN_PROVIDER_ID, apiKeyEnv: null }, file)
 }
 
-/** 默认供应商的状态（CLI 与 API Key 弹窗用） */
+/** 默认供应商的 Key 状态 */
 export function apiKeyStatusSync(file: string = credentialsFile()): ApiKeyStatus {
     return providerKeyStatusSync({ id: BUILTIN_PROVIDER_ID, apiKeyEnv: null }, file)
 }

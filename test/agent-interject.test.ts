@@ -1,5 +1,5 @@
 /*
- * 宿主 Agent 插话：运行中的一轮在下一次模型调用前收到用户补充消息。
+ * 宿主 Agent 插话：运行中的一轮在下一次模型调用前收到用户补充消息
  */
 
 import assert from "node:assert/strict"
@@ -150,7 +150,7 @@ test("Agent 插话：消息在下一步模型调用前注入同一轮", { timeou
         name: "read",
         introduction: { params: { file_path: "路径" }, content: "读取文件" },
         call: async () => {
-            // 给外部留出插话窗口
+            // 留出插话窗口
             await sleep(300)
             return { success: true, data: { content: "文件内容" } }
         },
@@ -173,7 +173,7 @@ test("Agent 插话：消息在下一步模型调用前注入同一轮", { timeou
         if (event.type === "session") sessionId = event.sessionId
     })
 
-    // 会话开始跑（begin 之后）才接受插话
+    // begin 之后才接受插话
     let accepted = false
     for (let attempt = 0; attempt < 100 && !accepted; attempt += 1) {
         accepted = await service.interject(sessionId, "顺便看下 README.md")
@@ -187,7 +187,7 @@ test("Agent 插话：消息在下一步模型调用前注入同一轮", { timeou
     const secondPrompt = JSON.stringify(requestBodies[1])
     assert.match(secondPrompt, /顺便看下 README\.md/, "第二次请求带上插话内容")
 
-    // 轮次结束后不再接受插话；未知会话同样拒绝
+    // 轮次结束后与未知会话都拒绝插话
     assert.equal(await service.interject(sessionId, "太晚了"), false)
     assert.equal(await service.interject("no-such-session", "hello"), false)
     assert.equal(await service.interject(sessionId, "   "), false)

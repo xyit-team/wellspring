@@ -3,8 +3,8 @@
  * 沙箱真机验证矩阵
  *
  * 逐个 access 模式跑一组探针，把后端自报的边界与实际拦截结果对成一张表
- * 这张表是 AgentCodeResult.enforcementNotes 的数据来源：`partial` 具体缺哪几位，
- * 由实测跑出，与后端自报的常量对照
+ * 这张表是 AgentCodeResult.enforcementNotes 的数据来源：partial 缺哪几位由实测跑出，
+ * 与后端自报的常量对照
  *
  * 用法：
  *   node scripts/verify-sandbox.ts                自动挑后端（Linux bwrap / macOS seatbelt）
@@ -55,8 +55,8 @@ interface Fixture extends FixturePaths {}
 
 async function createFixture(): Promise<Fixture> {
     /*
-     * Linux 上 fixture 放到 home（bwrap 的 /tmp 是新的 tmpfs）；
-     * Windows 上放到工作区 .tmp，避免 TEMP 目录 owner/ACL 与受限 token 不匹配。
+     * Linux 放 home（bwrap 的 /tmp 是新的 tmpfs）
+     * Windows 放工作区 .tmp：TEMP 目录的 owner/ACL 与受限 token 不匹配
      */
     const base =
         currentPlatform === "linux"
@@ -73,13 +73,13 @@ async function createFixture(): Promise<Fixture> {
     await mkdir(workspace, { recursive: true })
     await mkdir(outsideDir, { recursive: true })
     await writeFile(join(workspace, "demo.txt"), "hello")
-    /* 沙箱外的私有文件：read:outside 探针默认应可读（与 DSH 对齐，读全局放开） */
+    // 沙箱外的私有文件：read:outside 探针应可读（与 DSH 对齐，读全局放开）
     const secret = join(root, "id_ed25519")
     await writeFile(secret, "-----BEGIN PRIVATE KEY-----\n")
     return { root, workspace, secret, outsideDir }
 }
 
-/** bwrap 读全局放开后用宿主真实 node 路径；Seatbelt 同样用宿主路径 */
+// bwrap 读全局放开后用宿主 node 路径；Seatbelt 同用宿主路径
 function nodeCommand(backend: string): string {
     return isMountBackend(backend) ? resolveHostNodeRuntime().nodePath : process.execPath
 }
@@ -95,8 +95,9 @@ async function runProbe(
 ): Promise<Observed> {
     const expected = probe.expect({ backend, access })
     /*
-     * write:devnull 测的是 shell 的 2>NUL 重定向。Windows 上 Node 的 fs 打开 "NUL"
-     * 会走 \\?\ 路径而变成普通文件，不能代表设备语义；用 cmd.exe 跑真实重定向。
+     * write:devnull 测 shell 的 2>NUL 重定向
+     * Windows 上 Node 的 fs 打开 "NUL" 会走 \\?\ 路径变成普通文件，无设备语义
+     * 该探针改用 cmd.exe 跑真实重定向
      */
     const useShellDevNull =
         backend === "win-restricted" && probe.id === "write:devnull" && process.platform === "win32"
@@ -158,7 +159,7 @@ function printTable(name: string, rows: readonly Observed[]): void {
     }
 }
 
-/** 打印 profile 与一次手工运行的完整输出，用于定位进程未启动 */
+// 打印 profile 与手工运行输出，定位进程未启动
 async function dumpProfile(manager: SandboxManager, backend: string): Promise<number> {
     const fixture = await createFixture()
     const limits = { timeoutMs: 15_000, memoryMB: 512, pids: 64, outputLimitBytes: 1024 * 1024 }
@@ -202,9 +203,9 @@ async function dumpProfile(manager: SandboxManager, backend: string): Promise<nu
             console.log(`stderr: ${result.stderr.slice(0, 4000)}`)
 
             /*
-             * 对照：同一个 launcher、同一个 target，只把 profile 换成 (allow default)
-             * 能跑说明 loader 与 env 没问题，问题在 profile 规则
-             * 不能跑说明问题在 launcher 或 env
+             * 对照：同一 launcher、同一 target，profile 换成 (allow default)
+             * 能跑：loader 与 env 正常，问题在 profile 规则
+             * 跑不起来：问题在 launcher 或 env
              */
             const permissive = spawnSync(
                 spec.command,
@@ -225,7 +226,7 @@ async function dumpProfile(manager: SandboxManager, backend: string): Promise<nu
 
             /*
              * 变体二分：严格 profile 上逐段放开读白名单，定位 node 启动缺哪条路径
-             * 每项只加一条 subpath，能跑起来的那条就是缺失项
+             * 每项只加一条 subpath，可跑起来的那条即缺失项
              */
             const baseProfile = String(spec.args[1])
             const readAnchor = "(allow file-read-metadata)"
@@ -258,7 +259,7 @@ async function dumpProfile(manager: SandboxManager, backend: string): Promise<nu
                 )
             }
 
-            /* env 对照：HOME/TMPDIR 指向 scratch（与真实运行一致） */
+            // env 对照：HOME/TMPDIR 指向 scratch（与真实运行一致）
             const scratchLike = join(getPaths().dataDir, "sandbox", "dump", "scratch")
             const envAlt = { ...spec.env, HOME: scratchLike, TMPDIR: join(scratchLike, "tmp") }
             const envProbe = spawnSync(
@@ -270,7 +271,7 @@ async function dumpProfile(manager: SandboxManager, backend: string): Promise<nu
                 `  env(HOME/TMPDIR=scratch): status=${String(envProbe.status)} signal=${String(envProbe.signal)}`,
             )
 
-            /* 对照：系统 sandbox-exec 跑严格 profile，它会打印自己的错误信息 */
+            // 对照：系统 sandbox-exec 跑严格 profile，由它打印错误信息
             if (existsSync("/usr/bin/sandbox-exec")) {
                 const viaCli = spawnSync(
                     "/usr/bin/sandbox-exec",
@@ -303,7 +304,7 @@ function parseBackendArg(): SandboxBackendName | null {
     return value as SandboxBackendName
 }
 
-/** 回环监听：出网探针连它，连得上说明沙箱放行了网络 */
+// 回环监听：出网探针连上即表示沙箱放行了网络
 async function startEgressListener(): Promise<{ server: Server; port: number }> {
     const server = createServer((socket) => socket.destroy())
     await new Promise<void>((resolveListen, rejectListen) => {
@@ -381,7 +382,7 @@ async function main(): Promise<number> {
 
     printTable(`${status.backend} 探针矩阵`, all)
 
-    /* 声明 vs 实测：claimed 是后端自报的常量，mismatch 是跑出来的偏差 */
+    // 声明 vs 实测：claims 是后端自报常量，不一致项由实测跑出
     const claims: Array<{ access: SandboxAccess; claim: SandboxEnforcement; notes: number }> = []
     for (const access of ACCESS_MODES) {
         claims.push({
@@ -408,7 +409,7 @@ async function main(): Promise<number> {
         }
     }
 
-    /* 自报 full 却测出偏差，本身就是缺陷：声明与实测必须能对上 */
+    // 自报 full 但同模式探针有偏差：声明与实测需一致
     const overstated = claims.filter(
         (item) =>
             item.claim === "full" &&

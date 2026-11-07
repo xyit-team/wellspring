@@ -1,9 +1,9 @@
 /*
- * plugin 命令：list / new / install / update / link / enable / disable / remove。
+ * plugin 命令：list / new / install / update / link / enable / disable / remove
  *
- * install 支持三种来源：`npm:<包名>[@版本]`、`github:<owner/repo>[@tag]`、本地路径。
- * update 按清单声明的来源（wellspring.npm / wellspring.github）或安装时记录来源更新；
- * 有正在运行的 Wellspring 服务时拒绝。
+ * install 来源：`npm:<包名>[@版本]`、`github:<owner/repo>[@tag]`、本地路径
+ * update 按清单声明的来源（wellspring.npm / wellspring.github）或安装时记录的来源更新
+ * 有运行中的 Wellspring 服务时拒绝更新
  */
 
 import { mkdtemp } from "node:fs/promises"
@@ -78,7 +78,7 @@ async function scanPluginDirs(paths: ResolvedPaths): Promise<ScannedPlugin[]> {
                 )
             }
         } catch {
-            /* 读不到入口时按没有依赖处理 */
+            /* 读不到入口文件时依赖为空 */
         }
         plugins.push({
             id: localName,
@@ -150,8 +150,8 @@ async function installFromSpec(
             release = await resolveGithubRelease(spec.repo, spec.ref, sourceOptions)
         } catch (error) {
             /*
-             * 未认证的 GitHub REST API 只有 60 次/小时，很容易被限流；
-             * codeload 的 tarball 不走 API，装插件够用了（版本号从包里的 package.json 读）。
+             * 未认证的 GitHub REST API 限流 60 次/小时
+             * 限流且未指定 ref 时改用 codeload tarball；tarball 不走 API，版本号读自包内 package.json
              */
             if (spec.ref !== null || !isGithubRateLimitError(error)) {
                 throw error
@@ -206,7 +206,7 @@ export async function runPluginCommand(
         switch (subcommand) {
             case "list": {
                 const plugins = await scanPluginDirs(ctx.paths)
-                /* --check 只读清单 + 查网络，不再需要启动插件进程 */
+                /* --check 只读清单并查网络，不启动插件进程 */
                 const updates = check
                     ? await checkPluginUpdates(
                           plugins.map((plugin) => ({
@@ -331,10 +331,9 @@ export async function runPluginCommand(
                     plugins.find((plugin) => plugin.id === name) ??
                     plugins.find((plugin) => plugin.name === name)
                 /*
-                 * 找不到就必须说找不到
+                 * 目标不存在时报 not-found
                  *
-                 * 以前无论有没有这个插件都会打印「已删除插件」：`rm --force` 对不存在的路径
-                 * 不报错，名字打错或者已经被删掉时，用户以为卸载成功、实际什么都没发生。
+                 * `rm --force` 对不存在的路径不报错，删除成功与路径不存在无法从返回值区分
                  */
                 if (target === undefined) {
                     ctx.elog.error(`没有这个插件：${name}（wellspring plugin list 看已装的）`)
@@ -354,7 +353,7 @@ export async function runPluginCommand(
                     return failure(`plugin.not-found:${target.id}`)
                 }
                 await removePlugin(target.id, ctx.paths)
-                // 删掉目录后禁用记录也要跟着清，否则同名的插件重装回来还是禁用态
+                // 目录删除后清除禁用记录，同名插件重装后即为启用态
                 await setPluginEnabled(target.id, true, ctx.paths)
                 ctx.elog.info(
                     `已删除插件 ${target.id}${ignore && dependents.length > 0 ? "（忽略依赖）" : ""}`,
@@ -366,7 +365,7 @@ export async function runPluginCommand(
         }
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        /* 码里再带一份，终端会按人类可读文案打印；详情里的冒号不再被截断 */
+        /* 错误码附带原始消息，终端按人类可读文案打印 */
         ctx.elog.error(message)
         return failure(`plugin.failed:${message}`)
     }

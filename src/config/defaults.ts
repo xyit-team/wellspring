@@ -5,7 +5,7 @@ import {
     type PluginsSetting,
 } from "./types.ts"
 
-/** 单供应商时代的默认模型设置；旧配置缺 models 时用它兜底 */
+/** 默认模型设置；旧配置缺少 models 节时使用 */
 export const DEFAULT_MODELS: ModelsSetting = Object.freeze({
     providers: Object.freeze([]),
     activeProvider: "openai",
@@ -13,8 +13,7 @@ export const DEFAULT_MODELS: ModelsSetting = Object.freeze({
     activeReasoning: "off",
 })
 
-/** 缺省配置。缺文件或读取失败时作为回退 */
-/** 插件更新的默认设置：默认走 npm，registry 用官方源 */
+/** 插件更新默认设置：npm 渠道与官方 registry */
 export const DEFAULT_PLUGINS: PluginsSetting = Object.freeze({
     update: Object.freeze({
         type: "npm" as const,
@@ -23,6 +22,7 @@ export const DEFAULT_PLUGINS: PluginsSetting = Object.freeze({
     }),
 })
 
+/** 缺省配置；缺文件或读取失败时作为回退 */
 export const DEFAULT_SETTINGS: AppSetting = Object.freeze({
     version: SETTING_VERSION,
     logger: Object.freeze({ level: "info" as const }),

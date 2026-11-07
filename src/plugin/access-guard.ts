@@ -1,8 +1,7 @@
-/*
- * 插件访问守卫：插件加载/执行期间禁止直接 import 文件、进程等模块，
- * 统一走宿主 API（api.fs / ctx.fs、api.logger 等）。
- * 这是软隔离，无法阻止 plugin 通过 process.getBuiltinModule 等宿主逃逸。
- */
+// 插件访问守卫：插件加载与执行期间，fs / child_process / worker_threads / vm /
+// module / inspector 的 import 由 resolve hook 拒绝，插件侧使用宿主 API
+// （api.fs / ctx.fs、api.logger 等）
+// 软隔离：process.getBuiltinModule 等宿主逃逸不在拦截范围内
 
 import { registerHooks } from "node:module"
 

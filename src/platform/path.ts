@@ -1,8 +1,9 @@
 /*
- * 目录解析。
- * 根目录：config（配置与凭据）、data（持久数据）、cache（可再生成）、log（日志）。
- * 优先级：initPaths 显式覆盖 > WELLSPRING_*_DIR > WELLSPRING_HOME 便携模式 > 平台默认。
- * 仅解析路径，不创建目录；创建见 file.ts 的 ensureDirs。
+ * 目录解析
+ *
+ * 根目录：config（配置与凭据）、data（持久数据）、cache（可再生成）、log（日志）
+ * 优先级：initPaths 显式覆盖 > WELLSPRING_*_DIR > WELLSPRING_HOME 便携模式 > 平台默认
+ * 仅解析路径，不创建目录；创建见 file.ts 的 ensureDirs
  */
 
 import { isAbsolute, join, normalize } from "node:path"
@@ -20,7 +21,7 @@ export interface PathRoots {
     readonly logDir: string
 }
 
-/** 显式覆盖，通常来自 CLI 参数。相对路径按当前工作目录解析 */
+/** 显式覆盖，通常来自 CLI 参数；相对路径按当前工作目录解析 */
 export interface PathOverrides {
     readonly configDir?: string
     readonly dataDir?: string
@@ -52,7 +53,7 @@ const ROOT_LABELS: Readonly<Record<RootKey, string>> = {
     logDir: "log",
 }
 
-/** 是否 Termux 用户态：目录沿用 XDG，HOME 可用 */
+// 是否 Termux 用户态：目录沿用 XDG，HOME 可用
 function isTermuxEnv(env: NodeJS.ProcessEnv): boolean {
     return (
         readEnv("TERMUX_VERSION", env) !== undefined ||
@@ -74,8 +75,8 @@ function xdgRoots(env: NodeJS.ProcessEnv, home: string): PathRoots {
 }
 
 /*
- * Android 应用沙箱：HOME 通常指向应用私有 files 目录。
- * 未设置 HOME 时依赖 WELLSPRING_HOME；两者皆无则使用系统用户目录。
+ * Android 应用沙箱：HOME 通常指向应用私有 files 目录
+ * 未设置 HOME 时依赖 WELLSPRING_HOME；两者皆无则使用系统用户目录
  */
 function androidAppRoots(env: NodeJS.ProcessEnv, home: string): PathRoots {
     const base = readEnv("HOME", env) ?? home
@@ -87,7 +88,7 @@ function androidAppRoots(env: NodeJS.ProcessEnv, home: string): PathRoots {
     }
 }
 
-/** 平台默认根目录。参数可注入，供测试覆盖各平台 */
+/** 平台默认根目录；参数可注入，供测试覆盖各平台 */
 export function defaultRoots(
     platformName: PlatformName,
     env: NodeJS.ProcessEnv,
@@ -122,7 +123,7 @@ export function defaultRoots(
     }
 }
 
-/** 便携模式：所有数据落在同一个根下 */
+// 便携模式：所有数据落在同一个根下
 function portableRoots(home: string): PathRoots {
     return {
         configDir: join(home, "config"),
@@ -149,7 +150,7 @@ function toAbsolute(input: string, env: NodeJS.ProcessEnv): string {
 
 let cached: ResolvedPaths | null = null
 
-/** 解析并缓存。重复调用会按最新参数与环境变量重新解析 */
+/** 解析并缓存；重复调用会按最新参数与环境变量重新解析 */
 export function initPaths(
     overrides: PathOverrides = {},
     env: NodeJS.ProcessEnv = process.env,
@@ -201,7 +202,7 @@ export function getPaths(): ResolvedPaths {
     return cached ?? initPaths()
 }
 
-/** 清空缓存，供测试使用。下次 getPaths 重新读取环境变量 */
+/** 清空缓存，供测试使用；下次 getPaths 重新读取环境变量 */
 export function resetPaths(): void {
     cached = null
 }

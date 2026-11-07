@@ -1,6 +1,7 @@
 /*
- * 会话段编解码。
- * 每轮一个 zstd frame：解压后是 JSONL 事件流，一行一个事件。
+ * 会话段编解码
+ *
+ * 每轮一个 zstd frame；解压后是 JSONL 事件流，一行一个事件
  */
 
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib"

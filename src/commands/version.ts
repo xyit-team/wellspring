@@ -1,5 +1,5 @@
 /*
- * version：读取 package.json 的版本号并输出运行环境。
+ * version 命令：读取 package.json 版本号并输出运行环境
  */
 
 import { join } from "node:path"

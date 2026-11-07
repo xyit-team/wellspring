@@ -1,13 +1,10 @@
-/*
- * 插件更新：按清单声明的来源（wellspring.npm / wellspring.github / 安装时记录的 source）
- * 查最新版本，下载并复用 installPlugin(mode: "update") 落盘。
- *
- * 约束：
- * - 有正在运行的 Wellspring 服务（service.json + pid 存活）时拒绝更新：
- *   Windows 上插件目录被进程当 cwd，且运行中的服务还持有旧代码
- * - 没有声明来源的插件直接报错，不会默默跳过
- * - 不指定 type 时用配置 plugins.update.type（默认 npm）
- */
+// 插件更新：按清单声明的来源（wellspring.npm / wellspring.github / 安装时记录的 source）
+// 查最新版本，下载后复用 installPlugin(mode: "update") 落盘
+
+// 服务运行中（service.json + pid 存活）拒绝更新：Windows 上插件目录被进程当作 cwd，
+// 运行中的服务还持有旧代码
+// 没有声明来源的插件直接报错
+// 不指定 type 时用配置 plugins.update.type（默认 npm）
 
 import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"

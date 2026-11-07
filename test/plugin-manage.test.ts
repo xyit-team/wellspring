@@ -60,7 +60,7 @@ async function writePlugin(dirName: string, id: string, version = "1.0.0"): Prom
     await writeFile(join(dir, "package.json"), JSON.stringify({ name: id, version }), "utf8")
 }
 
-/** 最小 store 模式 zip，够 readZip 解析 */
+// 最小 store 模式 zip，够 readZip 解析
 function buildZip(files: Record<string, string>): Buffer {
     const localParts: Buffer[] = []
     const centralParts: Buffer[] = []

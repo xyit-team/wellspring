@@ -1,8 +1,8 @@
 /*
- * 跨平台的测试入口：显式列出 test/ 下的 *.test.ts / *.test.mjs。
+ * 跨平台测试入口：显式列出 test/ 下的 *.test.ts / *.test.mjs
  *
- * 不用 `node --test test`：Node 24 不接受目录参数；
- * 也不用 `node --test` 的默认发现规则：不同 Node 版本对 .ts 的发现范围不一致。
+ * Node 24 的 `node --test` 不接受目录参数
+ * 默认发现规则对 .ts 的覆盖范围随 Node 版本变化
  */
 
 import { spawnSync } from "node:child_process"
@@ -40,9 +40,10 @@ if (files.length === 0) {
     process.exit(1)
 }
 /*
- * 串行跑测试文件：GitHub 的 4 核 runner 上并发跑插件 sandbox 相关文件时，
- * Node 24 会在 InternalCallbackScope 里触发原生断言（异步上下文 id 非 0）。
- * 串行更稳，代价只是几十秒。
+ * 串行跑测试文件
+ *
+ * 4 核 runner 上并发跑插件 sandbox 相关文件时，Node 24 在
+ * InternalCallbackScope 触发原生断言（异步上下文 id 非 0）
  */
 const result = spawnSync(process.execPath, ["--test", "--test-concurrency=1", ...files], {
     stdio: "inherit",

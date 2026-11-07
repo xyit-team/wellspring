@@ -1,5 +1,5 @@
 /*
- * 自定义供应商与模型切换：配置校验、凭据分槽、模型解析、宿主模型服务、CLI 切换。
+ * 自定义供应商与模型切换：配置校验、凭据分槽、模型解析、宿主模型服务、CLI 切换
  */
 
 import assert from "node:assert/strict"
@@ -356,14 +356,14 @@ test("CLI：config 切换供应商/模型，key --provider 操作自定义供应
     const output = { text: "" }
     const ctx = makeContext(settings, output)
 
-    /** 同一进程连续跑多条 config 命令时按文件重读；真实 CLI 每条命令都是新进程 */
+    // 每条命令按文件重读设置；真实 CLI 每条命令都是新进程
     async function freshConfigContext(): Promise<CommandContext> {
         const loaded = await loadSettings(join(paths().configDir, SETTING_FILE_NAME))
         return { ...ctx, settings: loaded.getData() ?? ctx.settings }
     }
 
     const configSet = await runConfigCommand(ctx, ["set", "models.activeProvider", "deepseek"])
-    // 只读命令上下文里的 settingsFile 指向临时目录，写入会成功
+    // 上下文的 settingsFile 指向临时目录，写入成功
     assert.equal(configSet.result.isSuccess(), true)
     const reloaded = await loadSettings(join(paths().configDir, SETTING_FILE_NAME))
     assert.equal(reloaded.getData()?.models?.activeProvider, "deepseek")
@@ -377,7 +377,7 @@ test("CLI：config 切换供应商/模型，key --provider 操作自定义供应
     const active = await runConfigCommand(ctx, ["get", "models.activeModel"])
     assert.equal(active.result.isSuccess(), true)
 
-    // 网络代理：CLI 也能设置（网页设置用的是同一份 app-setting.json）
+    // 网络代理：CLI 与网页设置共用 app-setting.json
     let proxyCtx = await freshConfigContext()
     const proxySet = await runConfigCommand(proxyCtx, [
         "set",
@@ -453,7 +453,7 @@ test("CLI：config 切换供应商/模型，key --provider 操作自定义供应
     const badKey = await runConfigCommand(ctx, ["set", "plugins./evil.host", "x"])
     assert.equal(badKey.result.isSuccess(), false)
 
-    // key 默认操作当前生效供应商（测试上下文 activeProvider 固定 openai，这里显式指定）
+    // key 默认操作生效供应商；测试上下文 activeProvider 固定 openai，故显式指定
     const status = await runKeyCommand(ctx, ["status", "--provider", "deepseek"])
     assert.equal(status.result.isSuccess(), true)
     assert.match(output.text, /供应商: DeepSeek/)

@@ -180,7 +180,7 @@ async function runApprovalTurn(approved: boolean): Promise<{ reply: string; requ
     assert.equal(request.command, "node")
     assert.equal(request.requestedPermission, "workspace-write")
     assert.equal(request.justification, "需要写入构建产物")
-    /* 审批界面要展示这些：argv 是真正执行的东西，其余决定这次调用还能做什么 */
+    // 审批界面字段：argv 为实际执行的命令，其余限定本次调用的范围
     assert.deepEqual(request.argv, ["-e", "console.log(1)"])
     assert.equal(request.network, true)
     assert.equal(request.background, true)

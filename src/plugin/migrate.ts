@@ -1,9 +1,5 @@
-/*
- * 插件 id 迁移的宿主实现：plugin-data、插件配置、禁用状态，可选删掉旧插件目录。
- *
- * 全部操作都是「先检查、再动手」，任何一步失败都停下并把已经做过的事写进 steps，
- * 让命令能如实告诉用户迁移到哪一步了。
- */
+// 插件 id 迁移的宿主实现：plugin-data、插件配置、禁用状态，可选删除旧插件目录
+// 每步先检查再执行；失败即停止，已完成的步骤写入 steps，供命令报告迁移进度
 
 import { cp, readdir, rename } from "node:fs/promises"
 import { dirname } from "node:path"
@@ -24,10 +20,10 @@ export interface HostMigratorOptions {
 }
 
 /**
- * 目标数据目录是否已经有真实内容
+ * 目标数据目录是否有真实内容
  *
- * 插件加载时宿主会建好 <plugin-data>/<id>/（里面固定有 tmp/），
- * 所以「目录存在」不等于「有数据要保护」；只有 tmp/ 时按空目录处理。
+ * 插件加载时宿主会预建 <plugin-data>/<id>/（含 tmp/），目录存在不代表有数据要保护
+ * 只有 tmp/ 时按空目录处理
  */
 async function hasRealContent(dir: string): Promise<boolean> {
     const entries = await readdir(dir).catch(() => [] as string[])
@@ -139,9 +135,8 @@ export function createHostMigrator(options: HostMigratorOptions): HostMigrateApi
                 /*
                  * 3. 禁用状态：plugins-state.json 以完整 id 为 key
                  *
-                 * 只清掉旧 id 的标记，不把「禁用」搬到新 id：用户是在升级插件，
-                 * 不是要求新版本也停用；把禁用搬过去还会让迁移命令自己失去宿主
-                 * （插件被禁用后就不再加载，命令也没了）。
+                 * 只清掉旧 id 的标记，禁用状态不带去新 id
+                 * 新 id 被禁用后插件不再加载，迁移命令自身也会随插件消失
                  */
                 const disabled = await readPluginState(options.paths)
                 if (disabled.has(from)) {

@@ -13,11 +13,11 @@ export interface AgentToolRequest {
     readonly currentPermission?: SandboxAccess
     readonly requestedPermission?: SandboxAccess
     readonly justification?: string
-    /** 请求联网：和提权是两件事，审阅时也要看到 */
+    /** 请求联网；与提权独立的审阅项 */
     readonly network?: boolean
     /** 请求后台执行 */
     readonly background?: boolean
-    /** 要喂给进程的标准输入（可能很大，界面截断显示） */
+    /** 标准输入；可能很大，界面截断显示 */
     readonly stdin?: string
     /** 请求的超时毫秒 */
     readonly timeoutMs?: number
@@ -40,20 +40,20 @@ const storage = new AsyncLocalStorage<AgentToolContext>()
  * 跨进程的身份注册表：一次 Agent 工具调用一个 id
  *
  * 插件工具调用走 RPC 出宿主进程，插件回访宿主时（host.capabilities.*、host.workspaceFs.*）
- * 不在发起调用的 async 链上，ALS 取不到值
+ * 不在发起调用的 async 链上，ALS 取不到上下文
  * 传的是 id，上下文本身留在宿主进程：AgentToolContext 含函数与 elog，不可序列化
  * 并发调用各有各的 id，与调用退出顺序无关
  */
 const registry = new Map<string, AgentToolContext>()
 
-/** 登记一次工具调用，返回跨进程传递的 id */
+// 登记一次工具调用，返回跨进程传递的 id
 export function registerAgentToolContext(context: AgentToolContext): string {
     const id = `agent-ctx-${randomUUID()}`
     registry.set(id, context)
     return id
 }
 
-/** 注销一次工具调用的身份；此后的同名请求查不到上下文 */
+// 注销工具调用身份；此后按该 id 查不到上下文
 export function releaseAgentToolContext(id: string): void {
     registry.delete(id)
 }
@@ -66,7 +66,7 @@ export function resolveAgentToolContext(id: string | undefined | null): AgentToo
     return registry.get(id) ?? null
 }
 
-/** 当前登记数，用于测试与诊断 */
+/** 当前登记数，测试与诊断用 */
 export function activeAgentToolContextCount(): number {
     return registry.size
 }

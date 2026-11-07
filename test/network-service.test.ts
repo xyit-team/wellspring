@@ -1,5 +1,5 @@
 /*
- * 宿主网络配置服务：读写 app-setting.json 的 network.proxy。
+ * 宿主网络配置服务：读写 app-setting.json 的 network.proxy
  */
 
 import assert from "node:assert/strict"
@@ -94,7 +94,7 @@ test("非法代理地址不落盘", async () => {
 })
 
 test("配置文件写不进去时返回失败", async () => {
-    // 用一个目录冒充配置文件：读取/写入都会失败
+    // 目录当作配置文件，读取与写入都会失败
     const dirAsFile = join(root, "config", "dir-as-file")
     await mkdir(dirAsFile, { recursive: true })
     const target = createHostNetworkService({

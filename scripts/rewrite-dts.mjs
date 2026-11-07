@@ -1,7 +1,7 @@
 /*
- * tsc 的 rewriteRelativeImportExtensions 只改 JS，.d.ts 里仍然保留 ".ts"。
- * 声明文件是给消费者 tsc 看的；带 .ts 后缀的相对导入会要求对方打开
- * allowImportingTsExtensions，所以发布前统一改回 .js。
+ * tsc 的 rewriteRelativeImportExtensions 只改 JS，.d.ts 仍保留 ".ts"
+ * 带 .ts 后缀的相对导入要求消费者的 tsc 打开 allowImportingTsExtensions
+ * 发布前把 .d.ts 里的相对导入改回 .js
  */
 
 import { readdir, readFile, writeFile } from "node:fs/promises"

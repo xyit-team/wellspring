@@ -86,11 +86,8 @@ export interface AgentTurnParams {
     /** 直接问当前终端用户（CLI）；缺省时等待 HostAgentApi.respondAsk */
     readonly askUser?: (request: HostAgentAskRequest) => Promise<string | null>
     readonly onStep?: (event: { readonly turn: number; readonly step: number }) => void
-    /**
-     * 中断信号：用户停止时打断正在进行的模型调用
-     *
-     * 已经收到的正文照常保留（按「已停止」收尾），不会再发起新的步骤。
-     */
+    // 中断信号：用户停止时打断在途的模型调用
+    // 已收到的正文保留，按 stopped 收尾，不再发起新步骤
     readonly signal?: AbortSignal
 }
 
@@ -196,9 +193,8 @@ function pluginToolSchema(tool: AgentTool): ChatCompletionTool {
     }
 }
 
-/**
- * 单步 usage：缓存/推理字段只在供应商报告时出现，inputTokens 同时是本步的上下文占用
- */
+// 单步 usage；缓存与推理字段仅在供应商报告时出现
+// inputTokens 同时是本步的上下文占用
 function stepUsage(reply: OpenAIReply): Record<string, unknown> {
     return { ...usageOf(reply) }
 }
@@ -242,9 +238,8 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
     ]
 
     /*
-     * 本轮事件边产生边落盘：进程在流式过程中被停掉/重启时，至少留下已经开始的
-     * 这一轮（尤其是用户消息），下一轮不会突然「失忆」。
-     * persisted 记录已写入的条数，避免重复追加。
+     * 本轮事件边产生边落盘：流式过程中进程退出时保留已开始的轮次
+     * persisted 为已写入条数，后续只追加新增部分
      */
     let persisted = 0
     const persistPending = async (): Promise<void> => {
@@ -270,7 +265,7 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
     if (system !== undefined && system.trim() !== "") {
         prompt.push(system)
     }
-    // 会话的第一轮：只触发一次，适合注入一次性的 system prompt
+    // 会话第一轮触发一次，可注入一次性 system prompt
     if (turn === 1) {
         await emitSessionStart({
             sessionId: session.meta.id,
@@ -307,7 +302,7 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
 
     messages.push(...toChatMessages(session.events), { role: "user", content: input })
 
-    // 模型入参已经拼好（不能再把本轮用户消息重复算进历史），此时把开头事件落盘
+    // 模型入参确定后写入开头事件，本轮用户消息不重复计入历史
     await persistPending()
 
     const hostSession = getSession(session.meta.id)
@@ -326,7 +321,7 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
     let cacheReadTokens: number | null = null
     let cacheWriteTokens: number | null = null
     let reasoningTokens: number | null = null
-    /* 最后一次请求的 prompt tokens：本轮收尾时上下文里实际占用了多少 */
+    /* 最后一次请求的 prompt tokens，即收尾时的上下文占用 */
     let contextTokens: number | null = null
     const streamed = display && stream
     const markdownEnabled = display && process.stdout.isTTY === true
@@ -427,9 +422,9 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
         }
     }
 
-    // 用户点了停止：在步与步之间收尾，不再发起新的模型调用或工具执行
+    // 用户停止后在步与步之间收尾，不再发起模型调用与工具执行
     let stopped = false
-    // 用函数读，避免第一处判断把类型收窄成 false，后面的比较被判成恒假
+    // 以函数读取：直接读取会让类型收窄成 false，后续比较被判为恒假
     const stopRequested = (): boolean => hostSession?.stopRequested === true
 
     for (let step = 1; step <= maxSteps; step += 1) {
@@ -536,14 +531,14 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
         }
         if (data.interrupted === true) {
             /*
-             * 用户停止：这一次模型调用被信号打断，收到的正文已经记进 finalText。
-             * 本轮就地收尾——不执行这次返回的工具调用，也不再进入下一步。
+             * 用户停止：本次模型调用被信号打断，已收到的正文记入 finalText
+             * 本轮就地收尾，不执行本次返回的工具调用，不进入下一步
              */
             stopped = true
         }
         if (data.reply.inputTokens !== null) {
             inputTokens = (inputTokens ?? 0) + data.reply.inputTokens
-            // 最后一次请求的 prompt tokens 就是当时占用的上下文
+            // 最后一次请求的 prompt tokens 即当时的上下文占用
             contextTokens = data.reply.inputTokens
         }
         if (data.reply.outputTokens !== null) {
@@ -598,7 +593,7 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
             })
         }
         endAgent()
-        // 非流式（管道/--no-stream）也按步打印模型输出，让工具调用和消息交替出现（参考 Harness）
+        // 非流式（管道或 --no-stream）按步打印模型输出，工具调用与消息交替出现
         if (display && !streamed && data.reply.text !== "") {
             ctx.elog.agent(markdownEnabled ? renderMarkdown(data.reply.text) : data.reply.text)
             printedStepText = data.reply.text
@@ -612,7 +607,7 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
                 step,
                 reply: data.reply.text,
             })
-            // 最终回答已经生成：先落盘，进程在收尾前退出也不会丢
+            // 最终回答生成后先落盘
             await persistPending()
             break
         }
@@ -694,7 +689,7 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
                             },
                             async () => await record.tool.call(args),
                         )
-                        // 模型侧文本优先取工具渲染的 content；缺省沿用旧规则（data.content 或序列化）
+                        // 模型侧文本优先取 result.content，缺省用 data.content 或序列化结果
                         const rendered =
                             result.content ??
                             (typeof result.data["content"] === "string"
@@ -765,7 +760,7 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
             time: Date.now(),
             data: { turn, step, reason: "completed" },
         })
-        // 一步的工具调用与结果都齐了，checkpoint 一次
+        // 工具调用与结果齐全后 checkpoint
         await persistPending()
         if (stopRequested()) {
             stopped = true
@@ -798,7 +793,7 @@ export async function executeAgentTurn(params: AgentTurnParams): Promise<Result<
     })
 
     if (!streamed && display && finalText !== printedStepText) {
-        // 只有兜底文案（例如达到最大步数）或最后一步没有正文时才需要补打
+        // 最终文案与已打印内容不同时补打
         ctx.elog.agent(markdownEnabled ? renderMarkdown(finalText) : finalText)
     }
 

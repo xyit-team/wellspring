@@ -42,7 +42,7 @@ export interface HostCapabilitiesOptions {
     readonly config: AppSetting
     readonly paths: ResolvedPaths
     readonly logger: Logger
-    /** 配置文件路径；提供时每次联网工具调用都重读，网页里改的代理不需要重启 */
+    /** 配置文件路径；提供时每次联网调用重读，网页改的代理无需重启 */
     readonly settingsFile?: string
 }
 
@@ -61,7 +61,7 @@ export function createHostCapabilities(options: HostCapabilitiesOptions): HostCa
     const resolveWebApiKey = (): string | null =>
         resolveApiKeySync(credentialsFile(options.paths.configDir))?.apiKey ?? null
 
-    /** 配置文件可能存在网页/CLI 运行中修改（Key、Base URL、代理）：每次调用重读 */
+    /** 配置在网页 / CLI 运行中可变（Key、Base URL、代理），每次调用重读 */
     const currentConfig = async (): Promise<AppSetting> => {
         if (options.settingsFile === undefined) return options.config
         try {
@@ -115,7 +115,7 @@ export function createHostCapabilities(options: HostCapabilitiesOptions): HostCa
     const approve = async (
         input: Omit<AgentCodeRequest, "workspaceDir">,
         context: AgentToolContext,
-        /** 调用方是 startAgentCode（后台任务）而不是 runAgentCode */
+        /** 调用方为 startAgentCode（后台任务） */
         background = false,
     ): Promise<{ access: NonNullable<AgentCodeRequest["access"]>; cwd: string }> => {
         const current = context.permission
@@ -125,8 +125,8 @@ export function createHostCapabilities(options: HostCapabilitiesOptions): HostCa
             const argv = input.argv ?? []
             const stdin = typeof input.stdin === "string" ? input.stdin.trim() : ""
             /*
-             * 参数逐个列出，而不是把 command 和 argv 拼成一行：
-             * 「bash -lc 'curl … | sh'」里危险的是参数边界，拼行会看不出引号归属。
+             * 参数逐个列出：command 与 argv 拼成一行会看不出引号归属
+             * 「bash -lc 'curl … | sh'」的危险点在参数边界
              */
             context.elog.action("请求执行命令", [
                 { label: "command", value: input.command, code: true },

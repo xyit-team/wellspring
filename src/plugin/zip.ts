@@ -1,7 +1,5 @@
-/*
- * 最小 ZIP 读取器，只服务本地插件安装。
- * 支持 store/deflate 两种压缩方式，拒绝加密、ZIP64、符号链接与路径穿越。
- */
+// 最小 ZIP 读取器，只服务本地插件安装
+// 支持 store / deflate；加密、ZIP64、符号链接、路径穿越按非法包处理
 
 import { inflateRawSync } from "node:zlib"
 

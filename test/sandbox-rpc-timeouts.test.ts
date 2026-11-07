@@ -8,15 +8,15 @@ import { RPC_TIMEOUT_MS } from "../src/sandbox/rpc-timeouts.ts"
 const projectRoot = join(import.meta.dirname, "..")
 
 test("host RPC 超时策略：时长由用户/模型/外部进程决定的调用不设上限", () => {
-    // 给固定秒数必然误杀：宿主还在干活，插件这边先报超时，界面看着像「点了没反应」
+    // 固定秒数会误杀长调用：宿主仍在执行，插件侧先报超时
     assert.equal(RPC_TIMEOUT_MS.agentStream, null)
     assert.equal(RPC_TIMEOUT_MS.agentChat, null)
     assert.equal(RPC_TIMEOUT_MS.picker, null)
-    // 探针逐个跑、每个 10s，总量由插件数量决定，不能用固定上限
+    // 探针逐个跑、每个 10s，总量随插件数量变化，无固定上限
     assert.equal(RPC_TIMEOUT_MS.pluginsCheckUpdates, null)
-    // 联网客户端自己有 openai.timeoutMs（默认 60s、用户可调），默认的 30s 会把它砍掉
+    // 联网客户端按 openai.timeoutMs 结束（默认 60s、用户可调），默认 30s 会提前砍掉
     assert.equal(RPC_TIMEOUT_MS.webTools, null)
-    // 供应商客户端自己按 timeoutMs × (1+maxRetries) 结束，固定 120s 会在重试时先超时
+    // 供应商客户端按 timeoutMs × (1+maxRetries) 结束，固定 120s 会在重试时先超时
     assert.equal(RPC_TIMEOUT_MS.modelsFetch, null)
 })
 
@@ -83,7 +83,7 @@ test("plugin-host 的启用/禁用插件用 pluginsToggle，不吃默认 30s", a
 })
 
 test("execute_code 的 RPC 超时覆盖沙箱命令的最长时限", async () => {
-    // 沙箱 timeoutMs 上限 600s：RPC 必须更长，否则长命令会先报「host RPC 超时」
+    // 沙箱 timeoutMs 上限 600s：RPC 上限须更长，长命令会由 RPC 先报超时
     assert.ok(RPC_TIMEOUT_MS.sandboxExec > 600_000)
     const source = await readFile(join(projectRoot, "src", "sandbox", "plugin-host.ts"), "utf8")
     assert.match(source, /"host\.capabilities\.executeCode",[\s\S]*?RPC_TIMEOUT_MS\.sandboxExec/)

@@ -1,6 +1,7 @@
 /*
- * 作用域插件：@scope/name 作为 id、目录与数据路径。
- * 覆盖发现、路径构造、安装、启用状态与无 scope 的向后兼容。
+ * 作用域插件：@scope/name 作为 id，plugin-data 与配置文件按 id 嵌套
+ * 安装落盘用本地名（包名最后一段），目录单层
+ * 覆盖发现、路径构造、安装、启用状态与无 scope 的兼容
  */
 
 import assert from "node:assert/strict"
@@ -68,7 +69,7 @@ function source(id: string, version = "1.0.0"): string {
     ].join("\n")
 }
 
-/** 直接在 plugins/<id> 下写入插件 */
+// 直接在 plugins/<id> 下写入插件
 async function writePlugin(dataDir: string, id: string): Promise<string> {
     const dir = pluginDirOf(join(dataDir, "plugins"), id)
     assert.ok(dir !== null)
@@ -195,7 +196,7 @@ test("installPlugin：带 scope 的包名落到单层 plugins/<本地名>", asyn
         }),
     )
     const result = await installPlugin(zip, paths(dir), {})
-    /* 1.7 起目录用本地名（包名最后一段），与 scope 无关 */
+    // 1.7 起目录用本地名（包名最后一段），与 scope 无关
     assert.equal(result.id, "installed")
     assert.equal(result.packageName, "@xyit/installed")
     assert.equal(result.target, join(dir, "plugins", "installed"))

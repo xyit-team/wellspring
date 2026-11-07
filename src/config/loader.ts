@@ -1,7 +1,8 @@
 /*
- * 配置读写。
- * 默认路径为用户配置目录下的 app-setting.json；缺文件时写入默认值。
- * 失败时 Result 的 code 说明原因，getData() 回退默认配置，供调用方决定是否继续启动。
+ * 配置读写
+ *
+ * 路径为配置目录下的 app-setting.json；缺文件时写入默认值
+ * 失败时 code 说明原因，getData() 返回默认配置，由调用方决定是否继续启动
  */
 
 import { join } from "node:path"
@@ -22,7 +23,7 @@ export function settingsFile(): string {
     return join(getPaths().configDir, SETTING_FILE_NAME)
 }
 
-/** 读取配置。文件不存在时创建默认配置 */
+/** 读取配置；文件不存在时创建默认配置 */
 export async function loadSettings(file: string = settingsFile()): Promise<Result<AppSetting>> {
     let text: string | null
     try {
@@ -39,7 +40,7 @@ export async function loadSettings(file: string = settingsFile()): Promise<Resul
     try {
         parsed = JSON.parse(text)
     } catch {
-        // 损坏文件不覆盖，留给调用方决定是否备份
+        // 解析失败保留原文件
         return Result.errorWithData<AppSetting>(DEFAULT_SETTINGS, CONFIG_CODES.parseFailed)
     }
 

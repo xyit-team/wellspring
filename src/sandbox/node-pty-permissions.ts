@@ -1,9 +1,9 @@
 /*
  * node-pty 的 spawn-helper 执行位
  *
- * node-pty 1.1.0 发布的 prebuilds 里 spawn-helper 是 -rw-r--r--，
- * 缺执行位时 posix_spawnp 直接失败：import 成功、开终端才报错。
- * macOS 与 Linux 都受影响，与 Node 版本无关。
+ * node-pty 1.1.0 的 prebuilds 里 spawn-helper 是 -rw-r--r--，缺执行位时 posix_spawnp 失败
+ * import 阶段不报错，开终端时才失败
+ * macOS 与 Linux 都受影响，与 Node 版本无关
  */
 
 import { chmodSync, statSync } from "node:fs"
@@ -19,9 +19,9 @@ export interface SpawnHelperOptions {
 }
 
 export interface SpawnHelperResult {
-    /** 补执行位成功时是被修的文件 */
+    /** 补执行位成功时被修的文件 */
     readonly repaired: string | null
-    /** 修不了时的原因；null 表示无需处理或已修好 */
+    /** 失败原因；null 表示无需处理或已修复 */
     readonly error: string | null
 }
 
@@ -37,7 +37,7 @@ export function spawnHelperCandidates(
     ]
 }
 
-/** 缺执行位就补上；Windows 不涉及 */
+/** 补齐执行位；Windows 不适用 */
 export function ensureSpawnHelperExecutable(options: SpawnHelperOptions): SpawnHelperResult {
     if (options.platform === "win32") {
         return { repaired: null, error: null }

@@ -203,7 +203,7 @@ test("PluginSandboxClient 命令/钩子/fs/host/event 往返", { timeout: 20_000
         await client.runCommand("host-info", [], pluginDir, false)
         assert.match(output.text, /host:running/)
 
-        // 任意目录文件 API：code 插件用它管理工作区
+        // 任意目录文件 API 供 code 插件管理工作区
         const external = join(root, "external-root")
         await mkdir(external, { recursive: true })
         await client.runCommand("root-fs", [external], pluginDir, false)
@@ -1019,7 +1019,7 @@ test("sandbox 插件通过 host agent 与 Agent 交互", { timeout: 20_000 }, as
         await client.start()
         assert.equal(await client.runCommand("chat", ["hello"], root, true), 0)
         assert.match(output.text, /agent:hello/)
-        // 流式 RPC 不设超时上限，但仍要正常把增量事件转发给插件
+        // 流式 RPC 无超时上限，增量事件仍正常转发给插件
         assert.equal(await client.runCommand("stream", ["hi"], root, true), 0)
         assert.match(output.text, /stream:hi\|delta:partial/)
     } finally {

@@ -1,7 +1,8 @@
 /*
- * 宿主进程执行 API。
- * 插件被 access-guard 禁止直接 import node:child_process，需要跑命令时走这里。
- * 执行与输出缓冲都在宿主侧，插件用 poll 拉增量，不为终端单独引入流式 RPC。
+ * 宿主进程执行 API
+ *
+ * 插件被 access-guard 禁止直接 import node:child_process，执行命令走这里
+ * 执行与输出缓冲在宿主侧，插件用 poll 拉增量，无流式 RPC
  */
 
 export interface HostExecRunOptions {

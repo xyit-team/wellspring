@@ -1,6 +1,7 @@
 /*
- * Sandbox 公共类型。
- * plugin profile 与 agent-code profile 共用 backend / supervisor；这里先定义 agent-code。
+ * Sandbox 公共类型
+ *
+ * plugin profile 与 agent-code profile 共用 backend / supervisor
  */
 
 import type { SandboxAccess, SandboxSetting } from "../config/types.ts"
@@ -115,6 +116,7 @@ export interface PluginLaunchInput {
     readonly limits: SandboxLimits
     /**
      * 是否放开出网
+     *
      * 清单 sandbox.network: true 才给；bwrap 加 --share-net，seatbelt 放行 (allow network*)
      * Windows / Node permission 后端不隔离网络
      */

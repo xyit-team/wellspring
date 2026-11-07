@@ -311,7 +311,7 @@ test("调用结束后插件请求不带上次身份", { timeout: 60_000 }, async
 
         await waitFor(() => state.reports.length >= 2, "插件回报迟到调用的结果")
         assert.deepEqual(state.reports.sort(), ["late-denied:L", "late-denied:M"])
-        // 迟到的调用不带身份，也不该借别的身份
+        // 迟到的调用不带身份，也不沿用其他会话的身份
         assert.deepEqual(state.attempts, [])
     } finally {
         await client.close().catch(() => undefined)
@@ -355,7 +355,7 @@ test("并发写工作区：只读会话拒绝，可写会话通过", { timeout: 
     const workspace = await mkdtemp(join(root, "ws-"))
     const previousCwd = process.cwd()
     try {
-        // workspaceFs 的根是会话工作区，不是宿主 cwd：故意把 cwd 换到别处
+        // workspaceFs 按会话工作区解析，与宿主 cwd 无关；此处把 cwd 换到别处
         process.chdir(workspace)
         const first = callProbe(client, agentContext("s-readonly", "read-only", seen), {
             mode: "write",
@@ -376,7 +376,7 @@ test("并发写工作区：只读会话拒绝，可写会话通过", { timeout: 
         assert.equal(readonlyResult.success, false, "只读会话写入应被拒绝")
         assert.match(String(readonlyResult.data["error"]), /read-only/)
         assert.equal(writableResult.success, true)
-        // 落在会话工作区（agentContext 的 workspaceDir = root），而不是宿主 cwd
+        // 落点在会话工作区（agentContext 的 workspaceDir = root），与宿主 cwd 无关
         assert.equal(await exists(join(workspace, "writable.txt")), false, "不该写进宿主 cwd")
         assert.equal(await exists(join(root, "readonly.txt")), false)
         assert.equal(await exists(join(root, "writable.txt")), true)

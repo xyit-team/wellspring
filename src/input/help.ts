@@ -1,5 +1,7 @@
 /*
- * 帮助文本生成。内置命令来自命令表，插件命令来自注册表。
+ * 帮助文本生成
+ *
+ * 内置命令来自命令表，插件命令来自注册表
  */
 
 import { BUILTIN_COMMANDS, findBuiltin } from "./commands.ts"

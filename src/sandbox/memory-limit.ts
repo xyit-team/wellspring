@@ -1,18 +1,17 @@
 /*
- * 沙箱物理内存限制。
+ * 沙箱物理内存限制，走 cgroup v2 的 memory.max
  *
- * RLIMIT_AS 限制的是虚拟地址空间，会直接打死 V8 / JVM / Go 这类需要预留大块地址空间的
- * 运行时，且并不能约束真实物理内存。这里改用 cgroup v2 的 memory.max：
+ * RLIMIT_AS 限制的是虚拟地址空间，会打死 V8 / JVM / Go 这类需要预留大块地址空间的运行时，且不约束真实物理内存
  *
- *   1. 用 `systemd-run --user --scope -p MemoryMax=<bytes> -p MemorySwapMax=0` 起一个
- *      临时 scope（用户 session 下无需 root）；
- *   2. 读 systemctl 的 ControlGroup 拿到 cgroup 路径；
- *   3. 用一层 /bin/sh 包住真正的 sandbox 命令：先把 shell 自己写进 cgroup.procs，
- *      再 exec bwrap，保证 bwrap 及其后代一出生就在受限 cgroup 里；
- *   4. 结束后读 memory.events 判断是否发生过 oom_kill，再停掉 scope。
+ * 流程：
+ *   1. 用 `systemd-run --user --scope -p MemoryMax=<bytes> -p MemorySwapMax=0`
+ *      起一个临时 scope（用户 session 下无需 root）
+ *   2. 读 systemctl 的 ControlGroup 拿 cgroup 路径
+ *   3. 用一层 /bin/sh 包住真正的 sandbox 命令
+ *      shell 先把自己写进 cgroup.procs，再 exec bwrap，bwrap 及后代一出生就在受限 cgroup 里
+ *   4. 结束后读 memory.events 判断是否发生过 oom_kill，再停掉 scope
  *
- * 宿主没有 systemd user manager（例如容器、SSH 非登录环境）时返回 inactive，
- * 调用方退回“只限制 V8 堆 + 超时”的方式，不阻塞命令执行。
+ * 宿主没有 systemd user manager（容器、SSH 非登录环境）时返回 inactive，调用方退回只限制 V8 堆 + 超时的方式
  */
 
 import { spawn } from "node:child_process"
@@ -56,7 +55,7 @@ export interface MemoryLimitDeps {
 export interface MemoryLimitOptions {
     /** 物理内存上限，字节 */
     readonly bytes: number
-    /** 沙箱超时；用来给 scope 的 RuntimeMaxSec 留余量，避免泄漏 */
+    /** 沙箱超时；为 scope 的 RuntimeMaxSec 留余量，防 scope 泄漏 */
     readonly timeoutMs: number
     readonly deps?: Partial<MemoryLimitDeps>
 }
@@ -177,7 +176,7 @@ export async function createSandboxMemoryLimit(
         unit,
         "--property",
         `MemoryMax=${bytes}`,
-        // 不把物理内存挤进 swap，否则 memory.max 会被换页绕过
+        // 物理内存不挤进 swap，swap 会让 memory.max 被换页绕过
         "--property",
         "MemorySwapMax=0",
         "--property",

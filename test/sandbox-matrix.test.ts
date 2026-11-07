@@ -1,7 +1,7 @@
 /*
- * 沙箱验证矩阵：探针表、期望值、路径映射与结果归约。
+ * 沙箱验证矩阵：探针表、期望值、路径映射与结果归约
  *
- * 不需要真实 OS 沙箱，任何平台都能守住矩阵本身的行为
+ * 不依赖真实 OS 沙箱，任何平台都可运行
  * 最后一组用 DirectBackend 跑真实探针，验证矩阵能测出越界
  */
 
@@ -117,18 +117,18 @@ test("probeArgs：mount 后端用沙箱内路径，host 后端用宿主路径", 
     assert.deepEqual(probeArgs("read:workspace", "seatbelt", fixture, "t0"), [
         "/fixture/workspace/demo.txt",
     ])
-    /* scratch 一律走占位符：真实路径由 SCRATCH 环境变量在探针内展开 */
+    // scratch 一律走占位符：真实路径由探针内的 SCRATCH 环境变量展开
     assert.deepEqual(probeArgs("write:scratch", "bwrap", fixture, "t3"), ["@SCRATCH/probe-t3.txt"])
     assert.deepEqual(probeArgs("write:scratch", "seatbelt", fixture, "t3"), [
         "@SCRATCH/probe-t3.txt",
     ])
-    /* 沙箱外的路径不做映射：bwrap 下该目录根本没挂进 namespace */
+    // 沙箱外路径不做映射：bwrap 下该目录未挂进 namespace
     assert.deepEqual(probeArgs("read:outside", "bwrap", fixture, "t0"), ["/fixture/id_ed25519"])
     assert.deepEqual(probeArgs("write:outside", "seatbelt", fixture, "t1"), [
         "/fixture/outside/probe-t1.txt",
     ])
     assert.deepEqual(probeArgs("write:devnull", "bwrap", fixture, "t0"), ["/dev/null"])
-    /* 出网探针连宿主回环监听，不依赖外网可达性 */
+    // 出网探针连宿主回环监听，不依赖外网可达性
     const egress = probeArgs("net:egress", "bwrap", fixture, "t0", 41234)
     assert.deepEqual(egress, ["127.0.0.1:41234"])
     assert.equal(probeArgs("link:hardlink", "bwrap", fixture, "t2").length, 2)
@@ -157,7 +157,7 @@ test("classifyResult：成功输出算 allow，非零退出且无输出算 deny"
         classifyResult({ exitCode: 0, stdout: '{"ok":false,"code":"EPERM"}', stderr: "" }),
         { actual: "deny", detail: "EPERM" },
     )
-    /* exec 被拦：探针没跑起来，按 deny 计但带上原因 */
+    // exec 被拦：探针未启动，按 deny 计并带上原因
     const blocked = classifyResult({
         exitCode: 126,
         stdout: "",
@@ -165,13 +165,13 @@ test("classifyResult：成功输出算 allow，非零退出且无输出算 deny"
     })
     assert.equal(blocked.actual, "deny")
     assert.match(blocked.detail, /operation not permitted/)
-    /* 退出 0 却没结果 = 探针自身有问题，不能算通过 */
+    // 退出 0 却无结果：探针自身出错，计为 error
     const broken = classifyResult({ exitCode: 0, stdout: "", stderr: "" })
     assert.equal(broken.actual, "error")
     assert.match(broken.detail, /没有输出结果/)
 })
 
-/* ---------- 真实探针：这套矩阵必须能测出“没有隔离” ---------- */
+// ---------- 真实探针：矩阵须能测出「没有隔离」 ----------
 
 let root = ""
 let workspace = ""
@@ -235,11 +235,11 @@ test("无隔离后端上，越界探针会被测出来（矩阵不是永远报�
     const secret = await runOne("read:outside")
     assert.equal(secret.actual, "allow", "direct 后端必然能读私有文件")
 
-    /* 写越界期望 deny，所以跑在 direct 上必然 MISMATCH —— 正是矩阵的价值 */
+    // 写越界期望 deny：direct 上必然 MISMATCH
     for (const id of ["write:outside"]) {
         assert.equal(expectOf(id, "direct", "read-only"), "deny")
     }
-    /* 读全局放开后，读越界在 direct 上反而符合预期 */
+    // 读全局放开后，读越界在 direct 上符合预期
     assert.equal(expectOf("read:outside", "direct", "read-only"), "allow")
 })
 
@@ -293,7 +293,7 @@ test("完整矩阵跑两遍都稳定：硬链接在 workspace-write 不会被 EE
         return out
     }
 
-    /* 两轮共用同一个 workspace 目录：第一轮 read-only，第二轮 workspace-write */
+    // 两轮共用同一个 workspace 目录：第一轮 read-only，第二轮 workspace-write
     const first = await run("read-only")
     const second = await run("workspace-write")
 
@@ -320,7 +320,7 @@ test("写探针把 @SCRATCH/ 展开成 SCRATCH 环境变量，并在缺失时明
     const classified = classifyResult(result)
     assert.equal(classified.actual, "allow", classified.detail)
 
-    /* SCRATCH 缺失时报错 */
+    // SCRATCH 缺失：探针报错
     const { spawnSync } = await import("node:child_process")
     const missing = spawnSync(process.execPath, ["-e", script, "@SCRATCH/x.txt"], {
         encoding: "utf8",

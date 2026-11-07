@@ -1,7 +1,5 @@
-/*
- * 宿主插件管理服务：列出插件、安装 zip 与 tar.gz、卸载、启用/禁用。
- * 状态文件只记录禁用项；启用/禁用与安装/卸载都要求下次启动生效。
- */
+// 宿主插件管理服务：列出插件、安装 zip 与 tar.gz、卸载、启用与禁用
+// 状态文件只记录禁用项；没有热加载控制器时，启用/禁用与安装/卸载都在下次启动生效
 
 import { randomUUID } from "node:crypto"
 import { readdir } from "node:fs/promises"
@@ -275,9 +273,8 @@ export function createHostPluginManager(options: HostPluginManagerOptions): Host
             try {
                 await removePath(target.dirPath)
                 /*
-                 * 再确认一次：Windows 上目录被进程占成 cwd 时删不掉，
-                 * 而 `rm --force` 对「没删掉但其实还在」不会报错，
-                 * 不复查就会出现「界面说卸载成功、插件还在」。
+                 * 删除后复查：Windows 上目录被进程占成 cwd 时删不掉
+                 * rm --force 对未删掉的路径不报错，不复查会误报卸载成功
                  */
                 if ((await statIfExists(target.dirPath)) !== null) {
                     logger.warn({ id: target.id, dir: target.dirPath }, "插件目录没删掉")

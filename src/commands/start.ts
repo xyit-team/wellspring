@@ -1,6 +1,8 @@
 /*
- * start：以服务进程启动。
- * 加载插件后触发 onInit，保持进程存活；只有 Ctrl+C / SIGTERM 或插件调用 shutdown() 才退出。
+ * start 命令：以服务进程启动
+ *
+ * 加载插件后触发 onInit，保持进程存活
+ * 退出条件：Ctrl+C / SIGTERM，或插件调用 shutdown()
  */
 
 import { emitInitHooks, emitShutdownHooks, setShutdownHandler } from "../api/host/hooks.ts"
@@ -43,7 +45,7 @@ export async function runStartCommand(ctx: CommandContext): Promise<CommandOutco
     let signals = 0
     const onSignal = (): void => {
         signals += 1
-        // 第二次 Ctrl+C 直接退出：某个插件的 onShutdown 卡住时仍然能停下来
+        // 第二次 Ctrl+C 强制退出，覆盖 onShutdown 卡住的情况
         if (signals > 1) {
             ctx.elog.notice("强制退出")
             process.exit(130)
@@ -53,7 +55,7 @@ export async function runStartCommand(ctx: CommandContext): Promise<CommandOutco
     process.on("SIGINT", onSignal)
     process.on("SIGTERM", onSignal)
 
-    // 没有常驻 handle 时 Node 会直接退出，这里显式保持事件循环
+    // 无常驻句柄时显式保持事件循环
     const keepAlive = setInterval(() => undefined, 60_000)
 
     ctx.logger.info({ pid: process.pid }, "service started")
@@ -64,7 +66,7 @@ export async function runStartCommand(ctx: CommandContext): Promise<CommandOutco
         await shutdownPromise
         setHostStatus("stopping")
         ctx.elog.notice("正在关闭…")
-        // 兜底：插件 onShutdown 若卡住（例如有长连接没断开），超时后强制退出
+        // onShutdown 超时兜底
         const forceExit = setTimeout(() => {
             ctx.elog.notice("关闭超时，强制退出")
             process.exit(130)

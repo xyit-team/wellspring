@@ -1,5 +1,5 @@
 /*
- * 宿主 Agent 停止：运行中的一轮在下一步之前收尾，不再发起模型调用。
+ * 宿主 Agent 停止：运行中的一轮在下一步之前收尾，不再发起模型调用
  */
 
 import assert from "node:assert/strict"
@@ -43,7 +43,7 @@ before(async () => {
             requestCount += 1
             response.statusCode = 200
             response.setHeader("content-type", "text/event-stream")
-            // 第一步要一个慢工具，第二步才是最终回答
+            // 首次调用请求慢工具，第二次返回最终回答
             const parts = requestCount === 1 ? toolCallChunks() : answerChunks()
             for (const part of parts) {
                 response.write(`data: ${JSON.stringify(part)}\n\n`)
@@ -157,7 +157,7 @@ test("Agent 停止：下一步之前收尾，不再调用模型", { timeout: 20_
         name: "read",
         introduction: { params: { file_path: "路径" }, content: "读取文件" },
         call: async () => {
-            // 给外部留出停止窗口
+            // 留出停止窗口
             await sleep(400)
             return { success: true, data: { content: "文件内容" } }
         },
@@ -172,9 +172,9 @@ test("Agent 停止：下一步之前收尾，不再调用模型", { timeout: 20_
     })
 
     /*
-     * 先等第一次模型调用真的发生、工具开始跑，再停止。
-     * stop() 会立即打断在途请求，太早按下去会把第一次调用也掐掉，
-     * 那就测不到「停止后不再进入下一步」这件事了。
+     * 等第一次模型调用发生、工具开始执行后再停止
+     * stop() 立即中断在途请求，提前调用会连第一次请求一起中断
+     * 本用例观察的是停止后不再进入下一步
      */
     for (let attempt = 0; attempt < 200 && requestCount === 0; attempt += 1) {
         await sleep(10)
@@ -194,7 +194,7 @@ test("Agent 停止：下一步之前收尾，不再调用模型", { timeout: 20_
     assert.match(result.reply, /先跑个工具/, "保留已经产出的正文")
     assert.doesNotMatch(result.reply, /最终回答/, "不再继续生成")
 
-    // 已经收尾的一轮、未知会话都返回 false
+    // 已收尾的一轮与未知会话返回 false
     assert.equal(await service.stop(sessionId), false)
     assert.equal(await service.stop("no-such-session"), false)
 })
@@ -222,7 +222,7 @@ test("Session 停止标记：新一轮开始时复位", () => {
     assert.equal(session.stopRequested, false)
     session.requestStop()
     assert.equal(session.stopRequested, true)
-    // 下一轮重新开始时不应还带着上一轮的停止标记
+    // 新一轮复位停止标记
     session.end()
     session.begin()
     assert.equal(session.stopRequested, false)

@@ -1,5 +1,8 @@
 /*
- * sandbox 审计日志：<logDir>/sandbox-audit.log，JSONL。
+ * sandbox 审计日志
+ *
+ * 文件：<logDir>/sandbox-audit.log，JSONL，一行一个事件
+ * 写入串行排队，失败丢弃，不向调用方抛错
  */
 
 import { appendFile } from "node:fs/promises"

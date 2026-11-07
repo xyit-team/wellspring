@@ -1,5 +1,5 @@
 /*
- * 命令层公共类型与错误文案。
+ * 命令层公共类型与错误文案
  */
 
 import type { Logger } from "pino"
@@ -93,7 +93,7 @@ const MESSAGES: Readonly<Record<string, string>> = {
     "sandbox.cleanup-failed": "清理 sandbox ACL 失败",
 }
 
-/** 错误码 → 人类可读文案，字段级细节保留在第一个冒号后（详情里可能还有冒号） */
+/** 错误码转人类可读文案；第一个冒号后的内容作为详情保留 */
 export function errorMessage(code: string): string {
     const separator = code.indexOf(":")
     if (separator === -1) {

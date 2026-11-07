@@ -3,7 +3,7 @@
  * 构建 macOS Seatbelt loader：native/seatbelt-run/src/main.c → bin/darwin-<arch>/seatbelt-run
  *
  * 产物按架构分目录，SeatbeltBackend.packagedLauncherPath() 按 process.arch 解析
- * 缺产物时退回 /usr/bin/sandbox-exec（deprecated），两者都没有则 fail-closed
+ * 缺产物时退回 /usr/bin/sandbox-exec（deprecated），两者都缺则 fail-closed
  *
  * 用法：
  *   node scripts/build-seatbelt.mjs            当前架构
@@ -21,7 +21,7 @@ const repoRoot = resolve(import.meta.dirname, "..")
 const source = join(repoRoot, "native", "seatbelt-run", "src", "main.c")
 const binRoot = join(repoRoot, "bin")
 
-/** Node 的 process.arch → clang 的 -arch 取值 */
+// process.arch → clang -arch 取值
 const CLANG_ARCH = { arm64: "arm64", x64: "x86_64" }
 
 const args = new Set(process.argv.slice(2))
@@ -52,7 +52,7 @@ function clean() {
 }
 
 if (process.platform !== "darwin") {
-    /* -arch 只换目标架构，链接仍需 macOS SDK 与 Mach-O 运行时 */
+    // -arch 只换目标架构，链接仍需 macOS SDK
     if (cleanOnly) {
         clean()
         process.exit(0)
@@ -77,7 +77,7 @@ if (!clang.ok) {
     fail("找不到 clang：xcode-select --install\n" + `${clang.output}`)
 }
 
-/* 显式绑定 SDK：不带 -isysroot 时系统头文件路径为空，dlfcn.h 会报 file not found */
+// 显式绑定 SDK：缺少 -isysroot 时系统头文件路径为空，dlfcn.h 报 file not found
 const sdk = run("xcrun", ["--sdk", "macosx", "--show-sdk-path"])
 if (!sdk.ok || sdk.output === "") {
     fail("找不到 macOS SDK：xcode-select --install\n" + `${sdk.output}`)
@@ -90,7 +90,7 @@ for (const arch of targets) {
     }
 }
 
-/** 编译单个架构，返回产物路径 */
+// 编译单个架构
 function build(arch) {
     const outDir = join(binRoot, `darwin-${arch}`)
     const outFile = join(outDir, "seatbelt-run")
@@ -115,7 +115,7 @@ function build(arch) {
     }
     chmodSync(outFile, 0o755)
 
-    /* 本机编译会自动 ad-hoc 签名，产物经 strip 或跨机拷贝后签名缺失 */
+    // 本机编译自带 ad-hoc 签名，产物经 strip 或跨机拷贝后签名丢失
     const signed = run("codesign", ["--force", "--sign", "-", outFile])
     if (!signed.ok) {
         fail(`ad-hoc 签名失败（${arch}）：\n${signed.output}`)
@@ -129,7 +129,7 @@ function build(arch) {
     return outFile
 }
 
-/** 端到端自检：施加一份 profile 再 exec /usr/bin/true，证明内核真的接受 */
+// 端到端自检：施加 profile 后 exec /usr/bin/true
 function selfTest(file) {
     const result = run(file, ["--self-test"])
     if (!result.ok) {

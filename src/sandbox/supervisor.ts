@@ -1,5 +1,7 @@
 /*
- * sandbox 进程 supervisor：输出上限、超时、SIGTERM→SIGKILL、退出码。
+ * sandbox 进程 supervisor
+ *
+ * 职责：输出上限、超时、SIGTERM → SIGKILL（2s 后）、退出码
  */
 
 import { spawn } from "node:child_process"
@@ -50,8 +52,9 @@ export function startSandboxProcess(
         env: { ...spec.env },
         stdio: ["pipe", "pipe", "pipe"],
         /*
-         * POSIX 用独立进程组转发信号；Windows 上 detached 会让受限 token 子进程
-         * 在 CreateProcessAsUser 后 DLL 初始化失败（0xC0000142），且没有进程组可取。
+         * POSIX 下 detached 建独立进程组，信号按组转发
+         * Windows 下 detached 会让受限 token 子进程在 CreateProcessAsUser 后 DLL 初始化失败（0xC0000142）
+         * 且没有进程组可取
          */
         detached: process.platform !== "win32",
     })
@@ -93,7 +96,7 @@ export function startSandboxProcess(
                 return
             }
         } catch {
-            // 进程组已不存在，落到单进程 kill
+            // 进程组不存在，退回单进程 kill
         }
         child.kill(name)
     }

@@ -1,14 +1,10 @@
-/*
- * 插件清单（package.json）里宿主关心的字段。
- *
- * 两个身份分开：
- * - **本地身份**（`wellspring.name`）：目录名、插件 id、plugin-data 与配置文件名都用它。
- *   显式声明，不从 npm 包名推导——没有 npm / github 的本地插件照样能装、能测。
- * - **发布身份**（`wellspring.npm` / `wellspring.github`）：只用来查更新，缺省表示该渠道不可用。
- *
- * 老插件没有 `wellspring.name`：回退到 package.json 的 `name` 去掉 scope 作兼容，
- * 调用方可以通过 `hasDeclaredLocalName` 判断是否需要提示用户补字段。
- */
+// 插件清单（package.json）里宿主关心的字段
+
+// 本地身份 wellspring.name：目录名、插件 id、plugin-data 与配置文件名都取自它
+// 发布身份 wellspring.npm / wellspring.github：只用于查更新，缺省表示该渠道不可用
+
+// 老插件没有 wellspring.name 时回退到 package.json name 去掉 scope 的一段
+// hasDeclaredLocalName 用于判断是否需要提示补字段
 
 import { readFile, writeFile } from "node:fs/promises"
 import { join } from "node:path"
@@ -46,8 +42,8 @@ export interface PluginManifest {
 /**
  * 包名 → 本地名
  *
- * 取最后一段并清洗非法字符：`@xyit/test` → `test`，`@etheros/wellspring-core` → `wellspring-core`。
- * 清洗后仍不合法返回 null。
+ * 取最后一段并清洗非法字符：`@xyit/test` → `test`，`@etheros/wellspring-core` → `wellspring-core`
+ * 清洗后仍不合法时返回 null
  */
 export function packageLocalName(packageName: string): string | null {
     const trimmed = packageName.trim()
@@ -72,8 +68,8 @@ export function hasDeclaredLocalName(pkg: PluginManifest | null): boolean {
 /**
  * 清单的本地名
  *
- * 优先 `wellspring.name`；没有时回退到 package.json `name` 的最后一段（旧插件兼容）。
- * 两者都不合法返回 null。
+ * 优先 `wellspring.name`；没有时回退到 package.json `name` 的最后一段（旧插件兼容）
+ * 两者都不合法时返回 null
  */
 export function manifestLocalName(pkg: PluginManifest | null): string | null {
     const declared = pkg?.wellspring?.name
@@ -136,8 +132,8 @@ export async function readPluginManifest(dir: string): Promise<PluginManifest | 
 /**
  * 把安装来源写进已装插件的 package.json
  *
- * 只增一个 `wellspring.source` 字段，不动其它内容；写失败不影响安装本身
- * （更新时拿不到来源只影响 file 类型的 update）。
+ * 只增一个 `wellspring.source` 字段，不动其它内容
+ * 写失败不影响安装本身；更新时拿不到来源只影响 file 类型的 update
  */
 export async function writePluginSource(dir: string, source: PluginSource): Promise<void> {
     const file = join(dir, "package.json")

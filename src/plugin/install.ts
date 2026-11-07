@@ -1,13 +1,11 @@
-/*
- * 本地插件安装与更新：目录、zip 或 tar.gz 包。
- * 归档在插件根目录下的临时目录解压，校验后再搬到 plugins/<本地名>。
- *
- * 本地名来自清单 `wellspring.name`（没有时回退到 package.json name 的最后一段）：
- * 目录是单层的 plugins/<本地名>，与 npm scope 无关，方便没有 npm/github 的本地插件。
- *
- * 插件 package.json 可以用 packageManager 声明包管理器；声明了 dependencies 时
- * 安装阶段会调用它自动安装依赖（没有声明则按 lockfile 推断，仍没有则报错）。
- */
+// 本地插件安装与更新：目录、zip 或 tar.gz 包
+// 归档在插件根目录下的临时目录解压，校验后搬到 plugins/<本地名>
+
+// 本地名取清单 wellspring.name；未声明时回退到 package.json name 的最后一段
+// 目录为单层 plugins/<本地名>，与 npm scope 无关
+
+// packageManager 声明包管理器；有 dependencies 时安装阶段自动安装依赖
+// 未声明 packageManager 时按 lockfile 推断，推断不出报错
 
 import { cp, lstat, readFile, readdir, rename, stat } from "node:fs/promises"
 import { basename, join, resolve } from "node:path"
@@ -35,7 +33,7 @@ import { extractZip } from "./zip.ts"
 
 const ENTRIES = ["index.ts", "index.js", "index.mjs", "index.mts"]
 
-/** install = 新装；update = 必须已装同名插件，覆盖它 */
+/** install 新装；update 覆盖已装的同名插件 */
 export type PluginInstallMode = "install" | "update"
 
 export interface InstallPluginOptions {
@@ -48,7 +46,7 @@ export interface InstallPluginOptions {
     readonly runInstall?: typeof import("./package-manager.ts").runPackageInstall
     /** 安装来源，装完写进已装插件的 package.json（供 update --type file 用） */
     readonly source?: PluginSource
-    /** update 时要求的本地名：包里的本地名与它不一致就拒绝，避免更新到另一个插件 */
+    /** update 时要求的本地名；包里的本地名与它不一致即拒绝 */
     readonly expectedLocalName?: string
 }
 
@@ -190,8 +188,8 @@ export async function installPlugin(
             throw new Error(`插件本地名不合法：${declared}`)
         }
         /*
-         * 存在性用 lstat：悬空符号链接的 stat 是 ENOENT，update 会误判成没装。
-         * update 还要找旧布局（plugins/@scope/<本地名>），找到就顺手迁到单层布局。
+         * 存在性用 lstat：悬空符号链接的 stat 返回 ENOENT，update 会误判成未安装
+         * update 同时查找旧布局（plugins/@scope/<本地名>），找到后迁到单层布局
          */
         let existing = await lstat(target).catch(() => null)
         let legacy: { readonly id: string; readonly dir: string } | null = null
@@ -226,8 +224,8 @@ export async function installPlugin(
         let installDir = sourceDir
         if (needsInstall && !fromArchive) {
             /*
-             * 目录安装不能碰源目录：复制到暂存区后再安装依赖，
-             * node_modules 不复制，避免把开发目录里的依赖带进去。
+             * 目录安装复制到暂存区后再安装依赖，源目录不变
+             * node_modules 不复制，开发目录里的依赖不进安装结果
              */
             stage = join(root, `.install-stage-${process.pid}-${Date.now().toString(36)}`)
             await removePath(stage)
@@ -260,7 +258,7 @@ export async function installPlugin(
         }
 
         if (legacy !== null) {
-            /* 旧布局的身份跟着退休，否则禁用状态会挂在旧 id 上 */
+            /* 旧布局 id 退场：清掉它的禁用标记 */
             await setPluginEnabled(legacy.id, true, paths)
         }
         if (options.source !== undefined) {

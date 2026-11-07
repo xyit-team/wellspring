@@ -39,7 +39,7 @@ function highlightCode(code: string, language?: string): string {
     }
 }
 
-// 单行代码块补一行，markdansi 才会画框
+// 单行代码块补一行占位，markdansi 据此画框
 function ensureCodeBox(block: string): string {
     const match = /^(`{3,}|~{3,})([^\n]*)\n([\s\S]*?)\n\1$/.exec(block)
     if (match === null) {

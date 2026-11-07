@@ -1,6 +1,7 @@
 /*
- * 插件 HTTP 宿主能力。
- * 插件在 sandbox 内，宿主负责监听端口，请求通过 RPC 交给插件 handler。
+ * 插件 HTTP 宿主能力
+ *
+ * 插件在 sandbox 内，宿主监听端口，请求通过 RPC 交给插件 handler
  */
 
 export interface HttpRequest {

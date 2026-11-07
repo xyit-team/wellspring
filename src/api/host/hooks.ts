@@ -1,7 +1,8 @@
 /*
- * 平台 → 插件的钩子。
- * 插件通过 `wellspring/api/host/index.ts` 导入注册函数；平台在对话生命周期里触发。
- * 注册发生在插件 import / setup / init 期间，用 AsyncLocalStorage 记录归属插件。
+ * 平台 → 插件的钩子
+ *
+ * 插件从 wellspring/api/host/index.ts 导入注册函数，平台在对话生命周期里触发
+ * 注册发生在插件 import / setup / init 期间，用 AsyncLocalStorage 记录归属插件
  */
 
 import { AsyncLocalStorage } from "node:async_hooks"
@@ -55,11 +56,10 @@ export class SessionMessageEvent extends SessionLifecycleEvent {
 }
 
 /**
- * 会话的第一轮开始前触发（新会话的第一次对话）。
+ * 会话第一轮开始前触发（新会话的第一次对话）
  *
- * 与 `onMessage` 的区别：`onSessionStart` 每个会话只触发一次，适合注入一次性的
- * system prompt（例如插件的角色设定、工作区约定）；`onMessage` 的 before 阶段每轮都触发。
- * 可以在 `prompt` 数组里追加字符串，平台会把它们拼进 system 消息。
+ * 每个会话只触发一次；onMessage 的 before 阶段每轮触发
+ * prompt 数组可追加一次性 system prompt（角色设定、工作区约定），平台拼进 system 消息
  */
 export interface SessionStartTool {
     readonly name: string
@@ -138,7 +138,7 @@ export class AgentCallToolEvent extends EventBase {
 
 export class AgentAskEvent extends EventBase {
     declare readonly sessionId: string
-    /** 本次提问的 id；回答时对应用 UserAnswerEvent.askId */
+    /** 本次提问的 id；回答时对应 UserAnswerEvent.askId */
     declare readonly askId?: string
     declare readonly turn?: number
     declare readonly step?: number
@@ -619,8 +619,9 @@ export function setShutdownHandler(handler: (() => void) | null): void {
 }
 
 /**
- * 请求服务进程优雅关闭。
- * 只能在 `wellspring start` 进程内调用；关闭流程会先执行 onShutdown 钩子。
+ * 请求服务进程优雅关闭
+ *
+ * 只能在 wellspring start 进程内调用，关闭流程先执行 onShutdown 钩子
  */
 export function shutdown(): void {
     const bridge = getHostBridge()

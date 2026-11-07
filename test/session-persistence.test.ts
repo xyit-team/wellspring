@@ -1,5 +1,5 @@
 /*
- * 会话中断/重启时的落盘：本轮开始就先写用户消息，不能等整轮结束才写。
+ * 会话中断/重启时的落盘：本轮开始先写用户消息，不等整轮结束
  */
 
 import assert from "node:assert/strict"
@@ -170,8 +170,8 @@ test("Agent 本轮开始时用户消息已经落盘，进程中断也不会失�
     assert.notEqual(sessionId, "")
 
     /*
-     * 工具还卡着、整轮没有结束：从磁盘重新打开会话，应该已经能看到用户消息。
-     * 若仍然等结尾一次性 appendTurn，这里会是空的。
+     * 工具仍阻塞、整轮未结束：从磁盘重新打开会话时应已能看到用户消息
+     * 结尾一次性 appendTurn 的实现下，此处为空
      */
     let openedUser = ""
     for (let attempt = 0; attempt < 100; attempt += 1) {

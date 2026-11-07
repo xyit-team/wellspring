@@ -1,6 +1,7 @@
 /*
- * 服务进程控制：pid 文件 + 跨进程停止。
- * 只有 wellspring start 会写服务记录；wellspring stop 读取后发送 SIGTERM。
+ * 服务进程控制：pid 文件 + 跨进程停止
+ *
+ * 服务记录仅由 wellspring start 写入；wellspring stop 读取后发送 SIGTERM
  */
 
 import { join } from "node:path"
@@ -73,7 +74,7 @@ export async function writeServiceRecord(
     await writeJsonAtomic(serviceRecordFile(paths), { version: 1, ...record })
 }
 
-/** 只清理属于指定 pid 的记录，避免误删后来的服务 */
+// 仅清理指定 pid 的记录
 export async function clearServiceRecord(
     pid: number,
     paths: ResolvedPaths = getPaths(),

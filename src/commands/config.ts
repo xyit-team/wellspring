@@ -1,5 +1,5 @@
 /*
- * config 命令：path / show / get / set。
+ * config 命令：path / show / get / set
  */
 
 import { Result } from "../api/result/result.ts"
@@ -50,11 +50,8 @@ interface PluginConfigRef {
     readonly field: string | null
 }
 
-/**
- * `plugins.<id>.<field>`：读写插件自己的 <configDir>/plugins/<id>.json。
- * 插件 id 本身允许点号的情况极少，因此按“最后一个点”切分字段；
- * 没有点时表示整份配置。
- */
+// `plugins.<id>.<field>` 读写插件自己的 <configDir>/plugins/<id>.json
+// 插件 id 含点号的情况极少，按最后一个点切分字段；没有点时表示整份配置
 function parsePluginKey(key: string): PluginConfigRef | null {
     if (!key.startsWith(PLUGIN_CONFIG_DPIREFIX)) {
         return null
@@ -93,7 +90,7 @@ async function readPluginConfig(
     }
 }
 
-/** 先按 JSON 解析，失败就当裸字符串；这样 port 能存成数字、host 仍是字符串 */
+/** 先按 JSON 解析，失败按字符串处理；数字与字符串都能存入 */
 function parsePluginValue(raw: string): unknown {
     try {
         return JSON.parse(raw)
@@ -321,7 +318,7 @@ export async function runConfigCommand(
             if (key === undefined || raw === undefined) {
                 return failure(`${USAGE_CODES.missingValue}:key value`)
             }
-            /* 全局键优先：plugins.update.* 不是某个插件的配置 */
+            /* 全局键优先：plugins.update.* 属于全局配置 */
             if (isKey(key)) {
                 const next = writeValue(ctx.settings, key, raw)
                 if (typeof next === "string") {

@@ -1,5 +1,5 @@
 /*
- * 插件包管理：packageManager 解析，以及安装时按声明自动安装依赖。
+ * 插件包管理：packageManager 解析，安装时按声明自动安装依赖
  */
 
 import assert from "node:assert/strict"
@@ -105,7 +105,7 @@ test("zip 安装：按 packageManager 自动安装依赖", async () => {
     assert.equal(calls[0]?.manager, "npm")
     const files = await readdir(join(installed.target, "node_modules"))
     assert.deepEqual(files, ["fake-package"])
-    // 临时目录都已清理
+    // 暂存目录无残留
     const leftovers = (await readdir(join(paths().dataDir, "plugins"))).filter((name) =>
         name.startsWith(".install-"),
     )
@@ -138,7 +138,7 @@ test("目录安装：在暂存区安装依赖，不污染源目录", async () =>
     assert.notEqual(installDir, source)
     assert.equal(installed.packageManager, "pnpm@10.0.0")
     assert.deepEqual(await readdir(join(installed.target, "node_modules")), ["fresh"])
-    // 源目录的旧 node_modules 没有被复制，也没有被改动
+    // 源目录 node_modules 未被复制或改动
     assert.deepEqual(await readdir(join(source, "node_modules")), ["old"])
 })
 

@@ -1,6 +1,4 @@
-/*
- * 会话回放：把事件流还原成对话轮次与 Chat Completions 消息。
- */
+/* 会话回放：把事件流还原成对话轮次与 Chat Completions 消息 */
 
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 

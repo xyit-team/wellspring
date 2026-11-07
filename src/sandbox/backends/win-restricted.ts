@@ -1,13 +1,13 @@
 /*
- * Windows 用户态沙盒后端：受限 token + NTFS ACL + Job Object。
+ * Windows 用户态沙盒后端：受限 token + NTFS ACL + Job Object
  *
  * 身份模型（与 DSH 对齐）：
- *   - 每个 workspace 生成两个稳定 SID：SID_R（读/执行）、SID_W（读/写/删）；
- *   - workspace 根写可继承 ACE：SID_R 只读，SID_W 可写；scratch 两者都可写；
- *   - 命令按 access 选 token：read-only 用 SID_R，workspace-write 用 SID_W；
- *   - 读全局放开（WRITE_RESTRICTED 只约束写），不做读隔离。
+ *   - 每个 workspace 生成两个稳定 SID：SID_R（读/执行）、SID_W（读/写/删）
+ *   - workspace 根写可继承 ACE：SID_R 只读，SID_W 可写；scratch 两者都可写
+ *   - 命令按 access 选 token：read-only 用 SID_R，workspace-write 用 SID_W
+ *   - 读全局放开（WRITE_RESTRICTED 只约束写），不做读隔离
  *
- * 真实 ACL/token/Job Object 操作在 native/win-sandbox；TS 侧只负责状态、策略与参数。
+ * 真实 ACL/token/Job Object 操作在 native/win-sandbox，TS 侧只负责状态、策略与参数
  */
 
 import { spawn, spawnSync } from "node:child_process"
@@ -247,8 +247,9 @@ export class WinRestrictedBackend implements SandboxBackend {
     }
 
     /**
-     * 异步准备工作区：加载/生成 SID，调用 native --prepare 写入可继承 ACE。
-     * 同一 workspace+scratch 的并发调用会复用同一个 Promise。
+     * 异步准备工作区：加载/生成 SID，调用 native --prepare 写入可继承 ACE
+     *
+     * 同一 workspace+scratch 的并发调用复用同一个 Promise
      */
     async prepare(input: SandboxPrepareInput): Promise<void> {
         const workspace = resolve(input.workspaceDir)
@@ -294,8 +295,9 @@ export class WinRestrictedBackend implements SandboxBackend {
     }
 
     /**
-     * 删除 prepare 写入 workspace/scratch 的 ACL。
-     * 没有状态文件/内存记录时是 no-op（从没准备过，也就没有要清理的 SID）。
+     * 删除 prepare 写入 workspace/scratch 的 ACL
+     *
+     * 没有状态文件与内存记录时为 no-op：从未准备过，没有要清理的 SID
      */
     async cleanup(input: SandboxPrepareInput): Promise<void> {
         const workspace = resolve(input.workspaceDir)

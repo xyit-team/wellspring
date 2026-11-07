@@ -1,7 +1,8 @@
 /*
- * chat / run 命令。
- * 无 context 且 TTY 时进入交互式会话；否则单轮执行。
- * 所有轮次都作为 zstd JSONL 段写入会话，流式 chunk 一并保存。
+ * chat / run 命令
+ *
+ * 无 context 且 TTY 时进入交互式会话，其余情况单轮执行
+ * 所有轮次作为 zstd JSONL 段写入会话，流式 chunk 一并保存
  */
 
 import { randomUUID } from "node:crypto"
@@ -209,7 +210,7 @@ async function resolveSession(
         try {
             return { session: await store.open(last, cwd), created: false }
         } catch {
-            // 落到新建
+            // 回退到新建会话
         }
     }
     return { session: await store.create({ cwd, model: options.model }), created: true }
@@ -306,7 +307,7 @@ export async function executeTurn(params: {
     ]
 
     /*
-     * 用户消息先落盘：进程在模型流式过程中退出时，这一轮的问题不会从会话里消失。
+     * 用户消息先落盘：模型流式过程中进程退出时，本轮提问仍留在会话里
      */
     let persisted = 0
     const persistPending = async (): Promise<void> => {
@@ -317,7 +318,7 @@ export async function executeTurn(params: {
         persisted = events.length
     }
 
-    // onSessionStart 只在新会话的第一轮触发；onMessage 的 before 阶段每轮都可以追加系统提示
+    // onSessionStart 仅新会话第一轮触发；onMessage 的 before 阶段每轮都能追加系统提示
     const prompt: string[] = []
     if (system !== undefined && system.trim() !== "") {
         prompt.push(system)
@@ -358,7 +359,7 @@ export async function executeTurn(params: {
     }
     messages.push(...toChatMessages(session.events), { role: "user", content: input })
 
-    // 模型入参已经拼好，再把开头事件落盘，避免本轮用户消息被重复算进历史
+    // 模型入参确定后写入开头事件，本轮用户消息不重复计入历史
     await persistPending()
 
     await emitBeforeStep({
@@ -533,7 +534,7 @@ async function runRepl(
         }
     }
 
-    // ask 工具：在当前终端里提问
+    // ask 工具在当前终端提问
     const askUser = async (request: HostAgentAskRequest): Promise<string | null> => {
         rl.pause()
         try {

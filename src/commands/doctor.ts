@@ -1,5 +1,5 @@
 /*
- * doctor：环境与配置诊断。
+ * doctor 命令：环境与配置诊断
  */
 
 import { existsSync } from "node:fs"
@@ -13,11 +13,11 @@ interface Check {
     readonly name: string
     readonly ok: boolean
     readonly detail: string
-    /** 失败时补一行下一步；成功项不打印 */
+    /** 失败项附加的下一步提示 */
     readonly hint?: string
 }
 
-/** sandbox 不可用时的下一步；Android 与 Linux 的出路不同 */
+/** sandbox 不可用时的替代方案；Android 与 Linux 不同 */
 function sandboxHint(): string {
     if (isAndroid) {
         return "插件仍可用 Node permission model（只限制文件读写）；Agent 命令需 sandbox.mode=best-effort 才以宿主身份执行"

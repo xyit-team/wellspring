@@ -1,11 +1,9 @@
-/*
- * 插件运行时目录：
- * - 数据：<dataDir>/plugin-data/<id>/
- * - 配置：<configDir>/plugins/<id>.json（插件自己的 JSON 配置）
- *
- * id 可带 @scope 前缀，此时按字面拆成多级目录，与 npm 的 node_modules 布局一致
- * 无 scope 的 id 路径与旧版完全一致
- */
+// 插件运行时目录
+// 数据：<dataDir>/plugin-data/<id>/
+// 配置：<configDir>/plugins/<id>.json
+
+// id 带 @scope 前缀时拆成多级目录，与 npm 的 node_modules 布局一致
+// 无 scope 的 id 路径与旧版一致
 
 import { join } from "node:path"
 

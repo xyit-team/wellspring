@@ -1,11 +1,11 @@
 /*
- * 宿主级工作区注册表。
+ * 宿主级工作区注册表
  *
- * 工作区（用户手动添加的目录）由宿主统一管理，存在 <dataDir>/workspaces.json；
- * 插件通过 `api.workspaces` 读写，不再各自解析别的插件的数据目录。
+ * 工作区（用户手动添加的目录）由宿主统一管理，存在 <dataDir>/workspaces.json
+ * 插件通过 `api.workspaces` 读写
  *
  * 首次加载时兼容迁移旧版 wellspring-web 插件数据目录里的 workspaces.json：
- * 只读取 id / name / root / createdAt / lastSeenAt 这些索引字段，不碰会话正文与认证数据。
+ * 只读取 id / name / root / createdAt / lastSeenAt 这些索引字段，不涉及会话正文与认证数据
  */
 
 import { createHash } from "node:crypto"
@@ -51,7 +51,7 @@ export function legacyWorkspaceRegistryFile(paths: ResolvedPaths = getPaths()): 
     return join(paths.dataDir, "plugin-data", LEGACY_PLUGIN_DIR, REGISTRY_FILE)
 }
 
-/** 由工作目录派生稳定 id（与旧版 wellspring-web 的算法一致，保证会话目录还能对上） */
+// 由工作目录派生稳定 id；算法与旧版 wellspring-web 一致，会话目录可对应
 export function workspaceIdFor(root: string): string {
     const slug = basename(root)
         .toLowerCase()
@@ -172,7 +172,7 @@ async function writeRegistry(state: RegistryState): Promise<void> {
     await rename(temporary, state.file)
 }
 
-/** 注册表文件损坏时挪到 .broken，按空表启动，避免拖垮整个服务 */
+// 注册表损坏时改名为 .broken，按空表启动
 async function quarantine(state: RegistryState): Promise<void> {
     try {
         await rename(state.file, `${state.file}.broken`)
@@ -181,7 +181,7 @@ async function quarantine(state: RegistryState): Promise<void> {
     }
 }
 
-/** 只导入旧版 wellspring-web 的索引；旧文件损坏就跳过，不影响启动 */
+// 只导入旧版 wellspring-web 的索引；旧文件损坏就跳过，不影响启动
 async function migrateLegacy(state: RegistryState): Promise<void> {
     let raw: unknown
     try {

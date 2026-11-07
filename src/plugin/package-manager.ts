@@ -1,9 +1,7 @@
-/*
- * 插件依赖安装：插件自己的 package.json 用 packageManager 字段声明包管理器。
- *
- * 只认白名单命令（npm / pnpm / yarn / bun），字段不会变成任意命令执行；
- * 版本号只作声明，实际使用 PATH 里的同名命令（不安装新版本，也不走 corepack）。
- */
+// 插件依赖安装：插件 package.json 的 packageManager 字段声明包管理器
+
+// 只认白名单命令（npm / pnpm / yarn / bun），字段不会变成任意命令执行
+// 版本号只作声明；实际执行 PATH 里的同名命令，不安装新版本，不走 corepack
 
 import { spawn } from "node:child_process"
 import { readdir } from "node:fs/promises"
@@ -177,11 +175,11 @@ export interface InstallPluginDependenciesOptions {
 }
 
 /**
- * 安装插件依赖。
+ * 安装插件依赖
  *
- * - 没有 dependencies / optionalDependencies：直接跳过
- * - 有依赖但没有 packageManager：先用 lockfile 推断；仍没有则报错
- *   （不允许猜 npm，避免在错误的目录里跑错包管理器）
+ * 没有 dependencies / optionalDependencies：直接跳过
+ * 有依赖但没有 packageManager：先用 lockfile 推断
+ * 推断不出时报错，不默认使用 npm
  */
 export async function installPluginDependencies(
     directory: string,

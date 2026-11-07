@@ -1,13 +1,13 @@
 /*
- * Token 用量：模型报告的输出、缓存命中与上下文占用。
+ * Token 用量：模型报告的输出、缓存命中与上下文占用
  *
- * `inputTokens` 统一成 prompt tokens 总数，缓存命中的部分也计算在内；
- * `cacheReadTokens` / `cacheWriteTokens` 是其中的缓存读取与写入。
+ * `inputTokens` 统一成 prompt tokens 总数，缓存命中的部分也计算在内
+ * `cacheReadTokens` / `cacheWriteTokens` 是其中的缓存读取与写入
  * 不同供应商口径由 parseProviderUsage 抹平：
  * - DeepSeek / OpenAI：prompt_tokens（或 Responses 的 input_tokens）本身含缓存命中，
  *   命中数在 prompt_cache_hit_tokens 或 prompt_tokens_details.cached_tokens；
  * - 部分网关沿用 Anthropic 的 cache_read_input_tokens / cache_creation_input_tokens，
- *   这时 input_tokens 只是未缓存部分，parse 会加上两段缓存凑成总数。
+ *   这时 input_tokens 只是未缓存部分，parse 会把两段缓存加进总数
  */
 
 /** 一次模型调用报告的用量；供应商没返回的项为 null */
@@ -19,7 +19,7 @@ export interface ProviderUsage {
     readonly reasoningTokens: number | null
 }
 
-/** 界面几处共用的按需字段：空值不写进会话，旧数据格式保持不变 */
+// 界面共用的可选字段；空值不入会话，旧格式兼容
 export interface TokenUsage {
     readonly inputTokens: number | null
     readonly outputTokens: number | null
@@ -41,7 +41,7 @@ function recordOf(value: unknown): Record<string, unknown> | null {
     return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : null
 }
 
-/** 把供应商的 usage 原样对象归一化成计数；一条可用字段都没有时返回 null */
+// 供应商 usage 归一化为计数；无可用字段返回 null
 export function parseProviderUsage(value: unknown): ProviderUsage | null {
     const record = recordOf(value)
     if (record === null) {
@@ -63,8 +63,8 @@ export function parseProviderUsage(value: unknown): ProviderUsage | null {
         countOf(promptDetails?.["cache_creation_tokens"]) ??
         countOf(inputDetails?.["cache_creation_tokens"])
     /*
-     * Anthropic 口径的 input_tokens 不含缓存读取/写入，补成 prompt 总数；
-     * 有 prompt_tokens 或 *_tokens_details 的 OpenAI 口径不能再加，否则重复计数。
+     * Anthropic 口径的 input_tokens 不含缓存读取/写入，补成 prompt 总数
+     * OpenAI 口径的 prompt_tokens 与 *_tokens_details 已含缓存，再加会重复计数
      */
     const anthropicStyle =
         record["prompt_tokens"] === undefined &&
@@ -91,11 +91,11 @@ export function parseProviderUsage(value: unknown): ProviderUsage | null {
     }
 }
 
-/**
+/*
  * 缓存命中率（0-100 整数）
  *
- * 分母是 prompt tokens 总数；`cacheRead` 是其中的子集。
- * 供应商没报告缓存或没有任何输入时返回 null。
+ * 分母是 prompt tokens 总数，`cacheRead` 是其中的子集
+ * 供应商没报告缓存或没有输入时返回 null
  */
 export function cacheHitPercent(
     cacheReadTokens: number | null | undefined,
@@ -131,7 +131,7 @@ export function uncachedInputTokens(
     return Math.max(0, Math.floor(inputTokens - cacheRead - cacheWrite))
 }
 
-/** 去掉空的可选字段：会话 JSON 里只留供应商真的报告过的项 */
+// 去掉空的可选字段；会话 JSON 只留供应商报告过的项
 export function compactUsage(usage: TokenUsage): TokenUsage {
     return {
         inputTokens: usage.inputTokens,

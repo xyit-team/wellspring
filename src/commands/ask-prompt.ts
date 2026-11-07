@@ -14,10 +14,8 @@ function optionByIndex(input: string, request: HostAgentAskRequest): string | nu
     return index >= 0 && index < options.length ? (options[index] ?? null) : null
 }
 
-/**
- * 终端里回答 Agent 的提问。
- * 返回答案文本；null 表示取消（SIGINT 等），空串表示跳过。
- */
+// 终端里回答 Agent 的提问
+// 返回答案文本；null 表示取消（SIGINT 等），空串表示跳过
 export async function promptAgentAsk(request: HostAgentAskRequest): Promise<string | null> {
     if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
         return null

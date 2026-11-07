@@ -1,6 +1,7 @@
 /*
- * 命令执行。
- * 命令缺失统一抛 CommandNotFoundError，供候选命令回退；stderr 有内容但退出码为 0 不算失败。
+ * 命令执行
+ *
+ * 命令缺失统一抛 CommandNotFoundError，供候选命令回退；stderr 有内容但退出码为 0 不算失败
  */
 
 import { spawn } from "node:child_process"

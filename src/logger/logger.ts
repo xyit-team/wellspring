@@ -1,7 +1,8 @@
 /*
- * Pino 日志。
- * 输出到 log 根目录下的 app.log；human 模式只写文件，插件日志镜像到 elog4js。
- * --json 模式额外写 stderr（JSONL），stdout 留给 Result envelope。
+ * Pino 日志
+ *
+ * 输出到 log 根目录下的 app.log；human 模式只写文件，插件日志镜像到 elog4js
+ * --json 模式额外写 stderr（JSONL），stdout 留给 Result envelope
  */
 
 import { join } from "node:path"
@@ -49,7 +50,7 @@ export interface InitLoggerOptions extends Omit<CreateLoggerOptions, "file"> {
     readonly json?: boolean
 }
 
-/** 记录每个 logger 对应的文件目标，关闭时只刷新文件，不碰 stdout */
+// logger → 文件目标；关闭时只刷新文件
 const fileDestinations = new WeakMap<Logger, FileDestination>()
 
 let current: Logger | null = null
@@ -63,7 +64,7 @@ const LEVEL_NAMES: Readonly<Record<number, ElogLevel>> = {
     60: "fatal",
 }
 
-/** 把带 plugin 字段的 Pino JSON 行镜像到 elog4js */
+// 带 plugin 字段的 Pino JSON 行镜像到 elog4js
 class ElogMirrorStream extends Writable {
     override _write(
         chunk: Buffer,
@@ -80,7 +81,7 @@ class ElogMirrorStream extends Writable {
                 const level = LEVEL_NAMES[Number(line.level)] ?? "info"
                 const elog = getElog()
                 if (line.msg.startsWith("插件 ")) {
-                    // 拦截消息本身已含插件名，不再重复前缀
+                    // 消息已含插件名
                     elog.tag(level, line.msg)
                 } else if (line.msg.startsWith(`${line.plugin} `)) {
                     elog.plugin(level, line.plugin, line.msg.slice(line.plugin.length + 1))
@@ -95,7 +96,7 @@ class ElogMirrorStream extends Writable {
     }
 }
 
-/** 创建 logger。file 默认落在 logDir/app.log */
+/** 创建 logger；file 默认落在 logDir/app.log */
 export function createLogger(options: CreateLoggerOptions = {}): Logger {
     const level = options.level ?? DEFAULT_SETTINGS.logger.level
     const streams: StreamEntry[] = []
@@ -104,7 +105,7 @@ export function createLogger(options: CreateLoggerOptions = {}): Logger {
     if (options.file !== false) {
         const file = options.file ?? join(getPaths().logDir, LOG_FILE_NAME)
         try {
-            // SonicBoom 的文件打开是异步的，坏路径不会在构造时抛错，先同步确认可写
+            // 文件打开是异步的，路径不可写时构造阶段不抛错，先同步确认可写
             assertWritableFile(file)
             destination = pino.destination({
                 dest: file,
@@ -157,7 +158,7 @@ export function getLogger(): Logger {
     return current
 }
 
-/** 初始化全局 logger。重复调用返回已有实例 */
+/** 初始化全局 logger；重复调用返回已有实例 */
 export async function initLogger(options: InitLoggerOptions = {}): Promise<Logger> {
     if (current !== null) {
         return current
@@ -212,7 +213,7 @@ export async function initLogger(options: InitLoggerOptions = {}): Promise<Logge
     return logger
 }
 
-/** 关闭全局 logger。等待文件目标刷新并关闭，stdout 保持打开 */
+/** 关闭全局 logger；等待文件目标刷新并关闭，stdout 保持打开 */
 export function closeLogger(): Promise<void> {
     const logger = current
     if (logger === null) {

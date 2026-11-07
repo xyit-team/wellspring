@@ -48,7 +48,7 @@ function header(name: string, size: number, type = "0"): Buffer {
     return buf
 }
 
-/** 手工拼 tar：只覆盖测试需要的形态 */
+// 手工拼 tar：只覆盖测试需要的形态
 function makeTar(entries: readonly Entry[]): Buffer {
     const parts: Buffer[] = []
     for (const entry of entries) {

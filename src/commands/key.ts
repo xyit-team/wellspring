@@ -1,9 +1,9 @@
 /*
- * key 命令：查看 / 设置 / 清除 / 测试模型供应商的 API Key。
+ * key 命令：查看 / 设置 / 清除 / 测试模型供应商的 API Key
  *
- * 默认操作当前生效供应商；--provider 可指定其他供应商。
- * 明文 key 只写入 <configDir>/credentials.json（0600），输出一律用掩码；
- * 无参数时交互式输入或从 stdin 读取，避免进 shell 历史。
+ * 默认操作当前生效供应商；--provider 指定其他供应商
+ * 明文 key 只写入 <configDir>/credentials.json（0600），输出一律用掩码
+ * 无参数时交互式输入或从 stdin 读取，shell 历史里不出现明文
  */
 
 import { Result } from "../api/result/result.ts"
@@ -71,7 +71,7 @@ function targetProvider(
     return found
 }
 
-/** 管道 / 重定向：从 stdin 读 key，适合脚本与 CI */
+/** 管道或重定向时从 stdin 读取 key */
 async function readKeyFromStdin(): Promise<string | null> {
     if (process.stdin.isTTY === true) {
         return null
@@ -87,7 +87,7 @@ async function readKeyFromStdin(): Promise<string | null> {
     return text.trim()
 }
 
-/** 交互式隐藏输入：只回显星号，避免明文留在终端回滚与 shell 历史 */
+/** 交互式隐藏输入，只回显星号 */
 function promptHiddenApiKey(prompt: string): Promise<string | null> {
     const stdin = process.stdin
     if (stdin.isTTY !== true) {

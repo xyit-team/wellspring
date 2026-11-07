@@ -1,5 +1,7 @@
 /*
- * SandboxManager：选择 backend、准备 workspace/scratch、执行 agent-code、收集 artifact。
+ * SandboxManager
+ *
+ * 职责：选择 backend、准备 workspace/scratch、执行 agent-code、收集 artifact
  */
 
 import { createHash, randomUUID } from "node:crypto"
@@ -146,9 +148,9 @@ export function candidateBackends(
 /**
  * 一次调用的实际网络策略
  *
- * workspace-write / danger-full-access 默认通网：装依赖、查文档都要出网，
- * 每次都得显式 network:true 等于默认断网。read-only 仍然默认断网；
- * 调用方显式给的 true / false 优先。
+ * workspace-write 与 danger-full-access 默认通网：装依赖、查文档都要出网
+ * read-only 默认断网
+ * 调用方显式给的 true / false 优先
  */
 export function resolveNetwork(requested: boolean | undefined, access: SandboxAccess): boolean {
     return requested ?? access !== "read-only"
@@ -157,8 +159,7 @@ export function resolveNetwork(requested: boolean | undefined, access: SandboxAc
 /**
  * strict 模式拒绝执行时的说明
  *
- * 光说「没有可用的后端」看不出该做什么：把最后一个候选的后端名与原因带上，
- * 由调用方决定是否降级
+ * 带上最后一个候选的后端名与原因，由调用方决定是否降级
  */
 export function unavailableReason(last: SandboxBackendStatus | null): string {
     if (last === null || last.reason === null) {
@@ -214,8 +215,9 @@ export class SandboxManager {
     }
 
     /**
-     * 清理 workspace 上由 sandbox 加的身份 ACE。
-     * 只对支持 cleanup 的后端生效（目前是 win-restricted）；工作区删除前调用。
+     * 清理 workspace 上由 sandbox 加的身份 ACE
+     *
+     * 只对支持 cleanup 的后端生效（目前是 win-restricted），工作区删除前调用
      */
     async cleanupWorkspace(workspaceDir: string): Promise<void> {
         let backend: SandboxBackend

@@ -17,7 +17,7 @@ export interface OpenAISetting {
 
 /** 自定义模型供应商（OpenAI 兼容接口）；内置供应商 openai 由 openai.* 字段描述 */
 export interface ModelProviderSetting {
-    /** 供应商标识，1-32 位 [a-z0-9-_.]；不能叫 openai */
+    /** 供应商标识，1-32 位 [a-z0-9-_.]；openai 为保留值 */
     readonly id: string
     readonly name: string
     /** null 表示使用 SDK 默认地址 */
@@ -26,7 +26,7 @@ export interface ModelProviderSetting {
     readonly models: readonly string[]
     /** 该供应商缺省模型；null 时取列表第一个或全局 openai.model */
     readonly defaultModel: string | null
-    /** 可选：用这个环境变量提供该供应商的 API Key（优先级高于本地凭据） */
+    /** 该供应商的 API Key 环境变量；优先级高于本地凭据 */
     readonly apiKeyEnv: string | null
 }
 

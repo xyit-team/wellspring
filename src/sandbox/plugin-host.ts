@@ -1,6 +1,8 @@
 /*
- * sandbox 插件进程入口。
- * 由宿主通过 bwrap/direct backend 启动；stdio 上跑 frame 协议，插件代码只通过 bridge 访问宿主。
+ * sandbox 插件进程入口
+ *
+ * 由宿主通过 bwrap / direct backend 启动
+ * stdio 上跑 frame 协议，插件代码只通过 bridge 访问宿主
  */
 
 import { AsyncLocalStorage } from "node:async_hooks"
@@ -518,7 +520,7 @@ function remotePlugins(): HostPluginsApi {
             )) as HostPluginMutationResult
         },
         async enable(id: string): Promise<HostPluginMutationResult> {
-            /* 启用会把插件真的拉起来（起沙盒 + 跑 init），init 自己就要 30s，不能吃默认值 */
+            /* 启用会真的拉起插件（起沙盒 + 跑 init），init 自身有 30s RPC 上限，默认 30s 无余量 */
             return (await bridgeRequest(
                 "host.plugins.enable",
                 { id },
@@ -893,7 +895,7 @@ async function bootstrap(params: ConfigurePayload): Promise<{
         },
         capabilities: {
             async executeCode(input: unknown) {
-                // 沙箱自己的命令超时最长 600s，RPC 用更长的上限，避免宿主先放弃等待
+                // 沙箱自己的命令超时最长 600s，RPC 上限更长，宿主在后端结束前不放弃等待
                 return await bridgeRequest(
                     "host.capabilities.executeCode",
                     input as Record<string, unknown>,
@@ -954,8 +956,9 @@ async function bootstrap(params: ConfigurePayload): Promise<{
             throw new Error(`插件自报状态：${declared.status}`)
         }
         /*
-         * 版本以 package.json 为准：清单是分发单位，插件自己再写一遍只会漂移
-         * （plugin list 读清单、网页读 setup() 返回值，两处曾出现过不同数字）
+         * 版本以 package.json 为准
+         *
+         * 清单是分发单位，插件自己再写一遍会漂移：plugin list 读清单，网页读 setup() 返回值，两处曾出现不同数字
          */
         if (params.pluginVersion !== declared.version) {
             logger.warn(
@@ -1350,11 +1353,10 @@ async function main(): Promise<void> {
             }
             if (message.type === "event") {
                 /*
-                 * 事件回调出错不能拖垮 stdin 读取
+                 * 事件回调异常不能拖垮 stdin 读取
                  *
-                 * 这里在 data 监听里同步执行插件侧回调；一旦抛出就是未捕获异常，
-                 * 插件可能直接挂掉或丢掉这一帧里剩下的事件——宿主还在跑、界面却再也
-                 * 收不到任何事件，表现就是「服务端一直有日志、页面卡住不动」。
+                 * data 监听里同步执行插件侧回调，抛出即未捕获异常，插件可能挂掉或丢掉同帧剩余事件
+                 * 表现：宿主仍在跑，界面收不到事件
                  */
                 try {
                     if (message.method === "sandbox.event") {

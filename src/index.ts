@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /*
- * Wellspring CLI 入口。
- * 解析全局参数 → 应用目录/日志覆盖 → 加载配置与插件 → 分发命令。
+ * Wellspring CLI 入口
+ * 解析全局参数 → 应用目录与日志覆盖 → 加载配置与插件 → 分发命令
  */
 
 import { resolve } from "node:path"
@@ -178,7 +178,7 @@ async function main(argv: readonly string[]): Promise<void> {
         elog.warn(`代理初始化失败：${reason}`)
         proxyFetch = undefined
     }
-    // 当前供应商/模型：启动时解析一次，CLI 单轮命令直接用
+    // 当前供应商与模型；启动时解析一次
     const provider = activeModelProvider(settings)
     const activeModel = effectiveModel(settings, provider)
     const activeReasoning = effectiveReasoning(settings, provider)
@@ -249,8 +249,8 @@ async function main(argv: readonly string[]): Promise<void> {
     }
 
     try {
-        // 钩子与插件命令都可能在任意命令里用到；version / key / plugin 不启动插件
-        // plugin 子命令只改文件，插件是否加载由下次运行决定
+        // version / key / plugin / sandbox 不加载插件
+        // plugin 子命令只改文件，下次运行时生效
         if (
             commandName !== "version" &&
             commandName !== "key" &&

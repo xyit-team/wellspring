@@ -1,5 +1,5 @@
 /*
- * help：内置命令 + 已注册插件命令。
+ * help 命令：内置命令与已注册插件命令
  */
 
 import { Result } from "../api/result/result.ts"

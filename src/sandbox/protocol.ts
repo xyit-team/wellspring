@@ -1,6 +1,8 @@
 /*
- * Sandbox RPC v1 帧协议：4 字节大端长度 + UTF-8 JSON。
- * 供宿主 ↔ 插件 sandbox、agent-code 控制通道复用。
+ * Sandbox RPC v1 帧协议
+ *
+ * 帧 = 4 字节大端长度 + UTF-8 JSON
+ * 宿主 ↔ 插件 sandbox、agent-code 控制通道复用
  */
 
 export const SANDBOX_PROTOCOL_VERSION = 1
@@ -23,8 +25,8 @@ export interface RpcRequest {
      * Agent 工具调用身份（宿主侧注册表的 key）
      *
      * 宿主在 plugin.agentTool 上下发，插件在这条调用期间发出的 host 请求原样回填
-     * 可选：不带表示请求由插件自身发起（命令 / 钩子 / 界面）
-     * 带了已注销的 id 由宿主拒绝，无回落路径
+     * 不带表示由插件自身发起（命令 / 钩子 / 界面）
+     * 已注销的 id 由宿主拒绝，无回落
      */
     readonly contextId?: string
 }

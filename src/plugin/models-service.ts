@@ -1,9 +1,6 @@
-/*
- * 宿主模型服务：给 sandbox 插件提供自定义供应商与模型切换。
- *
- * 配置写在 app-setting.json 的 models 节（每次调用实时读写，改完下一轮对话生效），
- * 每个供应商的 Key 写在 credentials.json；状态只返回掩码。
- */
+// 宿主模型服务：给 sandbox 插件提供自定义供应商与模型切换
+// 配置写在 app-setting.json 的 models 节，每次调用实时读写，改完下一轮对话生效
+// 供应商 Key 存在 credentials.json，状态只返回掩码
 
 import type { Logger } from "pino"
 

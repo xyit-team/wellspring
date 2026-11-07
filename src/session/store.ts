@@ -1,10 +1,11 @@
 /*
- * 会话存储。
+ * 会话存储
+ *
  * 路径：<dataDir>/sessions/<cwd桶>/<sessionId>/
- *   session.json       元信息
- *   .lock              写入锁
+ *   session.json            元信息
+ *   .lock                   写入锁
  *   turns/NNNN.jsonl.zstd   每轮一个 zstd 段
- * last.json 存在 cwd 桶目录下，记录该 cwd 的最近会话。
+ * last.json 在 cwd 桶目录下，记录该 cwd 的最近会话
  */
 
 import { createHash } from "node:crypto"

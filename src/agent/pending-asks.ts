@@ -1,11 +1,12 @@
 /*
- * Agent 提问：ask 工具把问题交给界面，等待用户回答后把答案还回工具循环。
- * 和提权审批一样是“一轮对话中途停下来等人”的机制，只是不需要权限判断。
+ * Agent 提问：ask 工具把问题交给界面，等用户回答后把答案还回工具循环
+ *
+ * 与提权审批同为轮次中途等待用户输入的机制；本机制不做权限判断
  */
 
 import { randomUUID } from "node:crypto"
 
-/** 等待用户回答的上限；超时后工具返回“没有回答”并继续 */
+/** 等待回答上限；超时后工具返回 null 并继续 */
 export const ASK_TIMEOUT_MS = 5 * 60_000
 
 interface PendingAsk {
@@ -20,9 +21,10 @@ export function createAskId(): string {
     return `ask_${randomUUID()}`
 }
 
-/**
- * 登记一个等待回答的问题。answerAsk 先把 answer 交给这个 Promise；
- * 超时兑现 null（用户没回答）。
+/*
+ * 登记一个等待回答的问题
+ *
+ * answerAsk 把 answer 交给这里返回的 Promise；超时兑现 null
  */
 export function waitForAsk(input: {
     readonly askId: string
@@ -64,7 +66,7 @@ export function answerAsk(askId: string, answer: string): boolean {
     return true
 }
 
-/** 取消一次等待（工具循环收尾、异常退出时调用） */
+/** 取消等待；工具循环收尾与异常退出时调用 */
 export function cancelAsk(askId: string): void {
     const entry = pending.get(askId)
     if (entry === undefined) {
@@ -82,7 +84,7 @@ export function cancelSessionAsks(sessionId: string): void {
     }
 }
 
-/** 当前等待回答的数量（测试与诊断用） */
+/** 当前等待数，测试与诊断用 */
 export function pendingAskCount(): number {
     return pending.size
 }

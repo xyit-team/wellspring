@@ -1,8 +1,8 @@
 /*
  * findExecutable：按 PATH 查找可执行文件
  *
- * 平台层曾把 bwrap 写死在 /usr/bin：Termux 在 $PREFIX/bin、NixOS 在 /nix/store，
- * 这些环境下装了也报「找不到」
+ * bwrap 位置随发行版不同：Termux 在 $PREFIX/bin，NixOS 在 /nix/store
+ * 写死 /usr/bin 时这些环境装了也报找不到
  */
 
 import assert from "node:assert/strict"
@@ -24,7 +24,7 @@ before(async () => {
     await mkdir(first, { recursive: true })
     await mkdir(second, { recursive: true })
 
-    // first 里放一个不可执行的文件占位，同名可执行文件在 second 里
+    // first 放不可执行的同名文件，可执行文件在 second
     await writeFile(join(first, "bwrap"), "not executable")
     await writeFile(join(second, "bwrap"), "#!/bin/sh\n")
     await chmod(join(second, "bwrap"), 0o755)

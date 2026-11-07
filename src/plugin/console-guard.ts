@@ -1,8 +1,6 @@
-/*
- * 插件 console 拦截。
- * 插件内 console.* 不直接写终端：先记录一条 error，再按原方法级别输出原始消息。
- * 拦截只覆盖插件 import / register / run 期间，结束后恢复。
- */
+// 插件 console 拦截
+// console.* 先记一条 error，再按原方法级别输出原始消息，不直接写终端
+// 拦截只覆盖插件的 import / register / run 期间，结束后恢复
 
 import { format } from "node:util"
 

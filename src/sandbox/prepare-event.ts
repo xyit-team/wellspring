@@ -1,5 +1,7 @@
 /*
- * 沙盒工作区准备事件：供宿主与插件（Web UI）之间传递“正在准备工作区”状态。
+ * 沙盒工作区准备事件
+ *
+ * 宿主与插件（Web UI）之间传递工作区准备状态
  */
 
 import type { SandboxAccess } from "../config/types.ts"

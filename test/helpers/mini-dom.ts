@@ -1,6 +1,6 @@
 /*
- * 测试用最小 DOM：只实现 Markdown 渲染器用到的 API。
- * 这样可以在 node --test 里验证客户端渲染，不引入浏览器或第三方依赖。
+ * 测试用最小 DOM：只实现 Markdown 渲染器用到的 API
+ * 在 node --test 里验证客户端渲染，不引入浏览器与第三方依赖
  */
 
 const ELEMENT_NODE = 1
@@ -223,7 +223,7 @@ export function createMiniDom(): MiniDom {
 
 type RenderFunction = (text: string) => MiniParentNode
 
-/** 用最小 DOM 执行 markdown 片段，返回 text -> html 字符串的渲染函数 */
+/** 用最小 DOM 执行 markdown 片段，返回 text -> html 的渲染函数 */
 export function createMarkdownRenderer(source: string): (text: string) => string {
     const dom = createMiniDom()
     const factory = new Function(

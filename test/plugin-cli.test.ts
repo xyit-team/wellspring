@@ -1,5 +1,5 @@
 /*
- * plugin 命令：只改文件、不启动插件；remove 发现依赖时要求 --ignore。
+ * plugin 命令：只改文件、不启动插件；remove 发现依赖时要求 --ignore
  */
 
 import assert from "node:assert/strict"

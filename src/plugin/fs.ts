@@ -1,6 +1,4 @@
-/*
- * HostFileApi 实现：根目录内的相对路径访问。
- */
+// HostFileApi 实现：根目录内的相对路径访问
 
 import { readdir } from "node:fs/promises"
 import { isAbsolute, resolve, sep } from "node:path"
@@ -42,7 +40,7 @@ function fileTypeOf(isFile: boolean, isDirectory: boolean): HostFileType {
     return "other"
 }
 
-/** 为某个根目录创建 HostFileApi；root 需已存在或首次写入时自动创建 */
+/** 为某个根目录创建 HostFileApi；目录不存在时首次写入自动创建 */
 export function createPluginFileApi(root: string): HostFileApi {
     const base = resolve(root)
 

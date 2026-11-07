@@ -1,6 +1,7 @@
 /*
- * 无隔离 fallback：仅用于 best-effort / 测试。
- * 不提供 fs、网络、进程隔离；严格模式禁止使用。
+ * 无隔离 fallback：仅用于 best-effort 与测试
+ *
+ * 不提供 fs、网络、进程隔离，严格模式禁用
  */
 
 import type { SandboxAccess } from "../../config/types.ts"

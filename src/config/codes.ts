@@ -1,4 +1,4 @@
-/** 配置错误码。字段级错误格式为 `${invalid}:<path>`，path 为英文点分路径 */
+/** 配置错误码；字段级错误格式 `${invalid}:<path>`，path 为英文点分路径 */
 export const CONFIG_CODES = {
     readFailed: "config.read-failed",
     parseFailed: "config.parse-failed",

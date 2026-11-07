@@ -1,7 +1,5 @@
-/*
- * 宿主 Agent 服务：给 sandbox 插件提供聊天入口。
- * 复用 CLI 的会话存储与 Agent 轮次，不经过 stdout/readline。
- */
+// 宿主 Agent 服务：给 sandbox 插件提供聊天入口
+// 复用 CLI 的会话存储与 Agent 轮次，不经过 stdout / readline
 
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
@@ -83,16 +81,16 @@ export interface HostAgentService extends HostAgentApi {
     chat(input: HostAgentChatInput): Promise<HostAgentChatResult>
 }
 
-/** 打开宿主系统的目录选择对话框；浏览器无法提供原生对话框的绝对路径 */
+/** 执行宿主系统命令并收集 stdout / stderr；用于原生目录选择框 */
 interface NativeCommandResult {
     readonly code: number | null
     readonly stdout: string
     readonly stderr: string
 }
 
-/** 选择框最长停留时间：用户在翻目录，不该被宿主打断 */
+/** 选择框超时：用户翻目录的等待上限 */
 const PICKER_TIMEOUT_MS = 300_000
-/** 其它一次性系统命令（打开路径、找 zenity）用不着等太久 */
+/** 其它一次性系统命令（打开路径、查找 zenity）的超时 */
 const NATIVE_COMMAND_TIMEOUT_MS = 120_000
 
 function runNativeCommand(
@@ -134,13 +132,11 @@ function runNativeCommand(
 /**
  * Windows 目录选择框脚本
  *
- * 几个刻意为之的点：
- * - `[Console]::OutputEncoding` 设成 UTF-8：否则脚本按 OEM 代码页（中文机器是 GBK）
- *   写出路径，Node 按 UTF-8 解码，选到含中文的目录会变成乱码。
- * - 挂一个透明、置顶的 owner 窗口：直接 `ShowDialog()` 没有父窗口，对话框可能出现在
- *   浏览器后面，用户以为「点了没反应」。
- * - 成功 / 取消 / 出错都用一行标记写出来：退出码不可靠（脚本抛异常也是 1），
- *   以前把「退出码 1」当成用户取消，选择框起不来时界面一点提示都没有。
+ * [Console]::OutputEncoding 设为 UTF-8：PowerShell 默认按 OEM 代码页（中文机器为 GBK）
+ * 输出，Node 按 UTF-8 解码，选到含中文的目录会变成乱码
+ * 挂一个透明、置顶的 owner 窗口：ShowDialog() 没有父窗口时对话框可能落在浏览器后面
+ * 成功 / 取消 / 出错各写一行标记：退出码不可靠（脚本抛异常也是 1），
+ * 仅凭退出码 1 分不清用户取消与选择框没有起来
  */
 export const WINDOWS_PICKER_SCRIPT = [
     "$ErrorActionPreference = 'Stop'",
@@ -159,8 +155,8 @@ export const WINDOWS_PICKER_SCRIPT = [
     "  $dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
     "  $dialog.Description = '选择工作区文件夹'",
     /*
-     * 不要设 UseDescriptionForTitle：那是 .NET Core 3.0 才加的属性，
-     * Windows PowerShell 5.1 的 WinForms 里没有，一设就抛异常、对话框还没出来就结束。
+     * UseDescriptionForTitle 是 .NET Core 3.0 才有的属性，Windows PowerShell 5.1 的
+     * WinForms 里没有；设置后抛异常，对话框还没出现脚本就结束
      */
     "  $dialog.ShowNewFolderButton = $true",
     "  if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {",
@@ -179,7 +175,7 @@ export type WindowsPickerOutcome =
     | { readonly kind: "cancelled" }
     | { readonly kind: "error"; readonly detail: string }
 
-/** 解析 Windows 选择框脚本的输出；没有标记说明脚本根本没跑起来 */
+/** 解析 Windows 选择框脚本的输出；没有标记说明脚本没有执行 */
 export function parseWindowsPickerOutput(stdout: string): WindowsPickerOutcome {
     for (const raw of stdout.split("\n")) {
         const line = raw.trim()
@@ -199,7 +195,7 @@ export function parseWindowsPickerOutput(stdout: string): WindowsPickerOutcome {
     return { kind: "error", detail: "" }
 }
 
-/** PowerShell 的 -EncodedCommand 吃 UTF-16LE 的 base64，避免命令行代码页把中文拆坏 */
+/** PowerShell 的 -EncodedCommand 吃 UTF-16LE 的 base64，命令行代码页不会拆坏中文 */
 export function encodeWindowsCommand(script: string): string {
     return Buffer.from(script, "utf16le").toString("base64")
 }
@@ -209,11 +205,10 @@ function hasExecutable(name: string): boolean {
 }
 
 /**
- * 目录选择框没返回路径时，区分「用户取消」与「对话框根本没起来」
+ * 目录选择框没返回路径时，区分「用户取消」与「对话框没有起来」
  *
- * 以前所有失败都报「已取消」，界面因此什么都不提示：
- * zenity 打不开显示器时会带着退出码 0 和空的 stdout 退出（只往 stderr 写一行 GTK 警告），
- * 看起来和用户按了取消一模一样。这里按退出码归因，让上层能把真因说出来。
+ * zenity 打不开显示器时带退出码 0 和空 stdout 退出，只往 stderr 写一行 GTK 警告，
+ * 与用户取消的表现一致；这里按退出码归因，stderr 的末行用于给出真正原因
  */
 function pickerOutcome(command: string, result: NativeCommandResult): HostWorkspaceCheck {
     const cancelled: HostWorkspaceCheck = { ok: false, root: "", name: "", error: "已取消" }
@@ -241,7 +236,7 @@ function pickerOutcome(command: string, result: NativeCommandResult): HostWorksp
     }
 }
 
-/** stderr 的第一行非空内容；脚本报错时最有用的通常就是这句 */
+/** stderr 第一行非空内容；脚本报错的主要信息通常在这一行 */
 function firstLine(text: string): string {
     for (const raw of text.split("\n")) {
         const line = raw.trim()
@@ -351,10 +346,10 @@ function segmentScore(segment: string, needle: string, allowSubsequence: boolean
 }
 
 /**
- * 单一关键字的打分：越小越靠前。
+ * 单一关键字的打分：越小越靠前
  * 0 文件名全等、1 文件名前缀、2 文件名某段前缀 / 扩展名、3 文件名包含、
- * 4 路径段命中、5 路径包含、6 文件名子序列；不匹配返回 null。
- * 路径子序列（任何文件都能拼出短查询）噪声太大，不参与匹配。
+ * 4 路径段命中、5 路径包含、6 文件名子序列；不匹配返回 null
+ * 路径子序列（任何文件都能拼出短查询）噪声太大，不参与匹配
  */
 function singleKeyScore(name: string, path: string, query: string): number | null {
     const needle = query.toLowerCase()
@@ -396,9 +391,9 @@ function singleKeyScore(name: string, path: string, query: string): number | nul
 }
 
 /**
- * 带斜杠的查询按路径段链式匹配（a/b/c）：前几段必须依次命中目录段，
- * 最后一段命中文件名或目录名。这样 `@assets/app` 也能找到 `src/assets/app.ts`，
- * 不必先输入工作区根目录下的完整路径。
+ * 带斜杠的查询按路径段链式匹配（a/b/c）：前几段依次命中目录段，
+ * 最后一段命中文件名或目录名
+ * `@assets/app` 能匹配 `src/assets/app.ts`，查询里不需要工作区根目录的完整路径
  */
 function chainScore(
     pathSegments: readonly string[],
@@ -473,7 +468,7 @@ async function browseDirectory(root: string, directory: string): Promise<HostWor
             continue
         }
         const isDirectory = dirent.isDirectory()
-        // 根目录一层里藏起来的依赖/构建目录不展示；显式进入时仍可浏览
+        // 根目录一层的依赖 / 构建目录不列出；显式进入时仍可浏览
         if (isDirectory && directory === root && IGNORED_DIRECTORIES.has(dirent.name)) {
             continue
         }
@@ -504,7 +499,7 @@ function compareCandidates(left: FileCandidate, right: FileCandidate): number {
 }
 
 /**
- * 在工作区里按文件名 / 路径搜索（广度优先，浅层条目优先进入扫描预算）。
+ * 在工作区里按文件名 / 路径搜索（广度优先，浅层条目优先进入扫描预算）
  * - query 为空或以 `/` 结尾且路径存在：只列该目录一层
  * - 单关键字（`app`）：文件名优先，其次路径段 / 路径包含 / 子序列
  * - 带斜杠（`assets/app`）：按路径段链式匹配，不要求前缀目录真实存在
@@ -630,8 +625,7 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
     /**
      * 每个会话当前这一轮的 AbortController
      *
-     * stop() 除了标记停止，还要把正在进行的模型请求打断——
-     * 否则「停止」只是等这一轮自己跑完，慢模型要等很久。
+     * stop() 除标记停止外还要打断进行中的模型请求，慢模型不会拖到本轮自然结束
      */
     const turnAborts = new Map<string, AbortController>()
     const pendingApprovals = new Map<
@@ -655,7 +649,7 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
         return true
     }
 
-    /** 停止一轮时把它挂着的提权请求按拒绝了结，避免循环卡在等待里 */
+    /** 停止一轮时把挂着的提权请求按拒绝了结，循环不会卡在等待 */
     const settleSessionApprovals = (sessionId: string): void => {
         for (const [approvalId, pending] of [...pendingApprovals]) {
             if (pending.sessionId !== sessionId) {
@@ -669,8 +663,8 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
 
     const settingsPath = join(options.paths.configDir, SETTING_FILE_NAME)
 
-    // 每轮都读一次配置与凭据：网页/CLI 改供应商、模型、Key 后不需要重启服务。
-    // 配置文件不存在时用启动时传入的配置（测试与 --config 覆盖场景依赖这一点）。
+    // 每轮重读配置与凭据：网页 / CLI 改供应商、模型、Key 后无需重启服务
+    // 配置文件不存在时用启动时传入的配置（测试与 --config 覆盖依赖这一点）
     const currentSettings = async (): Promise<AppSetting> => {
         try {
             if ((await readTextIfExists(settingsPath)) === null) {
@@ -693,7 +687,7 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
         } catch {
             proxyFetch = undefined
         }
-        // 自定义供应商没有 key 时不能悄悄回落到内置 OpenAI key：显式传空串让创建失败
+        // 自定义供应商没有 key 时不会回落到内置 OpenAI key：显式传空串令创建失败
         const apiKey = providerApiKey(provider, options.paths.configDir) ?? ""
         const result = OpenAIClient.create({
             settings: providerOpenAISettings(settings, provider),
@@ -788,7 +782,7 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
             if (outcome.kind === "cancelled") {
                 return { ok: false, root: "", name: "", error: "已取消" }
             }
-            // 脚本没留下标记 / 自己报了错：这是「对话框起不来」，不是用户取消
+            // 没有标记或脚本报错：对话框没有起来，非用户取消
             const detail = outcome.detail !== "" ? outcome.detail : firstLine(result.stderr)
             return {
                 ok: false,
@@ -956,7 +950,7 @@ export function createHostAgentService(options: HostAgentServiceOptions): HostAg
                 onStep,
                 approveExec: requestApproval,
                 ...(onAsk === undefined
-                    ? // 没有界面通道（agent.chat）时立即跳过提问，避免一轮对话挂到超时
+                    ? // 没有界面通道（agent.chat）时立即跳过提问，一轮对话不会挂到超时
                       { askUser: async () => null }
                     : { onAsk }),
             })

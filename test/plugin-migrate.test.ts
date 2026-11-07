@@ -13,7 +13,7 @@ import { readPluginState, setPluginEnabled } from "../src/plugin/state.ts"
 const FROM = "wellspring-core"
 const TO = "@etheros/wellspring-core"
 
-/** 每个用例一个独立 HOME，避免互相污染 */
+// 每个用例独立 HOME 目录
 const roots: string[] = []
 
 afterEach(async () => {
@@ -43,7 +43,7 @@ function migrator(paths: ResolvedPaths) {
     return createHostMigrator({ paths, logger: pino({ level: "silent" }) })
 }
 
-/** 按真实布局铺旧 id 的数据：plugin-data、配置、旧插件目录 */
+// 按真实布局铺旧 id 数据：plugin-data、配置、旧插件目录
 async function seedOldId(paths: ResolvedPaths): Promise<void> {
     const trashDir = join(paths.dataDir, "plugin-data", FROM, "trash", "20260101-000000")
     await mkdir(join(trashDir, "files"), { recursive: true })
@@ -100,7 +100,7 @@ test("迁移：数据目录、配置与禁用状态一起搬到新 id", async ()
 test("迁移：目标只有宿主预建的 tmp/ 时照样搬，不算冲突", async () => {
     const paths = await freshPaths()
     await seedOldId(paths)
-    /* 插件加载时宿主会建 <plugin-data>/<id>/tmp */
+    // 插件加载时宿主会建 <plugin-data>/<id>/tmp
     await mkdir(join(paths.dataDir, "plugin-data", TO, "tmp"), { recursive: true })
 
     const result = await migrator(paths).movePluginData({ from: FROM, to: TO })
@@ -125,7 +125,7 @@ test("迁移：目标已有真实数据时拒绝，除非 force", async () => {
     const refused = await migrator(paths).movePluginData({ from: FROM, to: TO })
     assert.equal(refused.ok, false)
     assert.match(refused.error ?? "", /已经有内容/)
-    /* 拒绝时两边都不能动 */
+    // 拒绝时两侧数据都不变
     assert.equal(
         await readFile(
             join(paths.dataDir, "plugin-data", FROM, "trash", "20260101-000000", "files", "a.txt"),

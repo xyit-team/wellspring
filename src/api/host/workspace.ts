@@ -1,9 +1,9 @@
 /*
- * 宿主工作区 API。
+ * 宿主工作区 API
  *
- * 工作区是用户手动添加、供 Agent 与编辑器使用的目录；注册表由宿主统一维护
- * （<dataDir>/workspaces.json），插件通过 `api.workspaces` 读写，不再解析
- * 其它插件的数据目录。需要 hostApi: workspaces 权限。
+ * 工作区是用户添加、供 Agent 与编辑器使用的目录
+ * 注册表由宿主维护在 <dataDir>/workspaces.json，插件通过 api.workspaces 读写
+ * 需要 hostApi: workspaces 权限
  */
 
 /** 已添加的工作区；id 由目录路径派生，保持稳定 */

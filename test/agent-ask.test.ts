@@ -172,7 +172,7 @@ test("Agent ask 工具：提问事件 + 回答回到工具结果", { timeout: 20
             events.push(event)
             if (event.type === "ask" && !answered) {
                 answered = true
-                // 等 ask 事件到齐后异步回答，模拟界面
+                // 收到 ask 事件后异步回答
                 void service.respondAsk(event.request.askId, "main").then((accepted) => {
                     assert.equal(accepted, true)
                 })

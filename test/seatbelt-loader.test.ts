@@ -1,9 +1,9 @@
 /*
- * native/seatbelt-run/src/main.c 的静态约束。
+ * native/seatbelt-run/src/main.c 的静态约束
  *
- * 这些断言不编译 C，只钉住 loader 的契约：目标命令必须用 execve 以绝对路径执行，
- * 任何按名字解析的 exec 变体都会把“执行哪个文件”的决定权交回 PATH，
- * 而 PATH 里可能有模型可写的工作区目录。
+ * 断言不编译 C，只钉住 loader 的契约：目标命令用 execve 以绝对路径执行
+ * 按名字解析的 exec 变体会把「执行哪个文件」的决定权交回 PATH
+ * PATH 里可能有模型可写的工作区目录
  */
 
 import assert from "node:assert/strict"
@@ -16,7 +16,7 @@ const source = readFileSync(
     "utf8",
 )
 
-/** 去掉注释，避免注释里的说明文字触发断言 */
+// 去掉注释：注释文字会触发断言
 function code(): string {
     return source.replaceAll(/\/\*[\s\S]*?\*\//g, "").replaceAll(/\/\/[^\n]*/g, "")
 }

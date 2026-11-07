@@ -1,5 +1,5 @@
 /*
- * macOS Seatbelt 后端：SBPL profile 生成与 launch 参数。
+ * macOS Seatbelt 后端：SBPL profile 生成与 launch 参数
  *
  * 全平台可跑：只覆盖纯函数，不调用 sandbox_init，不要求 macOS
  * 真机隔离效果由 scripts/verify-sandbox.ts 在 macOS 上跑矩阵验证
@@ -47,7 +47,7 @@ function profile(overrides: ProfileOverrides = {}): string {
     })
 }
 
-/** 取出以某个操作开头的规则行，缺了直接失败 */
+// 取以某个操作开头的规则行
 function ruleLine(text: string, operation: string): string {
     const line = text.split("\n").find((item) => item.startsWith(`(${operation} `))
     assert.ok(line !== undefined, `缺少 ${operation} 规则`)
@@ -84,7 +84,7 @@ test("read-only：写规则只覆盖 scratch，workspace 只读", () => {
 test("读全局放开：路径枚举会让 node 在 dyld 阶段 SIGABRT", () => {
     const text = profile()
     assert.ok(text.includes("(allow file-read*)"), "读侧必须是全局放行")
-    /* 读规则带路径过滤即回到会崩溃的形态 */
+    // 读规则带路径过滤会回到崩溃形态
     assert.ok(!text.includes("(allow file-read* (subpath"), "读规则不得带 subpath 过滤")
 })
 
@@ -235,7 +235,7 @@ function fakeExists(present: readonly string[]): (path: string) => boolean {
 }
 
 test("resolveSeatbeltCommand：裸名只查固定白名单，不读宿主 PATH", () => {
-    /* 宿主 PATH 里有工作区的 node_modules/.bin，但它不在白名单里 */
+    // 宿主 PATH 含工作区 node_modules/.bin，该目录不在白名单
     const exists = fakeExists(["/opt/node-v24/bin/node", "/workspace/node_modules/.bin/node"])
     assert.equal(
         resolveSeatbeltCommand("node", { nodePrefix: NODE_PREFIX }, exists),
@@ -262,7 +262,7 @@ test("resolveSeatbeltCommand：含斜杠的路径按 cwd 解析成绝对路径",
 })
 
 test("launch spec 里出现的是解析后的绝对路径，原始裸名不会进 argv", () => {
-    /* 查找目录由 seatbeltNodePrefix() 决定，所以按真实前缀构造命中的文件 */
+    // 查找目录由 seatbeltNodePrefix() 决定，按真实前缀构造命中的文件
     const resolvedNode = join(seatbeltNodePrefix(), "bin", "node")
     const spec = buildSeatbeltLaunch(
         { ...agentInput, command: "node" },

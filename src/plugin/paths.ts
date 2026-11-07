@@ -1,6 +1,4 @@
-/*
- * 插件目录与命名规则。
- */
+// 插件目录与命名规则
 
 import { readdir, stat } from "node:fs/promises"
 import { join } from "node:path"
@@ -56,8 +54,8 @@ export interface PluginDirEntry {
  * 列出插件根目录下的插件目录
  *
  * 新布局是单层的 `plugins/<本地名>`；同时兼容 1.7 之前的 `plugins/@scope/name`
- * （id 仍是 `@scope/name`，标记 legacy: true，方便升级提示与 update 时迁移）。
- * 点开头目录与非目录条目跳过。
+ * （id 仍是 `@scope/name`，标记 legacy: true，供升级提示与 update 迁移使用）
+ * 点开头目录与非目录条目跳过
  */
 export async function listPluginDirs(root: string): Promise<readonly PluginDirEntry[]> {
     let names: string[]

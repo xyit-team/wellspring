@@ -1,6 +1,7 @@
 /*
- * 平台层入口。
- * 平台识别、目录解析与文件落盘；上层不直接读取 process.platform 或拼接系统目录。
+ * 平台层入口
+ *
+ * 平台识别、目录解析与文件落盘；上层经本层读取 process.platform 与系统目录
  */
 
 export * from "./clipboard.ts"

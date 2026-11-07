@@ -4,11 +4,11 @@
  * SBPL profile 在目标命令启动前施加内核限制：(deny default) 起手，读 / 写 / 执行按白名单放开
  * profile 经 -p 从 argv 传入，不落盘
  *
- * launcher 顺序：随包 bin/darwin-<arch>/seatbelt-run（sandbox_init + execve），
- * 系统 /usr/bin/sandbox-exec。两者均为绝对路径，不经过 PATH 解析
+ * launcher 顺序：随包 bin/darwin-<arch>/seatbelt-run（sandbox_init + execve），然后系统 /usr/bin/sandbox-exec
+ * 两者均为绝对路径，不经过 PATH 解析
  *
  * 与 bwrap 的差别：没有 mount / PID / network namespace，沙箱内是宿主真实路径
- * （pathStyle = "host"），写边界由 SBPL 规则表达
+ * pathStyle = "host"，写边界由 SBPL 规则表达
  */
 
 import { spawnSync } from "node:child_process"

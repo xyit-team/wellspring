@@ -1,5 +1,5 @@
 /*
- * 宿主级工作区注册表：CRUD、去重、上限、损坏恢复与旧 wellspring-web 索引迁移。
+ * 宿主级工作区注册表：CRUD、去重、上限、损坏恢复与旧 wellspring-web 索引迁移
  */
 
 import assert from "node:assert/strict"

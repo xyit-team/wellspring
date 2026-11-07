@@ -1,7 +1,8 @@
 /*
- * 系统通知。
- * Windows 走 PowerShell 的 WinRT toast，脚本内容经 -EncodedCommand 传递；
- * WSL 下优先调用 powershell.exe，其余平台使用各自的通知命令。
+ * 系统通知
+ *
+ * Windows 走 PowerShell 的 WinRT toast，脚本内容经 -EncodedCommand 传递
+ * WSL 下优先调用 powershell.exe，其余平台使用各自的通知命令
  */
 
 import { describeError, powershellArgs, runCommand } from "./exec.ts"
@@ -21,7 +22,7 @@ export interface NotifyCommand {
 const MACOS_SCRIPT =
     'display notification (system attribute "WELLSPRING_NOTIFY_BODY") with title (system attribute "WELLSPRING_NOTIFY_TITLE")'
 
-/** PowerShell 单引号字符串，内部单引号翻倍 */
+// PowerShell 单引号字符串，内部单引号翻倍
 function psQuote(value: string): string {
     return `'${value.replace(/'/g, "''")}'`
 }
@@ -48,7 +49,7 @@ function normalize(options: NotifyOptions): { title: string; body: string } {
     return { title, body: options.body ?? "" }
 }
 
-/** 生成候选命令，按优先级排列。单独导出以便在任意平台测试 */
+/** 生成候选命令，按优先级排列；单独导出以便在任意平台测试 */
 export function buildNotifyCommands(
     options: NotifyOptions,
     targetPlatform: PlatformName = platform,
@@ -91,7 +92,7 @@ export function buildNotifyCommands(
     return candidates
 }
 
-/** 发送系统通知。全部候选失败时抛出聚合错误 */
+/** 发送系统通知；全部候选失败时抛出聚合错误 */
 export async function notify(options: NotifyOptions): Promise<void> {
     const failures: string[] = []
     for (const candidate of buildNotifyCommands(options)) {

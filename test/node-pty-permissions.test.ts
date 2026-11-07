@@ -1,8 +1,8 @@
 /*
- * node-pty 的 spawn-helper 执行位补偿。
+ * node-pty 的 spawn-helper 执行位补偿
  *
- * node-pty 1.1.0 的 prebuilds 里 spawn-helper 是 644，spawn 时才报
- * posix_spawnp failed。这里钉住补偿逻辑本身：识别、修复、修不了时的报错。
+ * node-pty 1.1.0 的 prebuilds 里 spawn-helper 是 644，spawn 时才报 posix_spawnp failed
+ * 覆盖识别、修复、修复失败时的报错
  */
 
 import assert from "node:assert/strict"
@@ -18,7 +18,7 @@ interface FakeFile {
     isFile?: boolean
 }
 
-/** 用内存里的文件表模拟 fs，chmod 会真的改表 */
+// 用内存文件表模拟 fs，chmod 改动表
 function fakeFs(files: Record<string, FakeFile>) {
     const chmodCalls: Array<{ file: string; mode: number }> = []
     return {

@@ -43,7 +43,7 @@ function header(name: string, size: number): Buffer {
     return buf
 }
 
-/** npm 风格 tarball：内容都在 package/ 之下 */
+// npm 风格 tarball：内容在 package/ 之下
 function npmTarball(files: Readonly<Record<string, string>>): Buffer {
     const parts: Buffer[] = []
     for (const [name, content] of Object.entries(files)) {

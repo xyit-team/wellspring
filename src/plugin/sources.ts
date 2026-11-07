@@ -1,11 +1,9 @@
-/*
- * 插件分发来源：npm、GitHub、本地路径。
- *
- * 宿主自己下载插件包（不再由插件在 init 里注册探针），所以这里同时负责：
- * - 解析 `plugin install npm:… / github:… / <path>` 的写法
- * - 查某个来源的最新版本与下载地址
- * - 把包下载到临时文件（zip / tgz 由安装流程按魔数识别）
- */
+// 插件分发来源：npm、GitHub、本地路径
+// 1.7 起由宿主下载插件包，插件侧不再注册探针
+
+// 职责：解析 plugin install 的 npm: / github: / 本地路径写法
+// 查询来源的最新版本与下载地址
+// 下载到临时文件，zip / tgz 由安装流程按魔数识别
 
 import { mkdir, writeFile } from "node:fs/promises"
 import { join } from "node:path"
@@ -123,7 +121,7 @@ async function readJson(
         signal: AbortSignal.timeout(timeoutOf(options)),
     })
     if (!response.ok) {
-        /* GitHub 未认证调用有频率限制：403/429 时把解法说出来 */
+        /* GitHub 未认证调用有频率限制：403/429 时附上解决提示 */
         const hint =
             url.includes("api.github.com") && (response.status === 403 || response.status === 429)
                 ? "（GitHub 未认证调用有频率限制：配置 plugins.update.githubToken 或稍后再试）"
@@ -193,8 +191,8 @@ function firstZipAsset(assets: unknown): { url: string | null; name: string | nu
 /**
  * 查 GitHub Release（或指定 tag）
  *
- * 优先用 Release 里的 .zip 资产；没有资产时回落到源码 tarball（codeload）。
- * 版本号取 tag 去掉前缀 v。
+ * 优先用 Release 里的 .zip 资产；没有资产时回落到源码 tarball（codeload）
+ * 版本号取 tag 去掉前缀 v
  */
 export async function resolveGithubRelease(
     repo: string,
@@ -215,7 +213,7 @@ export async function resolveGithubRelease(
     try {
         release = (await readJson(endpoint, options, headers)) as GithubReleaseShape
     } catch (error) {
-        /* 没有 Release（或指定的是 tag 而不是 release）：退回源码 tarball */
+        /* 没有 Release 或指定的是 tag：退回源码 tarball */
         if (ref === null) {
             throw error
         }
@@ -242,8 +240,8 @@ export async function resolveGithubRelease(
 /**
  * GitHub API 被限流时的兜底：codeload 的源码 tarball（默认分支 HEAD）
  *
- * 这条 URL 不经过 REST API，未认证调用不受 60 次/小时的限制；
- * 代价是拿不到版本号，也可能比最近一次 Release 新。
+ * 这条 URL 不经过 REST API，未认证调用不受 60 次/小时的限制
+ * 版本号未知，内容可能比最近一次 Release 新
  */
 export function resolveGithubTarball(repo: string): LatestRelease {
     return {
@@ -253,7 +251,7 @@ export function resolveGithubTarball(repo: string): LatestRelease {
     }
 }
 
-/** 错误是不是 GitHub API 限流（403/429） */
+/** 错误是否来自 GitHub API 限流（403/429） */
 export function isGithubRateLimitError(error: unknown): boolean {
     const message = error instanceof Error ? error.message : String(error)
     return (
@@ -265,7 +263,7 @@ export function isGithubRateLimitError(error: unknown): boolean {
 /**
  * 下载插件包到临时目录，返回文件路径
  *
- * 不按扩展名判断格式：安装流程会看魔数（zip / gzip），这里只保证文件落盘。
+ * 不按扩展名判断格式：安装流程会看魔数（zip / gzip），这里只保证文件落盘
  */
 export async function downloadPluginPackage(
     url: string,

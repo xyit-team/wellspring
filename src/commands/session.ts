@@ -1,5 +1,5 @@
 /*
- * session 命令：list / show / delete。
+ * session 命令：list / show / delete
  */
 
 import { Result } from "../api/result/result.ts"

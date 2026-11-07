@@ -1,7 +1,8 @@
 /*
- * 文件落盘。
- * 流程：临时文件 -> fsync -> rename -> chmod -> fsync 目录。
- * Windows 不执行 chmod 与目录 fsync；rename 遇文件占用时短暂重试。
+ * 文件落盘
+ *
+ * 流程：临时文件 -> fsync -> rename -> chmod -> fsync 目录
+ * Windows 不执行 chmod 与目录 fsync；rename 遇文件占用时短暂重试
  */
 
 import { randomUUID } from "node:crypto"
@@ -30,7 +31,7 @@ export async function ensureDir(dir: string, mode = DIR_MODE): Promise<void> {
     await mkdir(dir, { recursive: true, mode })
 }
 
-/** 同步验证文件可写：创建父目录并打开目标，失败时抛出。用于需要提前确认的调用方 */
+/** 同步验证文件可写；创建父目录并打开目标，失败时抛出，供需要提前确认的调用方使用 */
 export function assertWritableFile(file: string, mode = FILE_MODE): void {
     mkdirSync(dirname(file), { recursive: true, mode: DIR_MODE })
     const fd = openSync(file, "a", mode)
@@ -73,15 +74,15 @@ export async function statIfExists(file: string): Promise<Stats | null> {
     }
 }
 
-/** 删除时「等一会儿会好」的错误码：Windows 进程退出与句柄释放不同步 */
+// 删除时短暂冲突的错误码；Windows 进程退出与句柄释放不同步
 const TRANSIENT_REMOVE_CODES = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"])
 
-/**
+/*
  * 删除文件或目录，不存在时忽略
  *
- * Windows 上目录被进程当成 cwd、或者还有句柄没关时，`rm` 会 EBUSY / EPERM。
- * 进程刚退出那一刻句柄还在释放，等几十毫秒就好，所以这里退避重试几次；
- * 仍然删不掉就把原始错误抛出去，让调用方说明「被占用」而不是假装成功。
+ * Windows 上目录被进程当作 cwd 或仍有句柄未释放时，rm 返回 EBUSY / EPERM
+ * 进程退出瞬间句柄释放有延迟，按 50ms 起指数退避重试，上限 6 次
+ * 重试用尽后抛出原始错误
  */
 export async function removePath(file: string): Promise<void> {
     let wait = 50
@@ -100,7 +101,7 @@ export async function removePath(file: string): Promise<void> {
     }
 }
 
-/** 读取 JSON 文件，不存在时返回 null。解析失败向上抛出 */
+/** 读取 JSON 文件，不存在时返回 null；解析失败向上抛出 */
 export async function readJsonIfExists<T>(file: string): Promise<T | null> {
     const text = await readTextIfExists(file)
     return text === null ? null : (JSON.parse(text) as T)
@@ -111,8 +112,10 @@ export interface WriteFileOptions {
     readonly mode?: number
 }
 
-/**
- * 原子写。临时文件必须与目标文件同目录，跨分区 rename 不再具有原子性。
+/*
+ * 原子写
+ *
+ * 临时文件必须与目标文件同目录；跨分区 rename 不具备原子性
  */
 export async function writeTextAtomic(
     file: string,
@@ -136,7 +139,7 @@ export async function writeBytesAtomic(
     const handle = await open(tmp, "w", mode)
     try {
         await handle.writeFile(data)
-        // 内容先落盘
+        // 数据先 fsync
         await handle.sync()
     } catch (error) {
         await handle.close().catch(() => undefined)
@@ -185,7 +188,7 @@ export function timeStamp(date = new Date()): string {
     )
 }
 
-/** 创建四个根目录。POSIX 下将已存在目录权限收紧至 0700 */
+/** 创建四个根目录；POSIX 下将已存在目录权限收紧至 0700 */
 export async function ensureDirs(roots: PathRoots, mode = DIR_MODE): Promise<void> {
     for (const dir of [roots.configDir, roots.dataDir, roots.cacheDir, roots.logDir]) {
         await ensureDir(dir, mode)
@@ -199,7 +202,7 @@ export async function ensureDirs(roots: PathRoots, mode = DIR_MODE): Promise<voi
     }
 }
 
-/** Android 外部存储（FAT/exFAT）与部分挂载点不支持 chmod，权限收紧失败时继续 */
+// Android 外部存储（FAT/exFAT）与部分挂载点不支持 chmod，权限收紧失败时继续
 const CHMOD_IGNORED_CODES = new Set(["EPERM", "EACCES", "EINVAL", "ENOTSUP", "ENOSYS"])
 
 const RENAME_RETRY_CODES = new Set(["EPERM", "EACCES", "EBUSY"])
@@ -213,7 +216,7 @@ function isRetryableRenameError(error: unknown): boolean {
     return typeof code === "string" && RENAME_RETRY_CODES.has(code)
 }
 
-/** Windows 上杀毒软件与索引服务会短暂占用目标文件，rename 失败时重试 */
+// Windows 上杀毒软件与索引服务短暂占用目标文件，rename 失败时重试
 async function renameWithRetry(from: string, to: string): Promise<void> {
     const attempts = isWindows ? RENAME_ATTEMPTS : 1
     for (let attempt = 1; ; attempt++) {

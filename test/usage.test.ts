@@ -1,5 +1,5 @@
 /*
- * Token 用量归一化：不同供应商的缓存字段与上下文占用计算。
+ * Token 用量归一化：不同供应商的缓存字段与上下文占用计算
  */
 
 import assert from "node:assert/strict"
@@ -78,7 +78,7 @@ test("parseProviderUsage：Anthropic 口径的缓存读取/写入", () => {
             cache_creation_input_tokens: 6,
         }),
         {
-            // Anthropic 口径的 input_tokens 只是未缓存部分，归一化后是 prompt 总数
+            // Anthropic 的 input_tokens 仅未缓存部分，归一化后为 prompt 总数
             inputTokens: 56,
             outputTokens: 4,
             cacheReadTokens: 30,

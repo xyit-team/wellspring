@@ -1,6 +1,7 @@
 /*
- * 用系统默认程序打开 URL 或本地路径。
- * target 可能来自外部输入，须校验：以 "-" 开头会被 open / cmd start 视为参数，协议限定白名单。
+ * 用系统默认程序打开 URL 或本地路径
+ *
+ * target 来自外部输入，需要校验：以 "-" 开头会被 open / cmd start 视为参数，协议限白名单
  */
 
 import { spawn } from "node:child_process"
@@ -15,7 +16,7 @@ export interface OpenCommand {
     readonly args: readonly string[]
 }
 
-/** 允许的协议 */
+// 允许的协议
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:", "file:"])
 
 interface NormalizedTarget {
@@ -23,7 +24,7 @@ interface NormalizedTarget {
     readonly isUrl: boolean
 }
 
-/** 绝对路径原样返回；其余须为白名单协议 URL。不合法时抛出异常 */
+// 绝对路径原样返回；其余须为白名单协议 URL，不合法时抛出
 function normalizeTarget(input: string): NormalizedTarget {
     const target = input.trim()
     if (target === "") {
@@ -53,7 +54,7 @@ function normalizeTarget(input: string): NormalizedTarget {
     return { target: parsed.href, isUrl: true }
 }
 
-/** 生成候选命令，按优先级排列。单独导出以便在任意平台测试各系统的构造结果 */
+/** 生成候选命令，按优先级排列；单独导出以便在任意平台测试各系统的构造结果 */
 export function buildOpenCommands(
     rawTarget: string,
     targetPlatform: PlatformName = platform,
@@ -98,7 +99,7 @@ export function buildOpenCommands(
     return candidates
 }
 
-/**
+/*
  * 在文件管理器里定位路径的候选命令
  *
  * 目录各系统都能直接打开；文件走文件管理器的选中能力
@@ -154,7 +155,7 @@ export async function openExternal(rawTarget: string): Promise<void> {
     await runCandidates(target, buildOpenCommands(target))
 }
 
-// 在文件管理器里定位路径；文件管理器都是长驻进程，不等退出
+/** 在文件管理器里定位路径 */
 export async function revealExternal(rawTarget: string): Promise<void> {
     const { target } = normalizeTarget(rawTarget)
     await runCandidates(target, buildRevealCommands(target))

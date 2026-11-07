@@ -1,6 +1,6 @@
 /*
  * 目录规则：本地名（wellspring.name）决定 plugins/<本地名> 与 plugin-data/<本地名>，
- * 与 npm scope 无关；旧布局 plugins/@scope/name 仍可读，update 时迁到单层。
+ * 与 npm scope 无关；旧布局 plugins/@scope/name 仍可读，update 时迁到单层
  */
 
 import assert from "node:assert/strict"

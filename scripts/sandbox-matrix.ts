@@ -28,7 +28,7 @@ export interface Probe {
     readonly script: string
     /** 期望：allow = 应当成功，deny = 应当被拦 */
     readonly expect: (context: ProbeContext) => Outcome
-    /** 与直觉不同时给出理由，打印在表格下方 */
+    /** 与直觉不同时的理由，打印在表格下方 */
     readonly why?: (context: ProbeContext) => string | null
 }
 
@@ -40,7 +40,7 @@ export interface Probe {
  */
 export const SCRATCH_SENTINEL = "@SCRATCH/"
 
-/** 探针脚本公共前导：把 @SCRATCH/ 前缀展开成真实路径 */
+// 探针脚本公共前导：展开 @SCRATCH/ 前缀
 const PROBE_PREAMBLE = [
     "const fs = require('node:fs')",
     "const path = require('node:path')",
@@ -52,7 +52,7 @@ const PROBE_PREAMBLE = [
     "}",
 ].join("\n")
 
-/** 探针脚本统一：成功打印 {ok:true}，失败打印 {ok:false, code}，两者都以 0 退出 */
+// 读探针：成功输出 {ok:true}，失败输出 {ok:false, code}，均以 0 退出
 export function readProbeScript(): string {
     return [
         PROBE_PREAMBLE,
@@ -72,7 +72,7 @@ export function writeProbeScript(): string {
 /**
  * 出网探针的目标：宿主起的回环监听
  *
- * 用回环端口而不是外网地址：外网不可达时无法区分「沙箱拦了」与「这台机器就没网」
+ * 用回环端口：外网不可达时无法区分「沙箱拦了」与「这台机器没网」
  * 端口由 harness 起监听后经 probeArgs 传入；没有监听时连不上，等同于 deny
  */
 export const EGRESS_HOST = "127.0.0.1"
@@ -112,8 +112,8 @@ export const PROBES: readonly Probe[] = [
         label: "读 workspace 外的私有文件",
         script: readProbeScript(),
         /*
-         * 读全局放开（与 DSH 对齐）：Linux/macOS 的默认沙箱都不限制读，
-         * 只强制写边界、网络与进程限制；读隔离不是产品承诺。
+         * 读全局放开（与 DSH 对齐）：Linux/macOS 的默认沙箱只约束写、网络与进程
+         * 读隔离不在产品承诺内
          */
         expect: () => "allow",
         why: () => "读全局放开（与 DSH 对齐）：read-only / workspace-write 都只约束写与网络",
@@ -158,8 +158,10 @@ export const PROBES: readonly Probe[] = [
             "socket.once('connect', () => { socket.destroy(); report(true) })",
             "socket.once('error', (error) => report(false, error.code ?? error.name))",
         ].join("\n"),
-        /* 与产品默认一致：read-only 断网，workspace-write / danger-full-access 通网；
-         * Windows 受限 token 后端本期没有网络围栏，read-only 也放行（enforcementNotes 已说明）。 */
+        /*
+         * 与产品默认一致：read-only 断网，workspace-write / danger-full-access 通网
+         * Windows 受限 token 后端本期没有网络围栏，read-only 也放行（enforcementNotes 已说明）
+         */
         expect: ({ backend, access }) =>
             backend === "win-restricted" || resolveNetwork(undefined, access) ? "allow" : "deny",
         why: ({ backend, access }) =>
@@ -202,16 +204,16 @@ export interface FixturePaths {
     readonly outsideDir: string
 }
 
-/** mount = 沙箱内有重映射路径；host = 直接用宿主真实路径 */
+// mount 后端在沙箱内重映射路径，host 后端直接用宿主路径
 export function isMountBackend(backend: string): boolean {
     return backend === "bwrap"
 }
 
 /**
- * 探针的额外参数：按后端决定用宿主路径还是沙箱内路径。
+ * 探针的额外参数：按后端决定用宿主路径还是沙箱内路径
  *
- * tag 必须在一次矩阵运行内唯一：每个 access 模式都会重跑全部探针，
- * 复用同名文件会让 link:hardlink 在第二轮撞 EEXIST，被误判成“被沙箱拒绝”。
+ * tag 在一次矩阵运行内唯一：每个 access 模式都会重跑全部探针，
+ * 复用同名文件会让 link:hardlink 在第二轮撞 EEXIST，被判成沙箱拒绝
  */
 export function probeArgs(
     probeId: string,
@@ -229,17 +231,17 @@ export function probeArgs(
         case "read:workspace":
             return [mount ? "/workspace/demo.txt" : `${fixture.workspace}/demo.txt`]
         case "read:outside":
-            /* 读全局放开后 bwrap 顶层只读绑定让宿主路径可见；host 后端本来可见 */
+            // 读全局放开后 bwrap 顶层只读绑定使宿主路径可见；host 后端本来可见
             return [fixture.secret]
         case "write:workspace":
             return [mount ? `/workspace/probe-${tag}.txt` : `${fixture.workspace}/probe-${tag}.txt`]
         case "write:scratch":
-            /* 两种后端都走 SCRATCH 环境变量，宿主侧路径对探针不可预知 */
+            // 两种后端都走 SCRATCH 环境变量，宿主侧路径对探针不可预知
             return [`${SCRATCH_SENTINEL}probe-${tag}.txt`]
         case "write:outside":
             return [`${fixture.outsideDir}/probe-${tag}.txt`]
         case "write:devnull":
-            /* bwrap 是 Linux 沙箱，路径固定 /dev/null；Windows 宿主后端用 NUL */
+            // bwrap 是 Linux 沙箱，路径固定 /dev/null；Windows 宿主后端用 NUL
             return [mount || process.platform !== "win32" ? "/dev/null" : "NUL"]
         case "net:egress":
             return [egressTarget(egressPort)]
@@ -253,7 +255,7 @@ export function probeArgs(
     }
 }
 
-/** 从探针 stdout 取最后一行 JSON；取不到返回 null */
+// 取探针 stdout 最后一行 JSON，取不到返回 null
 export function parseProbeOutput(stdout: string): { ok: boolean; code?: string } | null {
     const line = stdout
         .trim()
@@ -269,7 +271,7 @@ export function parseProbeOutput(stdout: string): { ok: boolean; code?: string }
     } catch {
         return null
     }
-    /* 只接受 { ok: boolean }，其余形状视为无结论 */
+    // 只接受 { ok: boolean }，其余形状视为无结论
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         return null
     }
@@ -284,7 +286,7 @@ export function parseProbeOutput(stdout: string): { ok: boolean; code?: string }
     }
 }
 
-/** 把一次运行归约成 actual + detail */
+// 把一次运行归约为 actual 与 detail
 export function classifyResult(input: {
     readonly exitCode: number | null
     readonly signal?: string | null
@@ -296,7 +298,7 @@ export function classifyResult(input: {
         if (input.exitCode === 0) {
             return { actual: "error", detail: "探针没有输出结果" }
         }
-        /* 探针未启动时按 deny 计，带上退出状态与 stderr 首行 */
+        // 探针未启动时按 deny 计，带上退出状态与 stderr 首行
         const exit = input.signal ? `signal=${input.signal}` : `exit=${String(input.exitCode)}`
         const reason = input.stderr.trim().split("\n")[0] ?? ""
         return { actual: "deny", detail: `${exit} ${reason}`.trim() }

@@ -1,6 +1,7 @@
 /*
- * Linux bwrap 后端。
- * 由 bwrap 提供 mount / PID / network namespace；Node permission model 作为第二层。
+ * Linux bwrap 后端
+ *
+ * bwrap 提供 mount / PID / network namespace，Node permission model 作为第二层
  */
 
 import { spawnSync } from "node:child_process"
@@ -21,15 +22,12 @@ import type {
 const SYSTEM_DIRS = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32"]
 
 /**
- * 读全局放开（与 DSH 对齐）。
+ * 宿主顶层目录的只读绑定集合（读全局放开，与 DSH 对齐）
  *
- * 把宿主顶层目录只读绑定进沙箱，而不是再把根文件系统整体 `--ro-bind / /`
- * 挂进来：bwrap 会在 tmpfs 的新根里按操作顺序创建挂载点，根一旦先变成只读，
- * 后面的 /workspace、/scratch 就创建不出来。逐顶层绑定既让宿主文件可见，
- * 又保住 tmpfs 根可创建挂载点的能力。
- *
- * /proc、/dev、/tmp 由 bwrap 用新的 procfs/devtmpfs/tmpfs 覆盖，不做只读绑定。
- * 非 Linux 环境（单测）用静态列表，保证参数稳定可断言。
+ * 逐顶层绑定：bwrap 在 tmpfs 的新根里按操作顺序创建挂载点
+ * 根一旦整体只读，后面的 /workspace、/scratch 就创建不出来
+ * /proc、/dev、/tmp 由 bwrap 用新的 procfs/devtmpfs/tmpfs 覆盖，不做只读绑定
+ * 非 Linux 环境（单测）用静态列表，参数稳定可断言
  */
 const SPECIAL_TOP_LEVEL = new Set(["/proc", "/dev", "/tmp"])
 const STATIC_TOP_LEVEL = [
@@ -83,10 +81,10 @@ export interface NodeRuntimeLayout {
 }
 
 /**
- * 找到当前 node 的安装前缀。
+ * 当前 node 的安装前缀
  *
- * 只 bind 单个 node 二进制会丢掉同目录的 npm/npx（npm 在 lib/node_modules/npm 里），
- * 所以优先把整个前缀挂到 /opt/wellspring；找不到 npm 的发行版才退回裸二进制。
+ * 只挂单个 node 二进制会丢掉同目录的 npm/npx（npm 在 lib/node_modules/npm 里）
+ * 优先把整个前缀挂到 /opt/wellspring，找不到 npm 的发行版退回裸二进制
  */
 export function resolveNodeRuntime(
     execPath: string = process.execPath,
@@ -119,10 +117,10 @@ function nodeRuntimeMount(runtime: NodeRuntimeLayout, execPath: string): string[
 }
 
 /**
- * agent 命令用宿主真实 Node 路径。
+ * agent 命令用宿主真实 Node 路径
  *
- * 读全局放开后宿主前缀本来就以只读方式可见，不需要再挂到 /opt/wellspring；
- * 而且 /opt 已经只读绑定，`--dir /opt/wellspring` 会 EROFS。
+ * 读全局放开后宿主前缀已以只读方式可见，无需再挂到 /opt/wellspring
+ * /opt 已只读绑定，`--dir /opt/wellspring` 会 EROFS
  */
 export interface HostNodeRuntime {
     readonly nodePath: string
@@ -174,9 +172,9 @@ export function buildBwrapLaunch(input: AgentLaunchInput): LaunchSpec {
         args.push("--share-net")
     }
     /*
-     * 读全局放开（与 DSH 对齐）：宿主顶层目录只读绑定进沙箱。
-     * /proc、/dev、/tmp 已由上面的新挂载覆盖，不再重复绑定。
-     * 写边界仍由 /workspace 的 bind/ro-bind 与 /scratch 决定。
+     * 读全局放开（与 DSH 对齐）：宿主顶层目录只读绑定进沙箱
+     * /proc、/dev、/tmp 已由上面的新挂载覆盖，不重复绑定
+     * 写边界由 /workspace 的 bind/ro-bind 与 /scratch 决定
      */
     for (const root of hostReadRoots()) {
         args.push("--ro-bind-try", root, root)
@@ -190,9 +188,9 @@ export function buildBwrapLaunch(input: AgentLaunchInput): LaunchSpec {
     const env: Record<string, string> = { ...input.env }
     env["PATH"] = `${nodeRuntime.pathEntry}:${env["PATH"] ?? "/usr/bin:/bin"}`
     /*
-     * 不再限制 RLIMIT_AS（虚拟地址空间会直接打死 V8 / JVM / Go）。
-     * 物理内存由 SandboxManager 挂 cgroup v2 memory.max；这里只留 V8 堆上限，
-     * 且对所有命令生效，npx / npm 派生的 node 子进程也能继承。
+     * RLIMIT_AS 不设限：虚拟地址空间会打死 V8 / JVM / Go
+     * 物理内存由 SandboxManager 挂 cgroup v2 memory.max
+     * 这里只留 V8 堆上限，对所有命令生效，npx / npm 派生的 node 子进程也继承
      */
     env["NODE_OPTIONS"] =
         `${env["NODE_OPTIONS"] ?? ""} --max-old-space-size=${input.limits.memoryMB}`.trim()
@@ -274,8 +272,7 @@ export function buildBwrapPluginLaunch(input: PluginLaunchInput): LaunchSpec {
 /**
  * 找不到 bwrap 时的说明
  *
- * Android 要单独说：Termux 仓库里没有 bwrap 包，这条路根本走不通，
- * 报「装一下 bwrap」等于把人指向死胡同
+ * Android 单独说明：Termux 仓库没有 bwrap 包，内核也不允许非特权 user namespace
  */
 export function bwrapMissingReason(osPlatform: PlatformName): string {
     if (osPlatform === "android") {

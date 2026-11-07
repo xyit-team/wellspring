@@ -1,10 +1,10 @@
 /*
- * sandbox 命令：维护沙盒在工作区上留下的 ACL。
+ * sandbox 命令：维护沙盒在工作区上留下的 ACL
  *
  * 用法：
  *   wellspring sandbox cleanup [--workspace <path>]
  *
- * 默认清理当前目录；只对支持 cleanup 的后端（win-restricted）生效。
+ * 默认清理当前目录；只对支持 cleanup 的后端（win-restricted）生效
  */
 
 import { resolve } from "node:path"

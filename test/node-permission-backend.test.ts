@@ -1,5 +1,5 @@
 /*
- * 非 Linux 插件 sandbox：Node permission model 的 launch 参数。
+ * 非 Linux 插件 sandbox：Node permission model 的 launch 参数
  */
 
 import assert from "node:assert/strict"

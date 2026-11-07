@@ -1,6 +1,4 @@
-/*
- * 会话层入口。
- */
+// 会话层入口
 
 export * from "./compress.ts"
 export * from "./replay.ts"

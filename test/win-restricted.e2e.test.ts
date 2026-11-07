@@ -1,8 +1,8 @@
 /*
- * Windows 受限 token 沙盒端到端测试。
+ * Windows 受限 token 沙盒端到端测试
  *
  * 需要先构建 native/win-sandbox：node scripts/build-win-sandbox.mjs
- * 非 Windows 或缺少 launcher 时整组跳过。
+ * 非 Windows 或缺少 launcher 时整组跳过
  */
 
 import assert from "node:assert/strict"
@@ -47,7 +47,7 @@ function paths(): ResolvedPaths {
 }
 
 before(async () => {
-    /* 某些受限会话的 TEMP 目录不属于当前 token 可写 DACL；允许用环境变量指定测试根目录 */
+    // 受限会话的 TEMP 目录可能不在当前 token 的可写 DACL 内；可用环境变量指定测试根目录
     const base =
         process.env["WELLSPRING_WIN_E2E_ROOT"] ??
         (process.platform === "win32" ? join(process.cwd(), ".tmp") : tmpdir())

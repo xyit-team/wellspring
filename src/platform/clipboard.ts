@@ -1,7 +1,8 @@
 /*
- * 剪贴板读写。
- * 各平台通过系统命令实现；命令缺失或不可用时按候选顺序回退。
- * Windows 的文本按 UTF-8 字节经 stdin/stdout 收发，避开控制台代码页。
+ * 剪贴板读写
+ *
+ * 各平台通过系统命令实现；命令缺失或不可用时按候选顺序回退
+ * Windows 的文本按 UTF-8 字节经 stdin/stdout 收发，避开控制台代码页
  */
 
 import { describeError, powershellArgs, runCommand, type RunCommandResult } from "./exec.ts"
@@ -38,7 +39,7 @@ const POWERSHELL_READ = powershellArgs(
     ].join("\n"),
 )
 
-/** 生成候选命令，按优先级排列。单独导出以便在任意平台测试 */
+/** 生成候选命令，按优先级排列；单独导出以便在任意平台测试 */
 export function buildClipboardCommands(
     targetPlatform: PlatformName = platform,
     inTermux: boolean = isTermux,
@@ -100,7 +101,7 @@ export async function writeClipboard(text: string): Promise<void> {
     await runCandidates(buildClipboardCommands().write, text)
 }
 
-/** 读取剪贴板。返回命令的原始输出，不做换行裁剪 */
+/** 读取剪贴板；返回命令原始输出，不做换行裁剪 */
 export async function readClipboard(): Promise<string> {
     const result = await runCandidates(buildClipboardCommands().read)
     return result.stdout

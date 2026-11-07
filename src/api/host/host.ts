@@ -1,6 +1,5 @@
 /*
- * 宿主信息 API：类似 Bukkit 的 PluginManager。
- * 插件通过 getHost() 获取宿主状态、插件列表、OS 与路径。
+ * 宿主信息 API：插件通过 getHost() 读取宿主状态、插件列表、OS 与路径
  */
 
 import { release as osRelease } from "node:os"

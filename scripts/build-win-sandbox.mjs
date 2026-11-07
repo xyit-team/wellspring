@@ -2,7 +2,7 @@
 /*
  * 构建 Windows sandbox launcher：native/win-sandbox/src/main.cpp → bin/win32-<arch>/win-sandbox.exe
  *
- * 不依赖 vcvars：直接定位 MSVC 与 Windows SDK，拼出 PATH/INCLUDE/LIB 后调用 cl.exe。
+ * 不依赖 vcvars：直接定位 MSVC 与 Windows SDK，拼出 PATH/INCLUDE/LIB 后调用 cl.exe
  * 用法：
  *   node scripts/build-win-sandbox.mjs                构建当前架构并自检
  *   node scripts/build-win-sandbox.mjs --no-self-test 跳过自检（受限环境构建用）
@@ -200,7 +200,7 @@ if (build.status !== 0 || build.error !== undefined) {
 if (!existsSync(outFile)) {
     fail(`编译完成但没有产物：${outFile}`)
 }
-/* bin/ 会进 npm 包，别把 .obj 一起发布 */
+// bin/ 随 npm 包发布，.obj 需清理
 for (const entry of readdirSync(outDir)) {
     if (entry.endsWith(".obj")) {
         rmSync(join(outDir, entry), { force: true })

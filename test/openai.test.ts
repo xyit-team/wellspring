@@ -164,7 +164,7 @@ test("缺少 API key 时创建失败", () => {
     const saved = process.env["OPENAI_API_KEY"]
     delete process.env["OPENAI_API_KEY"]
     try {
-        // 指定一个不存在的凭据文件，避免读到开发机上的真实 credentials.json
+        // 指向不存在的凭据文件，不读开发机上的真实 credentials.json
         const result = OpenAIClient.create({
             settings,
             credentialsFile: join(tmpdir(), "wellspring-missing-credentials.json"),

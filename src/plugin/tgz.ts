@@ -1,7 +1,5 @@
-/*
- * 最小 tar.gz 读取器，只服务本地插件安装。
- * 支持 ustar 与 pax 长路径头，拒绝符号链接、硬链接与路径穿越。
- */
+// 最小 tar.gz 读取器，只服务本地插件安装
+// 支持 ustar 与 pax 长路径头；符号链接、硬链接、路径穿越按非法包处理
 
 import { dirname, resolve, sep } from "node:path"
 import { gunzipSync } from "node:zlib"

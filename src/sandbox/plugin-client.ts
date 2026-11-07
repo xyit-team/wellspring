@@ -1,5 +1,7 @@
 /*
- * 宿主侧 sandbox 插件客户端：启动 child、握手、命令/钩子 RPC、host API 代理。
+ * 宿主侧 sandbox 插件客户端
+ *
+ * 启动 child、握手、命令/钩子 RPC、host API 代理
  */
 
 import { spawn, type ChildProcess } from "node:child_process"
@@ -143,7 +145,6 @@ export interface SandboxPluginReady {
     readonly commands: readonly SandboxPluginCommandMeta[]
     readonly agentTools: readonly SandboxAgentToolMeta[]
     readonly hooks: readonly string[]
-    /** init 里注册了版本探针；旧插件没有这个字段，按未注册处理 */
 }
 
 /** stat 但不存在时返回 null，用于 cwd 校验 */
@@ -174,7 +175,7 @@ function killSession(session: ExecSession): void {
     }
 }
 
-/** node-pty 进程的最小结构，避免把可选依赖变成静态类型依赖 */
+/** node-pty 进程的最小结构，可选依赖不做静态类型依赖 */
 interface NodePtyProcess {
     readonly pid: number
     onData(handler: (data: string) => void): void
@@ -241,7 +242,7 @@ async function probePython(): Promise<string | null> {
     return await pythonPtyProbe
 }
 
-/** PTY 尺寸夹在合理范围，避免异常值把终端撑爆；cols 与 rows 的最小值不同 */
+/** PTY 尺寸夹在范围内；异常值会撑爆终端，cols 与 rows 的最小值不同 */
 function clampSize(value: unknown, fallback: number, min: number, max: number): number {
     const size = typeof value === "number" ? Math.round(value) : Number.NaN
     if (!Number.isFinite(size)) return fallback
@@ -266,14 +267,14 @@ function defaultShell(): string {
 
 /** node-pty 是可选依赖：只尝试加载一次，失败就记住不可用 */
 let nodePtyPromise: Promise<NodePtyModule | null> | null = null
-/** node-pty 加载失败的原因，便于排查是没装还是原生模块装坏了 */
+/** node-pty 加载失败的原因：未安装或原生模块加载失败 */
 let nodePtyError: string | null = null
 
 async function loadNodePty(): Promise<NodePtyModule | null> {
     if (nodePtyPromise === null) {
         nodePtyPromise = (async () => {
             try {
-                // 变量 specifier：node-pty 可能根本没装，不能做成静态 import
+                // 变量 specifier：node-pty 可能未安装，静态 import 会直接失败
                 const specifier = "node-pty"
                 const module = (await import(specifier)) as unknown as {
                     spawn?: NodePtyModule["spawn"]
@@ -298,7 +299,7 @@ async function loadNodePty(): Promise<NodePtyModule | null> {
                 nodePtyError = null
                 return module as unknown as NodePtyModule
             } catch (error) {
-                // 未安装与原生模块加载失败是两类问题，原因要原样带出去
+                // 未安装与原生模块加载失败是两类问题，原因原样带出
                 nodePtyError = error instanceof Error ? error.message : String(error)
                 return null
             }
@@ -326,7 +327,7 @@ export interface PluginSandboxPermissions {
     readonly hostApi: readonly string[]
     readonly workspaceRead: boolean
     readonly workspaceWrite: boolean
-    /** 清单里声明了 sandbox.network 才放开出网（版本探针要查 npm） */
+    /** 清单里声明了 sandbox.network 才放开出网（插件自己查更新要访问 npm） */
     readonly network?: boolean
 }
 
@@ -433,7 +434,7 @@ export class PluginSandboxClient {
         string,
         {
             readonly response: import("node:http").ServerResponse
-            /** 响应头尚未应用时先缓存 chunk，避免 set headers 之后的写入报错 */
+            /** 响应头未应用时缓存 chunk；应用后写入会报错 */
             readonly chunks: string[]
             ready: boolean
             ended: boolean
@@ -514,11 +515,11 @@ export class PluginSandboxClient {
 
         const isBwrap = this.#options.backend.name === "bwrap"
         /*
-         * 总是把宿主 SDK 复制到 dataDir 再运行：
-         * - bwrap 后端把 dataDir 里的副本挂到 /host；
-         * - direct 后端从 node_modules 里直接跑 .ts 会触发
-         *   ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING，复制到 dataDir 后
-         *   Node 才能按源码运行插件 host runner。
+         * 宿主 SDK 一律复制到 dataDir 再运行
+         *
+         * bwrap 后端把 dataDir 里的副本挂到 /host
+         * direct 后端从 node_modules 里直接跑 .ts 会触发 ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING
+         * 复制到 dataDir 后 Node 才能按源码运行插件 host runner
          */
         await this.#prepareHostSdk()
 
@@ -536,8 +537,8 @@ export class PluginSandboxClient {
               }
             : {
                   /*
-                   * Windows / macOS 的插件 sandbox（Node permission）使用宿主路径；
-                   * 只透传系统定位变量，不把 API Key 等敏感环境变量带进插件进程。
+                   * Windows / macOS 的插件 sandbox（Node permission）使用宿主路径
+                   * 只透传系统定位变量，API Key 等敏感环境变量不进插件进程
                    */
                   PATH:
                       process.env["PATH"] ?? (process.platform === "win32" ? "" : "/usr/bin:/bin"),
@@ -814,7 +815,7 @@ export class PluginSandboxClient {
         }
     }
 
-    /** 模型供应商与切换：state / setActive / saveProvider / removeProvider / fetchModels / saveKey / clearKey */
+    /** 模型供应商配置与切换 */
     async #handleModels(method: string, params: Record<string, unknown>): Promise<unknown> {
         const service = this.#options.models
         if (service === undefined) {
@@ -1003,7 +1004,7 @@ export class PluginSandboxClient {
         child.on("close", (code) => finish(code))
 
         this.#execSessions.set(sessionId, session)
-        // 只保留最近 32 个会话，避免长时间使用后内存堆积
+        // 只保留最近 32 个会话，会话表有上限
         if (this.#execSessions.size > 32) {
             for (const [id, entry] of this.#execSessions) {
                 if (this.#execSessions.size <= 32) break
@@ -1243,7 +1244,7 @@ export class PluginSandboxClient {
 
         const sessionId = randomUUID()
         this.#ptySessions.set(sessionId, session)
-        // 只保留最近的会话，避免长期使用后堆积
+        // 只保留最近的会话，会话表有上限
         if (this.#ptySessions.size > HOST_PTY_MAX_SESSIONS) {
             for (const [id, entry] of this.#ptySessions) {
                 if (this.#ptySessions.size <= HOST_PTY_MAX_SESSIONS) break
@@ -1586,8 +1587,8 @@ export class PluginSandboxClient {
                         ws.close()
                     }
                     record.wsServer?.close()
-                    // SSE / 长轮询会保持连接，server.close() 要等它们全部断开；
-                    // 关闭时给一点收尾时间，然后强制断开剩余连接，避免 Ctrl+C 卡住。
+                    // SSE / 长轮询会保持连接，server.close() 等它们全部断开
+                    // 先给 800ms 收尾，再强制断开剩余连接，Ctrl+C 不卡住
                     const server = record.server
                     await new Promise<void>((resolveClose) => {
                         let settled = false
@@ -1975,14 +1976,6 @@ export class PluginSandboxClient {
         return await this.#request("plugin.hook", { hook, payload }, 30_000)
     }
 
-    /**
-     * 取插件的最新版本
-     *
-     * 探针在 init 里注册，通常查询网络，超时宽于普通 RPC
-     * 未注册探针时返回 null；探针抛错原样抛给调用方
-     * 返回形态由插件决定（字符串或 { version, downloadUrl }），宿主侧校验
-     */
-
     commandStubs(): PluginCommand[] {
         if (this.#ready === null) {
             return []
@@ -2018,7 +2011,7 @@ export class PluginSandboxClient {
         }
         this.#closed = true
         this.#kill()
-        // 先收掉仍在跑的进程，再清监听，避免成了孤儿
+        // 先收掉仍在跑的进程，再清监听，进程不会成为孤儿
         for (const session of this.#execSessions.values()) {
             if (!session.done) killSession(session)
         }

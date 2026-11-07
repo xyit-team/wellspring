@@ -1,4 +1,4 @@
-/** 会话模型：参考 DeepSeekHarness session.v4，按轮分段的 JSONL 事件流 */
+/* 会话模型：参考 DeepSeekHarness session.v4，按轮分段的 JSONL 事件流 */
 
 export type SessionMode = "chat" | "run"
 

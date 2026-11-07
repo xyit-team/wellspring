@@ -1,9 +1,9 @@
 /*
- * plugin link 的替换语义。
+ * plugin link 的替换语义
  *
- * 以前用 stat 判断目标是否已存在：悬空符号链接（源目录被删或改名）会让 stat 报 ENOENT，
- * 于是被当成「不存在」而放过，接着 symlink 撞 EEXIST、被裸 catch 吞掉后回落 cp，
- * 用户看到的是 Cannot overwrite non-directory with directory。
+ * 目标是否存在按 lstat 判断：源目录被删或改名后，插件目录里的悬空符号链接仍算存在
+ * 用 stat 判断会拿到 ENOENT 并当作不存在，symlink 再撞 EEXIST 后回落 cp，
+ * 报 Cannot overwrite non-directory with directory
  */
 
 import assert from "node:assert/strict"
@@ -40,7 +40,7 @@ function paths(): ResolvedPaths {
     }
 }
 
-/** 造一个可链接的插件目录；插件名取源目录 basename，所以目录名就是 name */
+// 造可链接的插件目录；插件名取源目录 basename，目录名即 name
 async function makeSource(name: string, marker = "v1"): Promise<string> {
     const dir = join(root, `src-${marker}`, name)
     await mkdir(dir, { recursive: true })
@@ -63,7 +63,7 @@ test("首次 link 建立符号链接", async () => {
 test("源目录被删后重新 link：替换悬空符号链接，不再报 Cannot overwrite", async () => {
     const first = await makeSource("plug-relink", "v1")
     await linkPlugin(first, paths())
-    // 整个源目录移走，插件目录里留下一个悬空链接
+    // 移走源目录，留下悬空链接
     await rm(first, { recursive: true, force: true })
     const target = join(root, "data", "plugins", "plug-relink")
     assert.equal((await lstat(target)).isSymbolicLink(), true)
@@ -119,7 +119,7 @@ test("符号链接内容损坏（指向普通文件）时不覆盖，报可读�
     await writeFile(strayFile, "x")
     await symlink(strayFile, target)
     const source = await makeSource(name)
-    // 指向文件的链接会被替换掉，连到新的源目录
+    // 指向普通文件的符号链接被替换为新源目录
     await linkPlugin(source, paths())
     assert.equal(await readlink(target), source)
 })

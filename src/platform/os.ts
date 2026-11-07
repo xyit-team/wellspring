@@ -1,6 +1,7 @@
 /*
- * 平台识别。
- * 本模块是唯一读取 process.platform 的位置。
+ * 平台识别
+ *
+ * 本模块是唯一读取 process.platform 的位置
  */
 
 import { homedir } from "node:os"
@@ -8,7 +9,7 @@ import { homedir } from "node:os"
 /** 业务侧平台名，不使用 Node 的 win32 / darwin / linux 原始值 */
 export type PlatformName = "windows" | "macos" | "linux" | "android"
 
-/** Termux 等 Android 用户态 Node 报告 linux，用 Android 环境变量识别 */
+// Termux 等 Android 用户态 Node 报告 linux，用 Android 环境变量识别
 function isAndroidEnv(env: NodeJS.ProcessEnv): boolean {
     const has = (name: string): boolean => {
         const value = env[name]
@@ -17,7 +18,7 @@ function isAndroidEnv(env: NodeJS.ProcessEnv): boolean {
     return has("ANDROID_ROOT") || has("ANDROID_DATA") || has("TERMUX_VERSION")
 }
 
-/** 平台归一化。参数可注入，供测试覆盖各平台 */
+/** 平台归一化；参数可注入，供测试覆盖各平台 */
 export function detectPlatform(
     nodePlatform: NodeJS.Platform = process.platform,
     env: NodeJS.ProcessEnv = process.env,
@@ -58,7 +59,7 @@ export const isTermux: boolean =
     (readEnv("TERMUX_VERSION") !== undefined ||
         (readEnv("PREFIX")?.includes("com.termux") ?? false))
 
-/** 读取环境变量，空串按未设置处理。Windows 下变量名大小写不敏感 */
+/** 读取环境变量，空串按未设置处理；Windows 下变量名大小写不敏感 */
 export function readEnv(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
     const direct = env[name]
     if (direct !== undefined) {
@@ -68,7 +69,6 @@ export function readEnv(name: string, env: NodeJS.ProcessEnv = process.env): str
     if (!isWindows) {
         return undefined
     }
-    // Windows 环境变量名不区分大小写
     const lower = name.toLowerCase()
     const key = Object.keys(env).find((item) => item.toLowerCase() === lower)
     const value = key === undefined ? undefined : env[key]?.trim()

@@ -97,7 +97,7 @@ test("bwrap launch spec：namespace、只读 workspace、可写 scratch、无网
     const prlimitIndex = spec.args.indexOf("/usr/bin/prlimit")
     assert.ok(prlimitIndex > 0)
     assert.ok(spec.args.includes("--nproc=16"))
-    // 不再用 RLIMIT_CPU / RLIMIT_AS：超时交给 supervisor，物理内存交给 cgroup
+    // 不设 RLIMIT_CPU / RLIMIT_AS：超时归 supervisor，物理内存归 cgroup
     assert.ok(!spec.args.some((arg) => arg.startsWith("--cpu=")))
     assert.ok(!spec.args.some((arg) => arg.startsWith("--as=")))
     assert.ok(spec.args.includes("NODE_OPTIONS"))
@@ -387,9 +387,9 @@ test("maxConcurrent 限制并发执行数量", { timeout: 20_000 }, async () => 
     ])
     const lines = (await readFile(log, "utf8")).trim().split("\n")
     /*
-     * 只保证「同一时刻只有一条在跑」，不假设两条调用谁先拿到槽位：
-     * startAgentCode 在拿槽位之前还有几个 await（stat / 选后端），
-     * 两个并发调用的恢复顺序本来就不保证（CI 上偶发反序）。
+     * 只保证同一时刻只有一条在跑，不假设两条调用的槽位顺序
+     * startAgentCode 在拿槽位前还有几个 await（stat / 选后端）
+     * 并发调用的恢复顺序无保证（CI 上偶发反序）
      */
     assert.equal(lines.length, 4)
     assert.match(lines[0] ?? "", /^start:\d+$/)
@@ -408,7 +408,7 @@ test("后端能力位与真实机制一致", () => {
     assert.equal(bwrap.enforcement("workspace-write"), "full")
     assert.deepEqual(bwrap.enforcementNotes("workspace-write"), [])
 
-    /* 没有 cgroup 的后端不能顶替 memoryLimit，否则结果里的 memoryLimit 会撒谎 */
+    // 无 cgroup 的后端 memoryLimit 为 false：声称有上限会让结果里的 memoryLimit 失真
     assert.equal(new SeatbeltBackend().memoryLimit, false)
     assert.equal(new DirectBackend().memoryLimit, false)
 
@@ -457,7 +457,7 @@ test("bwrap 缺失说明：Android 指向死路，其他平台给出安装方式
     const android = bwrapMissingReason("android")
     assert.match(android, /Termux/)
     assert.match(android, /user namespace/)
-    /* 提示别人 apt install bubblewrap 在 Termux 上是错的 */
+    // Termux 上 apt install bubblewrap 无效
     assert.doesNotMatch(android, /apt install/)
 
     assert.match(bwrapMissingReason("linux"), /apt install bubblewrap/)
@@ -547,7 +547,7 @@ test("工作区准备事件：started/completed 带 sessionId", async () => {
             enforcement: () => "partial" as const,
             enforcementNotes: () => [],
             async prepare() {
-                /* 模拟异步 ACL 授予 */
+                // 模拟异步 ACL 授予
                 await new Promise((resolve) => setTimeout(resolve, 5))
             },
             async probe() {

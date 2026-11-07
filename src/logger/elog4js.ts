@@ -1,7 +1,8 @@
 /*
- * 终端 UI 输出器（elog4js）。
- * human 模式专用：级别标签、颜色、流式输出；Pino 只负责结构化日志与文件。
- * --json 模式下所有方法静默，stdout 只留给 Result envelope。
+ * 终端 UI 输出器（elog4js）
+ *
+ * human 模式专用：级别标签、颜色、流式输出；Pino 只负责结构化日志与文件
+ * --json 模式下所有方法静默，stdout 只留给 Result envelope
  */
 
 export type ElogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal"
@@ -203,7 +204,7 @@ export class Elog {
         this.#stdout.write(`\n${color ? `\x1b[36m${text}\x1b[0m` : text}\n`)
     }
 
-    /** 代码块 */
+    // 代码块
     #codeBlock(label: string, code: string): void {
         const columns = process.stdout.columns ?? 80
         const width = Math.max(40, columns - 2)
@@ -280,7 +281,7 @@ export class Elog {
         this.#stdout.write(`${label} ${name} ${status}\n`)
     }
 
-    /** 只带级别标签，不再拼插件名 */
+    /** 只带级别标签 */
     tag(level: ElogLevel, text: string): void {
         const stream = level === "error" || level === "warn" ? this.#stderr : this.#stdout
         this.#line(level, text, stream)

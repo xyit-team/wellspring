@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /*
- * 用本机 Node 头文件重建 node-pty 原生模块。
+ * 用本机 Node 头文件重建 node-pty 原生模块
  *
- * node-pty 没有 linux 预编译包，pnpm install 时会走 node-gyp；而 node-gyp 自带的
- * 下载器在设置了 HTTP(S)_PROXY 的环境里与 Node 26 不兼容（安装日志里是
- * "gyp ERR! InvalidArgumentError: invalid onError method"），于是 install 失败。
- * 这里直接使用 Node 安装目录里自带的 include/node 头文件，跳过下载。
+ * node-pty 没有 linux 预编译包，pnpm install 走 node-gyp
+ * node-gyp 自带下载器在设置 HTTP(S)_PROXY 的环境里与 Node 26 不兼容
+ *   （gyp ERR! InvalidArgumentError: invalid onError method），安装失败
+ * 本脚本直接用 Node 安装目录的 include/node 头文件，跳过下载
  *
  * 用法：pnpm pty:build
- * 没装 node-pty 也没关系：终端会自动退回 python3 的 pty 实现。
+ * 缺 node-pty 时终端退回 python3 的 pty 实现
  */
 
 import { spawnSync } from "node:child_process"

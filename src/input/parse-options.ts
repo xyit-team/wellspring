@@ -1,6 +1,7 @@
 /*
- * 命令级参数解析。
- * 统一走 node:util parseArgs，未知参数严格报错并映射为 usage.* 错误码。
+ * 命令级参数解析
+ *
+ * 统一走 node:util parseArgs，未知参数严格报错并映射为 usage.* 错误码
  */
 
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util"

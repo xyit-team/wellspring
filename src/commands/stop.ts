@@ -1,6 +1,7 @@
 /*
- * stop：停止正在运行的 wellspring start 服务。
- * 读取 <dataDir>/service.json，发送 SIGTERM，等待进程退出。
+ * stop 命令：停止运行中的 wellspring start 服务
+ *
+ * 读取 <dataDir>/service.json，发送 SIGTERM，等待进程退出
  */
 
 import { ServiceNotRunningError, ServiceStopTimeoutError, stopService } from "../service/control.ts"

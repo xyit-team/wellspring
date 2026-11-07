@@ -1,5 +1,5 @@
 /*
- * 宿主 Agent 能力：让 sandbox 插件与 Agent 会话交互。
+ * 宿主 Agent 能力：sandbox 插件与 Agent 会话交互
  */
 
 import type { TokenUsage } from "../../agent/usage.ts"
@@ -115,7 +115,7 @@ export type HostAgentStreamEvent =
     | ({ readonly type: "tool" } & HostAgentToolEvent)
     /** Agent 提问，等待用户回答 */
     | { readonly type: "ask"; readonly request: HostAgentAskRequest }
-    /** 开始执行第 step 步；用于界面显示进度 */
+    /** 第 step 步开始；界面显示进度 */
     | { readonly type: "step"; readonly turn: number; readonly step: number }
     /** 工具请求提升权限，等待用户批准 */
     | { readonly type: "approval"; readonly request: HostAgentApprovalRequest }
@@ -131,13 +131,14 @@ export interface HostAgentApi {
     ): Promise<HostAgentChatResult>
     /** 校验工作目录：必须是已存在的目录；返回规范化路径与目录名 */
     validateWorkspace(path: string): Promise<HostWorkspaceCheck>
-    /** 打开宿主系统的原生文件夹选择对话框，返回选中的目录 */
+    /** 原生目录选择对话框；返回选中目录 */
     pickDirectory(): Promise<HostWorkspaceCheck>
     /**
-     * 用宿主系统打开本地路径
+     * 在宿主系统打开本地路径
      *
-     * default = 用系统默认程序打开；reveal = 在文件管理器里定位（macOS 访达、
-     * Windows 资源管理器、Linux 文件管理器）。路径必须是绝对路径。
+     * default = 系统默认程序打开
+     * reveal = 在文件管理器里定位（macOS 访达、Windows 资源管理器、Linux 文件管理器）
+     * 路径必须是绝对路径
      */
     openPath(path: string, mode?: HostAgentOpenMode): Promise<void>
     /**
@@ -159,8 +160,9 @@ export interface HostAgentApi {
     /**
      * 停止正在运行的一轮
      *
-     * 已发出的模型调用不会被切断：循环在当前步结束后收尾，
-     * 后续步骤、工具执行都不再发起。等待中的提问与提权请求按“跳过 / 拒绝”了结。
+     * 已发出的模型调用不切断：循环在当前步结束后收尾
+     * 后续步骤与工具执行不再发起
+     * 等待中的提问与提权请求按“跳过 / 拒绝”处理
      * 会话不在运行中返回 false
      */
     stop(sessionId: string): Promise<boolean>

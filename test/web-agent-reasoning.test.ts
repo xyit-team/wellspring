@@ -184,7 +184,7 @@ test("Agent 服务：流式推送思考内容与工具调用事件", { timeout: 
     assert.equal(end.result, "文件内容")
     assert.equal(end.truncated, undefined)
 
-    // 思考内容要落在会话的 assistant 消息里（replay 会忽略 reasoning 片段）
+    // 思考内容落在会话的 assistant 消息里（replay 忽略 reasoning 片段）
     const deltas = events.filter((event) => event.type === "delta")
     assert.ok(deltas.length > 0, "正文仍按 delta 推送")
 })

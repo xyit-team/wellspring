@@ -1,7 +1,7 @@
 /*
- * plugin update：宿主按清单来源更新。
+ * plugin update：宿主按清单来源更新
  * - 服务在运行 → 拒绝
- * - 没声明来源 → 明确报错
+ * - 未声明来源 → 报错
  * - npm 渠道：查最新版本，已最新不重装；有新版下载安装（用假 registry）
  * - file 渠道：--from 本地目录（或安装记录）重装
  */
@@ -78,7 +78,7 @@ async function makePluginDir(
     return dir
 }
 
-/** 假 registry：latest 返回指定版本与 tarball 地址（这里不真的下载，用于 checkOnly / 已最新判断） */
+// 假 registry：latest 返回指定版本与 tarball 地址，不执行下载
 function fakeNpmFetch(version: string): typeof fetch {
     return (async () =>
         new Response(
@@ -233,6 +233,6 @@ test("findInstalledPlugin：按本地名 / 包名都能找到", async () => {
     assert.equal((await findInstalledPlugin("find-me", target))?.dir.endsWith("find-me"), true)
     assert.equal((await findInstalledPlugin("@x/find-me", target))?.id, "find-me")
     assert.equal(await findInstalledPlugin("nope", target), null)
-    /* 顺手清掉残留，避免后续用例看到多余插件 */
+    // 清理安装残留，隔离后续用例
     await removePath(join(target.dataDir, "plugins", "find-me"))
 })

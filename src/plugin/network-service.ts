@@ -1,10 +1,6 @@
-/*
- * 宿主网络配置服务：读写 app-setting.json 的 network.proxy。
- *
- * 只写这一个字段，其余配置原样保留；写入前经过 validateSettings，
- * 非法 URL / noProxy 不会落盘。模型调用、拉模型、网页搜索每轮都会重新读配置，
- * 所以保存后不需要重启服务，下一轮请求生效。
- */
+// 宿主网络配置服务：读写 app-setting.json 的 network.proxy
+// 只写这一个字段，其余配置原样保留；写入前经过 validateSettings，非法 URL / noProxy 不落盘
+// 模型调用、拉模型、网页搜索每轮重读配置，保存后下一轮请求生效
 
 import type { Logger } from "pino"
 
@@ -32,7 +28,7 @@ function isHttpUrl(value: string): boolean {
     }
 }
 
-/** 去空、去重、限长，避免把超大/空白的 noProxy 写进配置 */
+/** noProxy 归一：去空、去重、限长 */
 function normalizeNoProxy(values: readonly string[] | undefined): string[] {
     const result: string[] = []
     for (const raw of values ?? []) {

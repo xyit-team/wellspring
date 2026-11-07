@@ -1,5 +1,5 @@
 /*
- * 沙箱物理内存限制：cgroup v2（systemd user scope）的装配与降级路径。
+ * 沙箱物理内存限制：cgroup v2（systemd user scope）的装配与降级路径
  */
 
 import assert from "node:assert/strict"

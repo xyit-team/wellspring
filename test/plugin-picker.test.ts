@@ -66,7 +66,7 @@ test("Windows 选择框：脚本走 UTF-8 输出、置顶父窗口与三种标�
     assert.match(WINDOWS_PICKER_SCRIPT, /'PICKED '/)
     assert.match(WINDOWS_PICKER_SCRIPT, /'CANCELLED'/)
     assert.match(WINDOWS_PICKER_SCRIPT, /'ERROR '/)
-    /* 中文标题要在脚本里，靠 -EncodedCommand 传，不受代码页影响 */
+    // 中文标题内嵌脚本，经 -EncodedCommand 传入，不受代码页影响
     assert.match(WINDOWS_PICKER_SCRIPT, /选择工作区文件夹/)
 })
 

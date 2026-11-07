@@ -1,5 +1,5 @@
 /*
- * 入参层入口。
+ * 入参层入口
  */
 
 export * from "./codes.ts"

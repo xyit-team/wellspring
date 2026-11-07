@@ -1,9 +1,6 @@
-/*
- * 插件侧模块别名。
- * 插件不在 wellspring 包的解析路径内，用 Node 的 resolve hook 把
- * "wellspring" / "wellspring/..." 映射到本仓库的 src 目录，
- * 这样插件可以 import { onMessage, getHost } from "wellspring/api/host/index.ts"。
- */
+// 插件侧模块别名：resolve hook 把 "wellspring" / "wellspring/..." 映射到仓库 src 目录
+// 插件不在 wellspring 包的解析路径内，import { onMessage, getHost } from
+// "wellspring/api/host/index.ts" 依赖这条映射
 
 import { statSync } from "node:fs"
 import { registerHooks } from "node:module"
@@ -43,7 +40,7 @@ function resolveHostTarget(specifier: string): string | null {
     return existingFile(join(SOURCE_ROOT, rest, "index.ts"))
 }
 
-/** 注册一次即可；在加载插件前调用 */
+/** 注册宿主模块别名 hook；进程内只注册一次，在加载插件前调用 */
 export function ensureHostAlias(): void {
     if (installed) {
         return

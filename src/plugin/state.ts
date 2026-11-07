@@ -1,7 +1,5 @@
-/*
- * 插件启用状态：<dataDir>/plugins-state.json。
- * 以插件目录名为 key，禁用后 loader 不再 import 该插件。
- */
+// 插件启用状态：<dataDir>/plugins-state.json
+// key 为插件目录名；禁用的插件在加载时跳过
 
 import { join } from "node:path"
 

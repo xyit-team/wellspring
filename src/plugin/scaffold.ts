@@ -1,6 +1,4 @@
-/*
- * 插件脚手架：生成可加载的最小插件目录。
- */
+// 插件脚手架：生成可加载的最小插件目录
 
 import { join, resolve } from "node:path"
 

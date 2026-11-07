@@ -1,7 +1,7 @@
 /*
  * plugin update：覆盖已安装的同名插件
  *
- * 必须是已安装的插件；link 进来的符号链接不覆盖
+ * 只更新已安装插件，link 进来的符号链接不覆盖
  */
 
 import assert from "node:assert/strict"

@@ -1,9 +1,9 @@
 /*
- * 宿主伪终端（PTY）API。
+ * 宿主伪终端（PTY）API
  *
- * 需要 node-pty 提供真正的 tty：只有 tty 才有行编辑、颜色、进度条与全屏程序。
- * node-pty 是原生模块，可能装不上（无编译器 / 无预编译包），所以它按可选依赖处理，
- * 拿不到时 available() 返回 false，调用方退回普通管道执行。
+ * 行编辑、颜色、进度条与全屏程序只有 tty 才有，node-pty 提供真正的 tty
+ * node-pty 是原生模块，可能装不上（无编译器 / 无预编译包），按可选依赖处理
+ * 拿不到时 available() 返回 false，调用方退回普通管道执行
  */
 
 export interface HostPtySpawnOptions {
@@ -39,7 +39,7 @@ export interface HostPtyAvailability {
     readonly available: boolean
     /** 实际使用的后端 */
     readonly backend?: HostPtyBackend
-    /** 不可用时的原因，便于排查（未安装 / 原生模块加载失败） */
+    /** 不可用原因（未安装 / 原生模块加载失败） */
     readonly reason?: string
 }
 
@@ -66,7 +66,7 @@ export const HOST_PTY_MAX_POLL_CHARS = 128 * 1024
 export const HOST_PTY_DEFAULT_COLS = 100
 export const HOST_PTY_DEFAULT_ROWS = 28
 
-/** 尺寸的合理范围：列不能太窄，行数允许缩到很小（终端面板可以拖得很矮） */
+/** 尺寸范围：列有下限，行数下限很小（终端面板可拖矮） */
 export const HOST_PTY_MIN_COLS = 20
 export const HOST_PTY_MAX_COLS = 400
 export const HOST_PTY_MIN_ROWS = 2

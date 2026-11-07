@@ -11,7 +11,7 @@ test("插件清单：sandbox.network 默认关闭", () => {
     assert.equal(sandboxPermissions(pkg(undefined)).network, false)
     assert.equal(sandboxPermissions(pkg({ fs: {} })).network, false)
     assert.equal(sandboxPermissions(pkg({ network: false })).network, false)
-    // 只认布尔 true，字符串 "true" 这种写错的不算
+    // 只接受布尔 true，字符串 "true" 不生效
     assert.equal(sandboxPermissions(pkg({ network: "true" })).network, false)
 })
 

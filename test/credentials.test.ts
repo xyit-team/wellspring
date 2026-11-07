@@ -1,5 +1,5 @@
 /*
- * API Key 凭据：存储、掩码、解析顺序与 CLI key 命令。
+ * API Key 凭据：存储、掩码、解析顺序与 CLI key 命令
  */
 
 import assert from "node:assert/strict"

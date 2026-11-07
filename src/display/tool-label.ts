@@ -1,6 +1,7 @@
 /*
- * 工具调用的终端展示：中文动作名 + 一行参数摘要。
- * 与网页里的工具行保持一致（执行命令 / 读取文件 / 搜索网页 …）。
+ * 工具调用的终端展示
+ *
+ * 中文动作名与一行参数摘要，与网页工具行一致（执行命令 / 读取文件 / 搜索网页）
  */
 
 const TOOL_LABELS: Readonly<Record<string, string>> = {
@@ -76,7 +77,7 @@ export function toolSummary(name: string, args: Record<string, unknown>): string
     return truncate(first ?? "")
 }
 
-/** 参数是 JSON 字符串时先解析，失败按空对象处理 */
+/** 解析 JSON 参数；失败按空对象处理 */
 export function toolArgs(raw: string): Record<string, unknown> {
     try {
         const value: unknown = JSON.parse(raw)

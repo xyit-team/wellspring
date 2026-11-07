@@ -1,8 +1,6 @@
-/*
- * 插件加载。
- * 先 import + setup() 收集元数据，再按 deps 拓扑排序，最后注册命令并执行 init(api)。
- * 支持 plugins-state.json 禁用插件；坏插件只记录失败，不影响其他插件。
- */
+// 插件加载
+// 先 import + setup() 收集元数据，按 deps 拓扑排序，最后注册命令并执行 init(api)
+// plugins-state.json 里的禁用插件跳过；坏插件只记录失败，不影响其他插件
 
 import { cp, lstat, readdir, readlink, rm, stat, symlink } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
@@ -156,7 +154,7 @@ async function resolveEntry(dir: string, pkg: PluginPackageJson | null): Promise
                 return file
             }
         } catch {
-            // 尝试下一个候选
+            // 候选文件不存在
         }
     }
     return null
@@ -229,7 +227,8 @@ interface PluginEntry {
 /**
  * 插件在宿主侧的归属名
  *
- * 1.7 起目录名（本地名）就是插件 id，直接用它；参数保留是为了少改调用点。
+ * 1.7 起目录名（本地名）就是插件 id，直接用它
+ * _pkg 参数保留给调用点
  */
 function ownerOf(id: string, _pkg: PluginPackageJson | null): string {
     return id
@@ -260,7 +259,7 @@ export function sandboxPermissions(pkg: PluginPackageJson | null): PluginSandbox
         hostApi,
         workspaceRead: read.includes("${workspace}") || write.includes("${workspace}"),
         workspaceWrite: write.includes("${workspace}"),
-        // 默认断网；插件自己访问网络（例如查更新）才在清单里显式声明
+        // 默认断网；清单声明 network: true 才放行
         network: manifest["network"] === true,
     }
 }
@@ -371,8 +370,8 @@ async function loadEntry(
             const ready = await client.start({ deferInit: true })
             entry.sandboxClient = client
             /*
-             * id 以目录/本地名为准：目录名来自清单的 wellspring.name，
-             * setup() 里再写一遍只会漂移。
+             * id 以目录 / 本地名为准：目录名来自清单的 wellspring.name，
+             * setup() 声明的 id 与它不一致时只告警
              */
             if (ready.plugin.id !== id) {
                 options.logger.warn(
@@ -481,7 +480,6 @@ function sortByDeps(entries: readonly PluginEntry[]): PluginEntry[] {
     return sorted
 }
 
-/** 加载全部插件。坏插件记录失败状态，不影响其他插件 */
 function pluginIdOf(entry: PluginEntry): string {
     return entry.plugin?.id ?? entry.owner
 }
@@ -735,6 +733,7 @@ export async function hotDisablePlugin(
     return await runtime.hotDisable(id)
 }
 
+/** 加载全部插件；坏插件记录失败状态，不影响其他插件 */
 export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly LoadedPlugin[]> {
     ensureHostAlias()
     ensureAccessGuard()
@@ -770,8 +769,8 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
                 candidates.push(new SeatbeltBackend())
             }
             /*
-             * win-restricted 只用于 Agent 代码执行；插件仍使用 Node permission model。
-             * 显式配置该后端时，插件沙箱降级为 node-permission，避免插件全部拒绝加载。
+             * win-restricted 只用于 Agent 代码执行；插件仍使用 Node permission model
+             * 显式配置该后端时，插件沙箱降级为 node-permission，插件仍能加载
              */
             if (sandboxSetting.backend === "win-restricted" && isWindows) {
                 candidates.push(new NodePermissionBackend())
@@ -972,21 +971,22 @@ export async function loadPlugins(options: LoadPluginsOptions): Promise<readonly
     return loaded
 }
 
-/**
- * 链接插件目录，开发用；没有符号链接权限时退化为复制
- *
- * 目标位置已有条目时按条目类型决定：
- * - 符号链接：指向同一个源则幂等返回，否则替换（源目录被删或改名后重链走这条路径）
- * - 真实目录：报「插件已存在」，不覆盖
- *
- * 存在性用 lstat：悬空符号链接的 stat 为 ENOENT，会被判成不存在，
- * 随后的 symlink 撞 EEXIST 再回落 cp，报 Cannot overwrite non-directory with directory
- */
 /** 没有清单时用目录名兜底：清洗成合法本地名 */
 function localNameFromDir(dir: string): string | null {
     const cleaned = basename(dir).replace(/[^A-Za-z0-9._-]/g, "-")
     return PLUGIN_NAME.test(cleaned) ? cleaned : null
 }
+
+/**
+ * 链接插件目录，开发用；没有符号链接权限时退化为复制
+ *
+ * 目标位置已有条目时按条目类型决定：
+ * - 符号链接：指向同一个源则幂等返回，其余情况替换（源目录改名后重链走这条路径）
+ * - 真实目录：抛「插件已存在」
+ *
+ * 存在性用 lstat：悬空符号链接的 stat 为 ENOENT，会被判成不存在，
+ * 随后的 symlink 撞 EEXIST 再回落 cp，报 Cannot overwrite non-directory with directory
+ */
 export async function linkPlugin(
     sourcePath: string,
     paths: ResolvedPaths = getPaths(),
@@ -1009,7 +1009,7 @@ export async function linkPlugin(
     if (target === null) {
         throw new Error(`插件名不合法：${name}`)
     }
-    // scope 目录要先建出来
+    // 先建 scope 父目录
     await ensureDir(dirname(target))
 
     const existing = await lstat(target).catch(() => null)
@@ -1041,11 +1041,9 @@ export async function linkPlugin(
 /**
  * 删除插件目录
  *
- * 两个「说到做到」的约束：
- * - 删之前先看有没有：`rm` 带 force 时目标不存在也不报错，以前输入一个不存在的名字
- *   照样打印「已删除插件 xxx」，看着成功其实什么都没发生。
- * - 删完再确认一次：Windows 上目录被进程占成 cwd / 有句柄没关时会删不掉，
- *   这里等到重试也无用时给出可执行的说明，而不是把错误码直接丢给用户。
+ * 删除前先确认存在：rm 带 force 时目标不存在也不报错，不检查会照样输出「已删除插件 xxx」
+ * 删除后复查：Windows 上目录被进程占成 cwd 或有句柄未关时删不掉
+ * 删除失败时把 EBUSY / EPERM 这类错误码换成可执行的说明
  */
 export async function removePlugin(name: string, paths: ResolvedPaths = getPaths()): Promise<void> {
     const target = pluginDirOf(pluginsRoot(paths), name)

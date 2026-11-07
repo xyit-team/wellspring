@@ -1,6 +1,6 @@
 /*
- * 宿主 API 入口。
- * 插件可以 import { onMessage, getHost, ... } from "wellspring/api/host/index.ts"。
+ * 宿主 API 入口
+ * 插件从 "wellspring/api/host/index.ts" 导入
  */
 
 export * from "./agent.ts"

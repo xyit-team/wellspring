@@ -199,7 +199,7 @@ test("loader 按 setup() 契约加载插件、注册命令与钩子", async () =
         true,
     )
 
-    // 插件从 wellspring/api/host 注册的钩子应该生效
+    // wellspring/api/host 注册的钩子生效
     const prompt: string[] = []
     await emitOnMessage({
         sessionId: "demo-plugin",
@@ -608,7 +608,7 @@ test("依赖按拓扑排序初始化：目录名靠前的依赖后执行", async
             "    }",
             "}",
         ].join("\n")
-    /* 1.7 起 id 与依赖名都是本地名（目录名）：依赖写在 z-base 上、目录顺序却在后面 */
+    // 1.7 起 id 与依赖名都是本地名（目录名）；依赖写在后加载的 z-base 上
     await writeCustomPlugin(dataDir, "z-base", source("z-base", []))
     await writeCustomPlugin(dataDir, "a-child", source("a-child", ["z-base"]))
 
@@ -966,7 +966,7 @@ test("热启用：触发该插件的 init 钩子", async () => {
     const { logger } = fakeLogger()
     await loadPlugins({ paths, config: DEFAULT_SETTINGS, logger, registry })
 
-    // 冷加载由 start 命令统一触发 init 钩子；测试里没触发
+    // init 钩子由 start 命令统一触发；本用例冷加载未触发
     const hookFile = join(dataDir, "plugin-data", "hook-plugin", "init-hook.txt")
     await assert.rejects(async () => await readFile(hookFile, "utf8"))
 

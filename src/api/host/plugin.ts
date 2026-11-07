@@ -1,6 +1,6 @@
 /*
- * 宿主契约：平台暴露给插件与外部调用方的稳定接口。
- * 实现放在各模块，api/host 只放类型、版本与钩子注册入口。
+ * 宿主契约：平台暴露给插件与外部调用方的稳定接口
+ * 实现放在各模块，api/host 只放类型、版本与钩子注册入口
  */
 
 import type { Logger } from "pino"
@@ -69,7 +69,7 @@ export interface AgentToolParam {
     readonly items?: { readonly type: "string" | "number" | "integer" | "boolean" }
 }
 
-/** string 作为简写，等价于 { type: "string", description } */
+/** string 是 { type: "string", description } 的简写 */
 export type AgentToolParamSpec = string | AgentToolParam
 
 export interface AgentToolIntroduction {
@@ -103,7 +103,7 @@ import type { HostWorkspacesApi } from "./workspace.ts"
 /**
  * 插件 id 规则：可选 @scope/ 前缀
  *
- * 宿主与 sandbox 内的插件进程共用同一份，避免两侧规则漂移
+ * 宿主与 sandbox 内的插件进程共用同一份
  */
 export const PLUGIN_ID = /^(?:@[A-Za-z0-9][A-Za-z0-9._-]*\/)?[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 
@@ -155,10 +155,8 @@ export interface PluginApi {
     readonly fileRoots: HostFileRootsApi
     registerCommand(command: PluginCommand): void
     registerAgentTool?(tool: AgentTool): void
-    /**
-     * 1.7 起插件不再注册版本探针：更新来源写在 package.json 的
-     * `wellspring.npm` / `wellspring.github`，由宿主自己查询
-     */
+    // 1.7 起插件不再注册版本探针，更新来源写在 package.json 的
+    // `wellspring.npm` / `wellspring.github`，由宿主自己查询
     /** 依赖链上的插件 data 目录；无权限返回 null */
     pluginData(pluginId: string): Promise<HostFileApi | null>
     /** 宿主能力：代码执行、网页搜索/抓取 */

@@ -1,6 +1,4 @@
-/*
- * 插件层入口。
- */
+// 插件层入口
 
 export * from "./console-guard.ts"
 export * from "./host-alias.ts"

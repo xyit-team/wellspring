@@ -1,8 +1,9 @@
 /*
- * OpenAI SDK 接入。
- * Responses API 为默认文本接口；chat 兼容只提供 Chat Completions 的网关。
- * API key 读取顺序：显式参数 > OPENAI_API_KEY > <configDir>/credentials.json，
- * 明文只进请求，不进配置、日志与界面。
+ * OpenAI SDK 接入
+ *
+ * Responses API 为默认文本接口；chat 兼容只提供 Chat Completions 的网关
+ * API key 读取顺序：显式参数 > OPENAI_API_KEY > <configDir>/credentials.json
+ * 明文只进请求，不进配置、日志与界面
  */
 
 import OpenAI, {
@@ -62,7 +63,7 @@ export interface OpenAIReply {
     readonly reasoningTokens?: number | null
 }
 
-/** 把供应商 usage 里的缓存/推理项展开成可选字段，空值不写进回复对象 */
+// 供应商 usage 的缓存/推理项；空值不写入回复对象
 function providerUsageFields(
     usage: ProviderUsage | null,
 ): Pick<OpenAIReply, "cacheReadTokens" | "cacheWriteTokens" | "reasoningTokens"> {
@@ -114,11 +115,10 @@ export interface StreamReply {
 }
 
 export interface ChatStreamOptions extends ChatOptions {
-    /**
+    /*
      * 中断信号：用户停止时立刻断开这次请求
      *
-     * 已经收到的增量照常返回（`interrupted: true`），调用方按「用户停止」收尾，
-     * 不会因为打断丢掉半截回复。
+     * 已收到的增量照常返回（interrupted: true），调用方按用户停止收尾
      */
     readonly signal?: AbortSignal
     readonly onText?: (text: string) => void
@@ -139,10 +139,10 @@ export interface CreateOpenAIClientOptions {
     readonly fetch?: ClientOptions["fetch"]
 }
 
-/**
- * 推理强度映射：
- * off 不发参数；low / high / max 原样发给 OpenAI 兼容端点。
- * （标准 OpenAI 只定义到 high；若端点不接受 max 会返回 400，可换 high。）
+/*
+ * 推理强度映射：off 不发参数；low / high / max 原样发给 OpenAI 兼容端点
+ *
+ * 标准 OpenAI 只定义到 high；端点不接受 max 时返回 400
  */
 function reasoningParams(level: string | undefined): Record<string, unknown> {
     if (level === undefined || level === "" || level === "off") {
@@ -198,7 +198,7 @@ export class OpenAIClient {
         this.#logger = logger
     }
 
-    /** 创建客户端。缺少 API key 或 SDK 初始化失败时返回错误码 */
+    /** 创建客户端；缺少 API key 或 SDK 初始化失败时返回错误码 */
     static create(options: CreateOpenAIClientOptions = {}): Result<OpenAIClient> {
         const settings = options.settings ?? DEFAULT_SETTINGS.openai
         const explicit = options.apiKey === undefined ? null : normalizeApiKey(options.apiKey)
@@ -471,8 +471,8 @@ export class OpenAIClient {
         } catch (error) {
             if (options.signal?.aborted === true) {
                 /*
-                 * 用户主动停止：不当作失败。把已经收到的正文/思考/工具调用照常交回去，
-                 * 由调用方按「已停止」收尾——半截回复比清空更有用。
+                 * 用户主动停止：按成功返回
+                 * 已收到的正文/思考/工具调用照常交回，调用方按已停止收尾
                  */
                 this.#logger?.debug({ model }, "OpenAI 流式调用被用户中断")
                 return Result.successWithData<StreamReply>({
@@ -498,7 +498,7 @@ export class OpenAIClient {
         }
     }
 
-    /** 拉取供应商的模型 id 列表（用于自定义供应商的“拉取模型”） */
+    /** 拉取供应商的模型 id 列表 */
     async listModels(): Promise<Result<readonly string[]>> {
         try {
             const page = await this.#client.models.list()

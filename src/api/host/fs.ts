@@ -1,7 +1,8 @@
 /*
- * 宿主文件 API。
- * 插件通过 api.fs / ctx.fs（插件数据目录）或 api.workspaceFs / ctx.workspaceFs（当前工作目录）访问文件。
- * 路径必须是相对路径，且不能逃出对应根目录。
+ * 宿主文件 API
+ *
+ * 插件通过 api.fs / ctx.fs 访问插件数据目录，通过 api.workspaceFs / ctx.workspaceFs 访问当前工作目录
+ * 路径必须是相对路径，不能逃出对应根目录
  */
 
 export type HostFileType = "file" | "directory" | "other"
@@ -16,11 +17,12 @@ export interface HostFileEntry extends HostFileStat {
     readonly name: string
 }
 
-/** 按绝对目录打开的文件 API；供编辑器这类需要用户自选工作区的插件使用 */
+/** 按绝对目录打开的文件 API；供编辑器等需要自选工作区的插件使用 */
 export interface HostFileRootsApi {
     /**
-     * 打开一个已存在的绝对目录。
-     * 返回的 HostFileApi 以该目录为根，路径仍然只能是相对路径。
+     * 打开已存在的绝对目录
+     *
+     * 返回的 HostFileApi 以该目录为根，路径仍然只能是相对路径
      */
     open(root: string): Promise<HostFileApi>
 }

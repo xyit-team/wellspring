@@ -1,9 +1,9 @@
 /*
- * 非 Linux 平台的插件 sandbox：Node permission model。
+ * 非 Linux 平台的插件 sandbox：Node permission model
  *
- * Windows / macOS 没有 bwrap，无法提供 mount / PID / network namespace；
- * 这里用 Node 自带的 --permission 限制插件进程的文件读写，至少不让插件直接
- * 读写宿主任意文件。它不隔离网络与进程，所以只用于插件，不用于任意 Agent 命令。
+ * Windows / macOS 没有 bwrap，无法提供 mount / PID / network namespace
+ * 用 Node 自带的 --permission 限制插件进程的文件读写
+ * 不隔离网络与进程，只用于插件，不用于任意 Agent 命令
  */
 
 import type { SandboxAccess } from "../../config/types.ts"

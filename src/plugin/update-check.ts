@@ -1,16 +1,14 @@
-/*
- * 插件更新检查：宿主按清单里声明的来源（npm / github）查最新版本，与已装版本比较。
- *
- * 1.7 之前由插件在 init 里注册探针；现在来源写在 package.json 的
- * `wellspring.npm` / `wellspring.github` 里，宿主自己查——插件不需要联网，
- * 也就不需要在 sandbox 里放开 network。
- *
- * 四条边界：
- * - 只在检查更新时查网络，加载插件时不发请求
- * - 单个插件失败（网络错、没声明来源、超时）只影响这一项
- * - 没有声明来源的插件 hasSource = false，不发起请求
- * - 比较是纯函数，不依赖 semver 包，预发布按 semver 规则排序
- */
+// 插件更新检查：宿主按清单里声明的来源（npm / github）查最新版本，与已装版本比较
+
+// 1.7 之前由插件在 init 里注册探针；现在来源写在 package.json 的
+// wellspring.npm / wellspring.github 里，宿主自己查
+// 插件不需要联网，sandbox 也不必放开 network
+
+// 边界：
+// 只在检查更新时查网络，加载插件时不发请求
+// 单个插件失败（网络错、没声明来源、超时）只影响这一项
+// 没有声明来源的插件 hasSource = false，不发起请求
+// 比较是纯函数，不依赖 semver 包，预发布按 semver 规则排序
 
 import type { SourceOptions } from "./sources.ts"
 import { resolveGithubRelease, resolveNpmRelease } from "./sources.ts"
@@ -45,7 +43,7 @@ export interface PluginUpdateCheck {
     readonly downloadUrl: string | null
 }
 
-/** 检查超时：查网络给足余量，但不能让一次检查挂住界面 */
+/** 检查超时上限：界面等待不超过此值 */
 export const UPDATE_CHECK_TIMEOUT_MS = 20_000
 
 /** `v1.2.3` / `1.2.3` / `1.2.3-rc.1` 拆成可比较的部分 */
@@ -59,8 +57,7 @@ function parseVersion(value: string): { core: number[]; pre: string[] } | null {
             core.push(Number(part))
             continue
         }
-        // 首段非数字视为标签（latest / stable / main），解析失败
-        // 按 0.0.0 处理会把它算成有更新
+        // 首段非数字视为标签（latest / stable / main），按解析失败处理
         if (core.length === 0) return null
         // 后续段允许 x / * 这类占位，按 0 处理（1.2.x 等价于 1.2.0）
         core.push(0)
@@ -120,8 +117,8 @@ function errorText(error: unknown): string {
 /**
  * 检查更新
  *
- * 有 npm 声明就查 npm，否则查 github；都没声明时 hasSource = false，不发请求。
- * 结果按入参顺序返回。
+ * 有 npm 声明就查 npm，npm 未声明时查 github；都没有声明时 hasSource = false，不发请求
+ * 结果按入参顺序返回
  */
 export async function checkPluginUpdates(
     installed: readonly InstalledPlugin[],

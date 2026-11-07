@@ -46,7 +46,7 @@ export class Session {
         this.workspace = new Workspace(data.meta.workspace)
     }
 
-    /** Agent 循环开始后，消息进入队列而不是直接落盘 */
+    /** Agent 循环运行期间消息入队，不落盘 */
     begin(): void {
         this.#active = true
         this.#stopRequested = false

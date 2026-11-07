@@ -46,7 +46,7 @@ export function setup(): unknown {
             }
             const client = api
             if (mode === "gate") {
-                // 闸门：测试放行前挂住，保证两次调用重叠
+                // 闸门：放行前挂起，使两次调用重叠
                 await client.capabilities.webSearch(`gate:${tag}`)
                 const result = (await client.capabilities.executeCode({
                     tag,

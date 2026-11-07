@@ -1,6 +1,4 @@
-/*
- * 测试用最小 zip 写入器：store 方式打包，避免引入额外依赖。
- */
+// 测试用最小 zip 写入器：store 方式打包，不引额外依赖
 
 const CRC_TABLE: number[] = Array.from({ length: 256 }, (_, index) => {
     let value = index
