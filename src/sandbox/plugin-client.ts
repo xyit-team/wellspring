@@ -2048,10 +2048,6 @@ export class PluginSandboxClient {
                 join(this.#hostSdkDir, "src", "api", "host"),
             ],
             [
-                join(PROJECT_ROOT, "src", "api", "plugin"),
-                join(this.#hostSdkDir, "src", "api", "plugin"),
-            ],
-            [
                 join(PROJECT_ROOT, "src", "event", "event.ts"),
                 join(this.#hostSdkDir, "src", "event", "event.ts"),
             ],

@@ -796,7 +796,8 @@ const files = await ctx.workspaceFs.list("src")
 - `hostApi` 默认包含 `logger` / `fs` / `event` / `getHost` / `shutdown` / `agent`；`workspaceFs` 仍需在 `fs.read` 里
   声明 `${workspace}`；`agent` 能驱动 Agent 对话与工具调用，不写 `sandbox` 块的插件默认拥有它
 - `models` / `plugins` / `workspaces` / `fileRoots` / `http` / `exec` / `pty` / `capabilities` 需要在 `hostApi` 中显式声明；
-  `http` 只保留给 `wellspring-http`，普通插件请走上面的 `wellspring/api/plugin/http-client.ts`；
+  `http` 是宿主原语，只给 `wellspring-http` 插件用，普通插件在 `deps` 里依赖它、用
+  `@xyit-team/wellspring-http/client` 注册服务器；
   `migrate` 是插件本地数据迁移（换插件 id 时搬 plugin-data / 配置 / 禁用状态），只给官方 core 插件用
 - `hostApi: "plugins"` 提供 `api.plugins.list/install/remove/enable/disable`：安装只接受 zip（≤10MB）；
   启用/禁用与禁用后的卸载即时生效，安装与禁用 `wellspring-web` 重启后生效；卸载 `wellspring-web` 被拒绝
@@ -806,8 +807,9 @@ const files = await ctx.workspaceFs.list("src")
   查 npm registry）需在清单里写 `sandbox.network: true`：bwrap 加 `--share-net`（共享宿主网络命名空间，
   没有域名/端口粒度）、seatbelt 放行 `(allow network*)`；Windows / Node permission 后端不隔离
   网络，这个字段只表示声明意图
-- `--share-net` 下插件既能出网也能自己监听端口；HTTP 服务器仍只由 `wellspring-http` 创建，
-  抓网页走 `hostApi: capabilities` 的 `webFetch` / `webSearch`
+- `--share-net` 下插件既能出网也能自己监听端口；但插件不要自己监听，HTTP 服务器统一由
+  `wellspring-http` 插件创建（它持有宿主原语 `hostApi.http`），抓网页走 `hostApi: capabilities` 的
+  `webFetch` / `webSearch`
 - 没有可用 OS 后端时插件加载失败；插件不做 direct 降级
 - `sandbox.mode: off` 时插件全部拒绝加载
 - 插件后端：Linux 为 `bwrap`，macOS 为 `seatbelt`，Windows 与 Android/Termux 退回 Node permission model
@@ -815,15 +817,14 @@ const files = await ctx.workspaceFs.list("src")
 
 ### 插件的 HTTP 服务
 
-平台里只有 `wellspring-http` 插件持有 `hostApi.http`；所有监听端口都由它创建。其它插件在
-`setup().deps` 里声明 `wellspring-http`，然后用事件总线注册服务器（消费者 helper：
-`wellspring/api/plugin/http-client.ts`，协议：
-`wellspring/api/plugin/http-protocol.ts`）：
+宿主只提供原语 `hostApi.http`（`createServer` + 请求 / 流式 / WebSocket 回调，见
+`src/api/host/http.ts`）。托管、协议与消费者 helper 都在 `wellspring-http` 插件里：其它插件在
+`setup().deps` 里声明 `wellspring-http`，用插件发布的 helper 注册服务器：
 
 ```ts
 import type { HttpRequest, HttpResponse } from "wellspring/api/host/index.ts"
 import { eventBus } from "wellspring/api/host/index.ts"
-import { registerHttpServer } from "wellspring/api/plugin/http-client.ts"
+import { registerHttpServer } from "@xyit-team/wellspring-http/client"
 
 export function setup() {
     return {
@@ -845,46 +846,47 @@ export function setup() {
 }
 ```
 
-- `host` 可以是 loopback（默认 `127.0.0.1`），也可以是 `0.0.0.0` / `::` / 指定网卡地址
-- `port: 0` 使用随机端口，实际端口在返回的 `server.port` 里
-- HTTPS 传 `tls: { cert, key, ca? }`（PEM 字符串）；证书可以放在插件 data 目录用 `api.fs` 读
+- `@xyit-team/wellspring-http/client` 与 `@xyit-team/wellspring-http/protocol` 是插件发布的编译产物（插件里的 `dist/`），
+  消费者在 `package.json` 的 `dependencies` 里依赖 `wellspring-http` 即可
+- `host` 默认 `127.0.0.1`，也可 `0.0.0.0` / `::` / 指定网卡地址；`port: 0` 用随机端口，
+  实际端口在返回的 `server.port` 里
+- HTTPS 传 `tls: { cert, key, ca? }`（PEM 字符串）；证书可以放在消费者自己的 data 目录用 `api.fs` 读
 - 请求体以 base64 传入、响应可返回 `utf8` 或 `base64`；`stream: true` + `stream.write/end` 支持 SSE；
   `websocket: (socket, request) => void` 支持 WebSocket 升级（不传则升级请求返回 1008）
 - 请求/响应经事件总线转发，**单个体上限 2.5 MiB**（sandbox 单帧 4 MiB）；超限请求返回 `413`，
   超限响应返回 `502`。需要传大文件请按分片接口设计
-- 启动失败（端口占用 / 重名 / TLS 不合法）会让 `registerHttpServer` reject，可以按失败插件处理
+- 启动失败（端口占用 / 重名 / TLS 不合法）会让 `registerHttpServer` reject，按失败插件处理
 - 插件 `onShutdown` 里 `await server.close()`；wellspring-http 关闭时所有托管服务器一起关闭
-- 细节、完整事件表与错误码见 `wellspring-http` 插件仓库的 README
 
-因为 `deps` 是硬依赖，没链接 `wellspring-http`（或它被禁用）时依赖方会以「依赖不存在 / 依赖被禁用」失败。
-`package.json` 里也不再需要 `hostApi: ["http"]`——`api.http` 只剩 wellspring-http 自己使用。
-
-前端可以自由选择框架。`wellspring-web` 使用 **Vue 3 + Vite**：前端源码在插件仓库的 `frontend/`，
-构建产物打包成插件内 TS 资源，由插件自己的 HTTP 服务同源下发（严格 CSP，无 `unsafe-eval`、无外部 CDN）。
-改前端后执行插件仓库里的 `scripts/build-ui.mjs`（生成 UI 资源）再重启服务。
+因为 `deps` 是硬依赖，没装 `wellspring-http`（或它被禁用）时依赖方会以「依赖不存在 / 依赖被禁用」失败。
+`hostApi: ["http"]` 只给 `wellspring-http` 自己用。
 
 ### wellspring-http 插件
 
 `wellspring-http` 插件是平台里唯一的 HTTP 服务器管理器：校验注册参数、创建 HTTP/HTTPS/WebSocket
 服务器、把请求转发给注册方、注销与关闭时统一释放端口，并广播 `wellspring-http:servers` 列表。
+协议与消费者 helper 都由插件自己定义和发布，宿主不再提供这部分代码。
 
 ```bash
-wellspring plugin install npm:<wellspring-http 包名>
+wellspring plugin install npm:@xyit-team/wellspring-http
+# 或者
+wellspring plugin install github:xyit-team/wellspring-http
 ```
 
-- 事件频道：`wellspring-http:register` / `wellspring-http:unregister`，每个服务器的
+- 协议：`wellspring-http:register` / `wellspring-http:unregister`，每个服务器的
   `wellspring-http:request:<name>` / `wellspring-http:response:<name>`
 - 错误码：`port-in-use`、`permission-denied`、`address-unavailable`、`invalid-register`、
-  `duplicate-name`、`listen-failed`
-- 测试：`node --test test/http-plugin.test.ts`（fixture 消费者覆盖请求、SSE、错误、超时、重名、
-  端口占用与 WebSocket）
+  `duplicate-name`、`too-many-servers`、`listen-failed`、`internal-error`
+- 端口 / 超时 / 白名单等配置：`<configDir>/plugins/wellspring-http.json`
+- 细节、完整事件表与测试见 `wellspring-http` 插件仓库的 README（测试用 fixture 消费者覆盖请求、
+  SSE、错误、超时、重名、端口占用、WebSocket 与 HTTPS）
 
 ### Web 插件
 
 `wellspring-web` 插件提供网页聊天界面，依赖 `wellspring-http`：
 
 ```bash
-wellspring plugin install npm:<wellspring-http 包名>
+wellspring plugin install npm:@xyit-team/wellspring-http
 wellspring plugin install npm:<wellspring-web 包名>
 wellspring start
 ```
@@ -981,7 +983,7 @@ wellspring start
 （Web 插件是可选搭配：装了就多一个侧栏入口）：
 
 ```bash
-wellspring plugin install npm:<wellspring-http 包名>
+wellspring plugin install npm:@xyit-team/wellspring-http
 wellspring plugin install npm:<wellspring-code 包名>
 # 可选：网页聊天界面
 wellspring plugin install npm:<wellspring-web 包名>
