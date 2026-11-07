@@ -1,6 +1,6 @@
 {
     "name": "@xyit/wellspring",
-    "version": "1.7.5",
+    "version": "1.7.6",
     "description": "Wellspring 源泉 —— 插件式 Agent 平台与 CLI（Plugin-based AI agent platform and CLI）",
     "keywords": [
         "agent",
