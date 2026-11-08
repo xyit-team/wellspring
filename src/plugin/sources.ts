@@ -106,20 +106,50 @@ function scopedEncode(name: string): string {
     return name.replace("/", "%2f")
 }
 
+/**
+ * 网络错误的原因链
+ *
+ * fetch 的顶层 message 只有「fetch failed」，真正原因在 cause 里
+ * （代理不可用、节点超时、DNS 等）；逐层拼出来供 CLI 展示
+ */
+export function describeNetworkError(error: unknown): string {
+    const parts: string[] = []
+    let current: unknown = error
+    for (let depth = 0; depth < 5; depth += 1) {
+        if (!(current instanceof Error)) {
+            if (typeof current === "string" && current.trim() !== "") {
+                parts.push(current.trim())
+            }
+            break
+        }
+        const message = current.message.trim()
+        if (message !== "" && !parts.includes(message)) {
+            parts.push(message)
+        }
+        current = current.cause
+    }
+    return parts.length === 0 ? "未知网络错误" : parts.join("；")
+}
+
 async function readJson(
     url: string,
     options: SourceOptions,
     extraHeaders: Record<string, string> = {},
 ): Promise<Record<string, unknown>> {
     const fetchImpl = resolveFetch(options)
-    const response = await fetchImpl(url, {
-        headers: {
-            accept: "application/json",
-            "user-agent": USER_AGENT,
-            ...extraHeaders,
-        },
-        signal: AbortSignal.timeout(timeoutOf(options)),
-    })
+    let response: Awaited<ReturnType<typeof undiciFetch>>
+    try {
+        response = await fetchImpl(url, {
+            headers: {
+                accept: "application/json",
+                "user-agent": USER_AGENT,
+                ...extraHeaders,
+            },
+            signal: AbortSignal.timeout(timeoutOf(options)),
+        })
+    } catch (error) {
+        throw new Error(`${url} 请求失败：${describeNetworkError(error)}`)
+    }
     if (!response.ok) {
         /* GitHub 未认证调用有频率限制：403/429 时附上解决提示 */
         const hint =
@@ -277,10 +307,15 @@ export async function downloadPluginPackage(
     if (token !== null && token !== "" && url.includes("github")) {
         headers["authorization"] = `Bearer ${token}`
     }
-    const response = await fetchImpl(url, {
-        headers,
-        signal: AbortSignal.timeout(timeoutOf(options)),
-    })
+    let response: Awaited<ReturnType<typeof undiciFetch>>
+    try {
+        response = await fetchImpl(url, {
+            headers,
+            signal: AbortSignal.timeout(timeoutOf(options)),
+        })
+    } catch (error) {
+        throw new Error(`下载插件包失败：${describeNetworkError(error)}`)
+    }
     if (!response.ok) {
         throw new Error(`下载插件包失败（${response.status}）：${url}`)
     }

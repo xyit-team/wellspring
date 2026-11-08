@@ -10,6 +10,7 @@ import {
     DEFAULT_NPM_REGISTRY,
     downloadPluginPackage,
     parsePluginSpec,
+    describeNetworkError,
     isGithubRateLimitError,
     resolveGithubRelease,
     resolveGithubTarball,
@@ -190,4 +191,12 @@ test("downloadPluginPackage：非 2xx 报错", async () => {
             }),
         /500/,
     )
+})
+
+test("网络错误：原因链一起展示", () => {
+    const cause = new Error("connect ECONNREFUSED 127.0.0.1:7897")
+    const error = new Error("fetch failed", { cause })
+    assert.equal(describeNetworkError(error), "fetch failed；connect ECONNREFUSED 127.0.0.1:7897")
+    assert.equal(describeNetworkError(new Error("boom")), "boom")
+    assert.equal(describeNetworkError(null), "未知网络错误")
 })
