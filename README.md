@@ -29,7 +29,7 @@ wellspring plugin install github:EtherosGroup/wellspring-web
 
 ## 运行要求
 
-- Node.js >= 24
+- Node.js >= 25
 
 ## 依赖
 

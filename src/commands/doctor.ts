@@ -28,7 +28,7 @@ function sandboxHint(): string {
 export async function runDoctorCommand(ctx: CommandContext): Promise<CommandOutcome> {
     const checks: Check[] = []
     const major = Number(process.versions.node.split(".")[0])
-    checks.push({ name: "node", ok: major >= 24, detail: process.versions.node })
+    checks.push({ name: "node", ok: major >= 25, detail: process.versions.node })
     checks.push({ name: "platform", ok: true, detail: platform })
     checks.push({
         name: "paths",
